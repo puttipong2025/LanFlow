@@ -25,6 +25,8 @@ import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { buildRubberBillRpcPayload } from "@/lib/rubber-bills/submission";
 import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
 import { normalizeRubberBillQueueBeforeSync } from "@/lib/rubber-bills/normalize-sync-queue";
+import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
+import { rememberRubberQueuePrint } from "@/lib/rubber-bills/central-print";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
@@ -61,7 +63,9 @@ export function syncPendingRubberBills(
   return runRubberBillSyncSingleFlight(scopeKey, async () => {
     try { if (!await canSyncCurrentSession(ownerUserId, locationId)) return;
     if (!await normalizeRubberBillQueueBeforeSync(ownerUserId, locationId)) return;
-    const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
+    const pending = await getPendingEvents(queuePartition(ownerUserId, locationId));
+    if (pending.some(isCentralRubberEvent)) await runRubberCentralQueue(queryClient, ownerUserId);
+    const events = pending.filter(event => !isCentralRubberEvent(event));
     // Precompute: block ALL ids that have any failed/conflict event
     const blockedIds = new Set<string>(
       events
@@ -182,13 +186,15 @@ export function useRubberBillMutations(
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
-      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true } : {}) });
+      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true, expectedServerId: bill.id } : {}) }, ownerUserId);
+      const centralQueue = "centralQueue" in payload && payload.centralQueue === true;
       if (clientEvents.some((event) => event.serverSubmissionAttempted === true)) {
         throw new Error(PENDING_SERVER_ACTION_MESSAGE);
       }
 
       const correcting = clientEvents.length === 1 && clientEvents[0].status === "failed"
         && clientEvents[0].failureHttpStatus === 400 && clientEvents[0].operation === operation;
+      if (correcting && clientEvents[0].payload.centralQueue && !isOnline) throw new Error("ต้องออนไลน์เพื่อตรวจข้อมูลล่าสุดก่อนแก้ไขร่างในคิวกลาง");
       if (!correcting && clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       }
@@ -204,9 +210,9 @@ export function useRubberBillMutations(
 
       if (keeper) {
         const commandPayload = correcting && keeper.payload.contractVersion === 2
-          ? await prepareRubberBillCommand({ ...builtPayload, expectedRevisionNo: keeper.payload.expectedRevisionNo, ...(operation === "update" ? { background: true } : {}) })
+          ? await prepareRubberBillCommand({ ...builtPayload, expectedRevisionNo: keeper.payload.expectedRevisionNo, ...(operation === "update" ? { background: true } : {}) }, ownerUserId)
           : keeper.payload.contractVersion === 2
-            ? { ...builtPayload, ...(keeper.payload.background ? { background: true } : {}), contractVersion: 2, commandId: keeper.payload.commandId,
+            ? { ...builtPayload, ...(keeper.payload.centralQueue ? { centralQueue: true, actorUserId: ownerUserId, expectedQueueVersion: keeper.payload.expectedQueueVersion } : {}), ...(keeper.payload.background ? { background: true } : {}), contractVersion: 2, commandId: keeper.payload.commandId,
               expectedCommandGeneration: keeper.payload.expectedCommandGeneration }
             : payload;
         const originalRev = keeper.payload.expectedRevisionNo;
@@ -216,6 +222,7 @@ export function useRubberBillMutations(
           errorMessage: undefined,
           failureHttpStatus: undefined,
           serverSubmissionAttempted: correcting ? false : keeper.serverSubmissionAttempted,
+          ...(correcting ? { centralAccepted: false, nextAttemptAt: 0 } : {}),
           payload: keeper.operation === "create"
             ? { ...commandPayload, operation: "create", expectedRevisionNo: 0,
               idempotencyKey: correcting && keeper.payload.contractVersion === 2 ? commandPayload.idempotencyKey : keeper.payload.idempotencyKey }
@@ -226,8 +233,9 @@ export function useRubberBillMutations(
         if (!await reconcileSyncEventsIfCurrent(clientEvents, updatedKeeper)) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
         }
+        if (correcting && "centralQueue" in updatedKeeper.payload && updatedKeeper.payload.centralQueue) rememberRubberQueuePrint(updatedKeeper, calculatedBill);
       } else {
-        const directSubmissionScope = isOnline && operation === "create" && clientEvents.length === 0
+        const directSubmissionScope = !centralQueue && isOnline && operation === "create" && clientEvents.length === 0
           ? `${ownerUserId}:${mutationLocationId}`
           : null;
         if (directSubmissionScope) beginDirectSubmission(directSubmissionScope);
@@ -239,7 +247,7 @@ export function useRubberBillMutations(
           operation,
           serverId: operation === "update" ? bill.id : undefined,
           serverBillNo: operation === "update" ? bill.serverBillNo : undefined,
-          serverSubmissionAttempted: operation === "create" && directSubmissionScope !== null,
+          serverSubmissionAttempted: operation === "create" && (directSubmissionScope !== null || (centralQueue && isOnline)),
           payload,
           timestamp: Date.now(),
           status: "pending"
@@ -256,9 +264,10 @@ export function useRubberBillMutations(
           throw error;
         }
         newlyQueuedEvent = { ...event, queueId };
+        if (centralQueue) rememberRubberQueuePrint(newlyQueuedEvent, calculatedBill);
       }
 
-      if (isOnline && clientEvents.length === 0 && newlyQueuedEvent && operation === "create") {
+      if (!centralQueue && isOnline && clientEvents.length === 0 && newlyQueuedEvent && operation === "create") {
         try {
           const response = await sendRubberBillCommand(newlyQueuedEvent, {
               ...payload,
@@ -307,7 +316,7 @@ export function useRubberBillMutations(
       return {
         ...calculatedBill,
         syncStatus: "pending" as const,
-        serverSubmissionAttempted: operation === "update" || newlyQueuedEvent?.serverSubmissionAttempted === true,
+        serverSubmissionAttempted: operation === "update" || (isOnline && centralQueue) || newlyQueuedEvent?.serverSubmissionAttempted === true,
         configuredPriceSnapshot:
           operation === "create"
             ? mutationApprovalSettings?.effectivePriceCap ?? null
@@ -380,10 +389,10 @@ export function useRubberBillMutations(
         deletedByPhone
       );
       const payload = await prepareRubberBillCommand({
-        ...calculatedPayload, background: true,
+        ...calculatedPayload, background: true, expectedServerId: bill.id,
         expectedRevisionNo: targetRev,
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
-      });
+      }, ownerUserId);
 
       const event: Omit<SyncEvent, "queueId"> = {
         id: clientTempId,
@@ -439,6 +448,9 @@ export function useRubberBillMutations(
     ));
     if (!hasSyncProblem) {
       throw new Error("ไม่พบรายการซิงก์ที่มีปัญหาในเครื่องนี้");
+    }
+    if (relatedEvents.some(isCentralRubberEvent)) {
+      throw new Error("รายการนี้อยู่ในคิวซิงก์กลาง กรุณาแก้ไขร่างจากคิวซิงก์กลางก่อน");
     }
 
     const queueIds = relatedEvents.flatMap((event) => (

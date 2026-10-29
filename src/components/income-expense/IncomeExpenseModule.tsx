@@ -1,3 +1,4 @@
+import { persistIncomeExpenseSubmissions } from "@/lib/income-expense/persist-submissions";
 import { ArrowRightLeft, Edit3, ExternalLink, Eye, Plus, RefreshCw, Settings, Share2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
@@ -42,6 +43,7 @@ import { IncomeExpenseModal } from "./IncomeExpenseModal";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { appSwal, runBlockingAction } from "@/lib/swal";
+import { IncomeExpenseBackgroundDelete, IncomeExpenseBackgroundNotices } from "./IncomeExpenseBackgroundStatus";
 
 function getReportLockReason(reportLockNo?: string | null) {
   return reportLockNo
@@ -125,6 +127,11 @@ export function IncomeExpenseModule({
   const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [approvalRequestId, setApprovalRequestId] = useState<string | undefined>();
   const [deletingTransactionId, setDeletingTransactionId] = useState<string | null>(null);
+  const [backgroundDelete, setBackgroundDelete] = useState<IncomeExpense | null>(null);
+  const [discardTransaction, setDiscardTransaction] = useState<IncomeExpense | null>(null);
+  const acceptedEdits = useRef(new Map<string, "persisted" | "approval">());
+  const [acceptedLineIds, setAcceptedLineIds] = useState<string[]>([]);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [deletingCashTransferId, setDeletingCashTransferId] = useState<string | null>(null);
   const [branchTransferModalOpen, setBranchTransferModalOpen] = useState(false);
   const [pageSize, setPageSize] = useState(10);
@@ -191,6 +198,9 @@ export function IncomeExpenseModule({
     }
     try {
       const detailedTransaction = await loadSaleBillDetails(transaction);
+      acceptedEdits.current.clear();
+      setAcceptedLineIds([]);
+      setSaveError(null);
       setModalType(detailedTransaction.type);
       setEditingTransaction(detailedTransaction);
       setModalOpen(true);
@@ -227,6 +237,10 @@ export function IncomeExpenseModule({
     const blockReason = getActionBlockReason(transaction);
     if (blockReason) {
       toast.error(blockReason);
+      return;
+    }
+    if (transaction.billOption !== "บิลขาย" && (transaction.serverBillNo || transaction.id !== transaction.clientTempId)) {
+      setBackgroundDelete(transaction);
       return;
     }
     const dateApprovalNotice = approvalSettings?.nonCurrentDateRequiresApproval
@@ -266,8 +280,8 @@ export function IncomeExpenseModule({
 
   async function retryFailedSync(transaction: IncomeExpense) {
     try {
-      await retrySyncEvent({ entity: "income_expense", id: transaction.clientTempId });
-      toast.success("ซิงก์รายการสำเร็จ");
+      const result = await retrySyncEvent({ entity: "income_expense", id: transaction.clientTempId });
+      if (result !== "silent") toast.success("ซิงก์รายการสำเร็จ");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ซิงก์รายการไม่สำเร็จ");
     }
@@ -279,18 +293,7 @@ export function IncomeExpenseModule({
       toast.error("ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น");
       return;
     }
-    if (!window.confirm(`ทิ้งรายการค้าง ${transaction.localBillNo} จากเครื่องนี้ใช่ไหม?\nการเปลี่ยนแปลงในเครื่องของรายการนี้ทั้งหมดจะถูกล้าง แต่จะไม่แก้ไขข้อมูลบนเซิร์ฟเวอร์`)) return;
-    setDeletingTransactionId(transaction.clientTempId);
-    try {
-      await runBlockingAction("กำลังลบรายการ...", () => (
-        discardFailedTransaction(transaction.clientTempId)
-      ));
-      toast.success("ทิ้งรายการค้างแล้ว และโหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ลบรายการค้างไม่สำเร็จ");
-    } finally {
-      setDeletingTransactionId(null);
-    }
+    setDiscardTransaction(transaction);
   }
 
   function saleReceiptDocument(transaction: IncomeExpense) {
@@ -309,37 +312,11 @@ export function IncomeExpenseModule({
     }
   }
 
-  async function persistSubmittedTransactions(submittedTransactions: IncomeExpense[]) {
-    let pendingApprovalCount = 0;
-    const persistedTransactions: IncomeExpense[] = [];
-    let persistError: unknown;
-
-    for (const [index, transaction] of submittedTransactions.entries()) {
-      try {
-        const isSyncedRecord =
-          Boolean(transaction.serverBillNo)
-          || transaction.id !== transaction.clientTempId;
-        const operation =
-          editingTransaction && index === 0 && isSyncedRecord ? "update" : "create";
-        const approvalResult = await submitForApprovalIfNeeded(transaction, operation);
-
-        if (approvalResult.requiresApproval) {
-          pendingApprovalCount += 1;
-          continue;
-        }
-
-        persistedTransactions.push(
-          operation === "update"
-            ? await updateTransaction(transaction)
-            : await addTransaction(transaction)
-        );
-      } catch (error) {
-        persistError = error;
-        break;
-      }
-    }
-
-    return { pendingApprovalCount, persistedTransactions, persistError };
+  function persistSubmittedTransactions(submittedTransactions: IncomeExpense[]) {
+    return persistIncomeExpenseSubmissions(submittedTransactions, {
+      editing: editingTransaction, accepted: acceptedEdits.current,
+      approve: submitForApprovalIfNeeded, update: updateTransaction, create: addTransaction,
+    }).finally(() => setAcceptedLineIds([...acceptedEdits.current.keys()]));
   }
 
   function showPersistSummary(
@@ -519,6 +496,13 @@ export function IncomeExpenseModule({
 
   return (
     <section className="space-y-4">
+      <IncomeExpenseBackgroundNotices key={`${profile.id}:${selectedLocation.id}`} ownerUserId={profile.id} locationId={selectedLocation.id} />
+      {discardTransaction && <IncomeExpenseBackgroundDelete discard number={discardTransaction.localBillNo}
+        onClose={() => setDiscardTransaction(null)} onConfirm={() => discardFailedTransaction(discardTransaction.clientTempId)} />}
+      {backgroundDelete && <IncomeExpenseBackgroundDelete number={backgroundDelete.number}
+        onClose={() => setBackgroundDelete(null)} onConfirm={() => deleteTransaction({
+          clientTempId: backgroundDelete.clientTempId, deletedByName: profile.name, deletedByPhone: profile.phone,
+        })} />}
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-3 shadow-panel sm:p-4">
         <div>
           <h2 className="text-balance text-lg font-bold text-ink">CRUD รายรับ-รายจ่าย · {selectedLocation.name}</h2>
@@ -893,6 +877,8 @@ export function IncomeExpenseModule({
 
       {modalOpen && (
         <IncomeExpenseModal
+          acceptedLineIds={editingTransaction ? acceptedLineIds : []}
+          saveError={editingTransaction ? saveError : null}
           selectedLocation={selectedLocation}
           profile={profile}
           type={modalType}
@@ -900,7 +886,7 @@ export function IncomeExpenseModule({
           nextNumber={nextNumber}
           nextLocalSequence={transactions.length + 1}
           nonCurrentDateRequiresApproval={approvalSettings?.nonCurrentDateRequiresApproval}
-          onClose={() => setModalOpen(false)}
+          onClose={() => { setModalOpen(false); setSaveError(null); }}
           onSave={async (savedTransactions) => {
             const isCreating = !editingTransaction;
             const isSaleSubmission =
@@ -915,6 +901,7 @@ export function IncomeExpenseModule({
             }
 
             try {
+              setSaveError(null);
               const { pendingApprovalCount, persistedTransactions, persistError } =
                 await persistSubmittedTransactions(savedTransactions);
               if (persistError) throw persistError;
@@ -923,7 +910,8 @@ export function IncomeExpenseModule({
               showPersistSummary(pendingApprovalCount, persistedTransactions.length);
               return true;
             } catch (error) {
-              toast.error(error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ");
+              const message = error instanceof Error ? error.message : "บันทึกรายการไม่สำเร็จ";
+              if (editingTransaction) setSaveError(message); else toast.error(message);
               return false;
             }
           }}

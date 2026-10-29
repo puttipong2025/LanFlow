@@ -174,6 +174,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "ไม่มีสิทธิ์สร้างรายงานของสาขานี้" }, { status: 403 });
   }
 
+  // Finish a small due batch in a separate transaction before report locks.
+  // The report RPC still authoritatively rechecks every blocker afterwards.
+  await result.supabase.rpc("wake_rubber_queue", { p_location_id: locationId });
   const { data, error } = await result.supabase.rpc("create_report_batch", {
     p_location_id: locationId,
   });

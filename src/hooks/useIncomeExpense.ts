@@ -1,7 +1,10 @@
+import { incomeExpenseFromSyncEvent as payloadToOptimisticRow } from "@/lib/income-expense/operational-list";
 import { useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import type { IncomeExpense } from "@/types";
-import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, removeSyncEvents, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
+import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, removeSyncEvents, reconcileSyncEventsIfCurrent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
+import { isIncomeExpenseBackgroundCommand } from "@/lib/income-expense/background-command";
+import { acceptIncomeExpenseBackground, runIncomeExpenseBackground } from "@/lib/income-expense/background-sync";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { OFFLINE_SYNCED_ACTION_MESSAGE, PENDING_SERVER_ACTION_MESSAGE } from "@/lib/record-action-locks";
 import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
@@ -58,42 +61,6 @@ type IncomeExpenseTransactionSyncResult =
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: ENTITY, ownerUserId, locationId };
-}
-
-function payloadToOptimisticRow(event: SyncEvent): IncomeExpense {
-  const payload = event.payload;
-  return {
-    id: payload.clientTempId,
-    clientTempId: payload.clientTempId,
-    localBillNo: payload.localBillNo,
-    syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
-    serverSubmissionAttempted: event.serverSubmissionAttempted === true,
-    idempotencyKey: payload.idempotencyKey,
-    locationId: payload.locationId,
-    type: payload.type,
-    number: payload.localBillNo,
-    txDate: payload.txDate,
-    title: payload.title,
-    cost: payload.cost,
-    billOption: payload.billOption,
-    unit: payload.unit ?? undefined,
-    price: payload.price ?? undefined,
-    saleLineCount: payload.saleLines?.length,
-    saleLines: payload.saleLines?.map((line: NonNullable<ReturnType<typeof buildIncomeExpensePayload>["saleLines"]>[number]) => ({
-      ...line,
-      stockProductId: "",
-      title: "",
-      lineTotal: Math.round((line.quantity * line.unitPrice + Number.EPSILON) * 100) / 100,
-    })),
-    createdByUserId: payload.createdByUserId ?? "",
-    createdByName: payload.createdByName ?? "",
-    createdByPhone: payload.createdByPhone ?? "",
-    clientCreatedAt: payload.clientCreatedAt,
-    clientRecordedAt: payload.clientRecordedAt,
-    revisionNo: payload.expectedRevisionNo,
-    recordStatus: "active",
-    syncErrorMessage: event.errorMessage,
-  };
 }
 
 function removeFromFeedCache(
@@ -174,7 +141,7 @@ async function normalizeQueue(ownerUserId: string, locationId: string) {
   }
 
   for (const events of grouped.values()) {
-    if (events.length < 2 || events.some((event) => (
+    if (events.length < 2 || events.some(isIncomeExpenseBackgroundCommand) || events.some((event) => (
       event.status !== "pending" || event.serverSubmissionAttempted === true
     ))) continue;
     const result = coalesceQueueGroup(events);
@@ -203,6 +170,7 @@ async function runPendingIncomeExpenseSync(
   const blockedIds = new Set(events.filter((event) => event.status !== "pending").map((event) => event.id));
 
   for (const event of events) {
+    if (isIncomeExpenseBackgroundCommand(event)) continue;
     if (!navigator.onLine || blockedIds.has(event.id)) continue;
     try {
       attemptedIds.add(event.id);
@@ -304,8 +272,9 @@ export function syncPendingIncomeExpense(
   const scopeKey = `${ownerUserId}:${locationId}`;
   return runIncomeExpenseSyncSingleFlight(scopeKey, async () => (
     (await canSyncCurrentSession(ownerUserId, locationId) ? runPendingIncomeExpenseSync(queryClient, ownerUserId, locationId) : Promise.resolve({ receipts: new Map(), rejections: new Map(), pendingApprovalIds: new Set<string>(), attemptedIds: new Set<string>() }))
-      .finally(async () => {
-      await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+      .then(async (result) => {
+      if (result.attemptedIds.size) await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
+      return result;
       })
   ));
 }
@@ -392,6 +361,11 @@ export function useIncomeExpense(
       if (transaction.billOption === "บิลขาย" && !navigator.onLine) throw new Error("บิลขายตัดสต็อก ต้องออนไลน์ก่อนบันทึก");
       if (operation === "update" && !navigator.onLine) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
 
+      if (operation === "update" && transaction.billOption !== "บิลขาย") {
+        await acceptIncomeExpenseBackground(transaction, "update", ownerUserId);
+        return transaction;
+      }
+
       const payload = buildIncomeExpensePayload(transaction, operation);
       const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const sameRecord = events.filter((event) => event.id === transaction.clientTempId);
@@ -415,6 +389,7 @@ export function useIncomeExpense(
       refresh();
       queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
       if (transaction.billOption !== "บิลขาย") {
+        void runIncomeExpenseBackground(queryClient, ownerUserId).catch(() => {});
         void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
       }
     },
@@ -440,6 +415,10 @@ export function useIncomeExpense(
       const transaction = transactions.find((item) => item.clientTempId === clientTempId)
         ?? (pendingUpdates[0] ? payloadToOptimisticRow(pendingUpdates[0]) : undefined);
       if (!transaction) throw new Error("ไม่พบรายการในแคช");
+      if (transaction.billOption !== "บิลขาย") {
+        await acceptIncomeExpenseBackground(transaction, "delete", ownerUserId, { name: deletedByName, phone: deletedByPhone });
+        return;
+      }
       const revision = pendingUpdates[0]?.payload.expectedRevisionNo ?? transaction.revisionNo;
       const payload = buildIncomeExpensePayload(transaction, "delete", { name: deletedByName, phone: deletedByPhone });
       payload.expectedRevisionNo = revision;
@@ -449,6 +428,7 @@ export function useIncomeExpense(
     },
     onSuccess: () => {
       refresh();
+      void runIncomeExpenseBackground(queryClient, ownerUserId).catch(() => {});
       queryClient.invalidateQueries({ queryKey: ["stock", locationId] });
       void syncPendingIncomeExpense(queryClient, ownerUserId, locationId);
     },
@@ -464,6 +444,11 @@ export function useIncomeExpense(
     const discardable = recordEvents.filter((event) => event.status === "failed" || event.status === "conflict");
     if (discardable.length === 0) {
       throw new Error("รายการนี้ไม่มีปัญหาการซิงก์ที่ทิ้งได้");
+    }
+    if (recordEvents.some(isIncomeExpenseBackgroundCommand)) {
+      if (!await reconcileSyncEventsIfCurrent(recordEvents, undefined, true)) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
+      await operationalList.refresh();
+      return;
     }
     await removeSyncEvents(recordEvents.flatMap((event) => event.queueId == null ? [] : [event.queueId]));
     removeFromFeedCache(queryClient, ownerUserId, locationId, clientTempId);

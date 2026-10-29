@@ -1,4 +1,6 @@
 import { test, expect, Page } from '@playwright/test';
+import { installThresholdAlertHandler } from './helpers/dismiss-threshold-alert';
+test.beforeEach(async ({ page }) => installThresholdAlertHandler(page));
 import { createClient } from '@supabase/supabase-js';
 import {
   confirmCurrentBranchIfRequired,
@@ -144,7 +146,7 @@ async function loginAndGoToIncomeExpense(page: Page, loginPhone = phone) {
   await page.fill('input[type="tel"]', loginPhone);
   await page.fill('input[type="password"]', password);
   await page.click('button:has-text("เข้าสู่ระบบ")');
-  await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
 
   // Navigate to income/expense tab
   await page.click('button:has-text("รับ-จ่าย")');
@@ -473,6 +475,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await expect(row.getByRole('button', { name: 'แก้ไข', exact: true })).toBeEnabled();
     await expect(row.getByRole('button', { name: 'ลบ', exact: true })).toBeEnabled();
     await row.getByRole('button', { name: 'ลบ', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'ยืนยันลบรายการ' }).getByRole('button', { name: 'ส่งคำขอลบ', exact: true }).click();
     await expect.poll(async () => {
       const res = await page.request.fetch(
         `${supabaseUrl}/rest/v1/income_expense?client_temp_id=eq.${before.client_temp_id}&select=record_status`,
@@ -692,7 +695,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await waitForQueueStatus(page, clientTempId, 'conflict');
 
     await page.reload();
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("รับ-จ่าย")');
     const conflictRow = page.locator('table tbody tr', { hasText: `${marker}-LOCAL` }).first();
     await expect(conflictRow).toBeVisible({ timeout: 15000 });
@@ -739,7 +742,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     expect(failedEvent.errorMessage).toBe('ข้อมูลอ้างอิงการซิงก์รับ-จ่ายไม่ถูกต้อง');
 
     await page.reload();
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("รับ-จ่าย")');
     const failedRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(failedRow).toBeVisible({ timeout: 15000 });
@@ -771,7 +774,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     });
 
     await page.reload();
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("รับ-จ่าย")');
     const row = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(row).toBeVisible({ timeout: 15000 });
@@ -1132,7 +1135,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     let deleteCompleted = false;
     let deletePostCount = 0;
 
-    await page.route('**/api/lanflow/income-expense', async (route) => {
+    await page.route('**/api/lanflow/income-expense/background', async (route) => {
       if (route.request().method() !== 'POST') {
         await route.continue();
         return;
@@ -1163,6 +1166,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     let transitions: boolean[] = [];
     try {
       await row.getByRole('button', { name: 'ลบ', exact: true }).click();
+      await page.getByRole('alertdialog', { name: 'ยืนยันลบรายการ' }).getByRole('button', { name: 'ส่งคำขอลบ', exact: true }).click();
       await expect.poll(() => deleteCompleted, { timeout: 10000 }).toBe(true);
 
       await expect.poll(async () => {

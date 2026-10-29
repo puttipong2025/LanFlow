@@ -104,6 +104,9 @@ export function RubberBillsTable({
               const actionBlockReason = getActionBlockReason?.(bill) ?? null;
               const deleting = deletingBillId === bill.id;
               const hasSyncProblem = bill.syncStatus === "failed" || bill.syncStatus === "conflict";
+              const discardBlocked = discardDisabled || deleting || bill.canDiscardSyncFailure === false;
+              const discardTitle = bill.canDiscardSyncFailure === false ? "กรุณาแก้ไขร่างจากคิวซิงก์กลาง"
+                : discardDisabled ? "ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น" : "ทิ้งรายการค้างในเครื่อง";
               const actionsDisabled = (hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason) || deleting;
               const actionTitle = deleting
                 ? "กำลังดำเนินการ..."
@@ -185,13 +188,13 @@ export function RubberBillsTable({
                     {hasSyncProblem ? (
                       <button
                         type="button"
-                        title={discardDisabled ? "ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น" : "ทิ้งรายการค้างในเครื่อง"}
-                        aria-label="ทิ้งรายการค้างในเครื่อง"
-                        disabled={discardDisabled || deleting}
+                        title={discardTitle}
+                        aria-label={bill.canDiscardSyncFailure === false ? discardTitle : "ทิ้งรายการค้างในเครื่อง"}
+                        disabled={discardBlocked}
                         onClick={() => onDiscardLocal(bill)}
-                        className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${(discardDisabled || deleting) ? "cursor-not-allowed opacity-45" : ""}`}
+                        className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${discardBlocked ? "cursor-not-allowed opacity-45" : ""}`}
                       >
-                        <Trash2 size={16} /> ทิ้งรายการค้าง
+                        <Trash2 size={16} /> {bill.canDiscardSyncFailure === false ? "อยู่ในคิวกลาง" : "ทิ้งรายการค้าง"}
                       </button>
                     ) : (
                       <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}

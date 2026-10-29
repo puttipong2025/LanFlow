@@ -57,6 +57,7 @@ async function deliverPdfFile(
 
 export function useSharePdf() {
   const controllerRef = useRef<AbortController | null>(null);
+  const isBusy = useCallback(() => controllerRef.current !== null, []);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
 
@@ -106,12 +107,17 @@ export function useSharePdf() {
 
   const sharePdf = useCallback((
     buildDocument: (signal: AbortSignal) => Promise<SharePdfDocument> | SharePdfDocument,
+    canHandoff: () => boolean | Promise<boolean> = () => true,
   ) => runShare(async (signal, onBeforeHandoff) => {
     const document = await buildDocument(signal);
     signal.throwIfAborted();
     return shareReceiptPdf(document.html, document.filename, {
       signal,
-      onBeforeHandoff,
+      onBeforeHandoff: async () => {
+        if (!await canHandoff()) throw abortError();
+        await onBeforeHandoff();
+        if (!await canHandoff()) throw abortError();
+      },
     });
   }), [runShare]);
 
@@ -124,6 +130,7 @@ export function useSharePdf() {
   }), [runShare]);
 
   return {
+    isBusy,
     busy,
     waiting,
     cancel,

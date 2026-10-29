@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { installThresholdAlertHandler } from '../helpers/dismiss-threshold-alert';
+test.beforeEach(async ({ page }) => installThresholdAlertHandler(page));
 import { createClient } from '@supabase/supabase-js';
 import {
   confirmCurrentBranchIfRequired,

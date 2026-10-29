@@ -4,11 +4,12 @@ export { isConfirmedRubberSyncResult } from "@/lib/rubber-bills/sync-result";
 export { recordRubberSyncFailure } from "@/lib/rubber-bills/sync-failure";
 export { acknowledgeRubberCommand } from "@/lib/rubber-bills/complete-command";
 
-export async function prepareRubberBillCommand(payload: Record<string, any>) {
+export async function prepareRubberBillCommand(payload: Record<string, any>, actorUserId?: string) {
   let generation = 0;
+  let queueVersion = 0;
   if (typeof navigator === "undefined" || navigator.onLine) {
     const params = new URLSearchParams({ locationId: payload.locationId, clientTempId: payload.clientTempId });
-    const response = await authFetch(`/api/lanflow/rubber-bills/command-context?${params}`);
+    const response = await authFetch(`/api/lanflow/rubber-bills/command-context?${params}`, { signal: AbortSignal.timeout(10_000) });
     await assertApiResponse(response);
     const context = await response.json();
     if (!Number.isSafeInteger(context.generation) || context.generation < 0
@@ -26,9 +27,14 @@ export async function prepareRubberBillCommand(payload: Record<string, any>) {
     }
     if (payload.operation === "delete") payload = { ...payload, expectedRevisionNo: context.revisionNo };
     generation = context.generation;
+    if (context.queueVersion !== undefined && (!Number.isSafeInteger(context.queueVersion) || context.queueVersion < 0)) {
+      throw new Error("ตรวจสถานะคิวกลางไม่สำเร็จ กรุณาลองใหม่");
+    }
+    queueVersion = context.queueVersion ?? 0;
   } else if (payload.operation !== "create") {
     throw new Error("รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ");
   }
   const commandId = crypto.randomUUID();
-  return { ...payload, contractVersion: 2, commandId, idempotencyKey: commandId, expectedCommandGeneration: generation };
+  return { ...payload, contractVersion: 2, commandId, idempotencyKey: commandId, expectedCommandGeneration: generation,
+    ...(actorUserId ? { centralQueue: true, background: true, actorUserId, expectedQueueVersion: queueVersion } : {}) };
 }

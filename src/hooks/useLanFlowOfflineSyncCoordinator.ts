@@ -7,6 +7,9 @@ import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
 import { syncPendingIncomeExpense } from "@/hooks/useIncomeExpense";
 import { syncPendingRubberBills } from "@/hooks/useRubberBills";
 import { getPendingEvents } from "@/lib/idb-queue";
+import { runIncomeExpenseBackground } from "@/lib/income-expense/background-sync";
+import { isIncomeExpenseBackgroundCommand } from "@/lib/income-expense/background-command";
+import { runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
 
 const PENDING_SYNC_RETRY_INTERVAL_MS = 30_000;
 
@@ -27,6 +30,8 @@ export function useLanFlowOfflineSyncCoordinator({
     const syncCurrentScope = () => {
       if (!isDeviceOnline()) return;
       void Promise.allSettled([
+        runIncomeExpenseBackground(queryClient, ownerUserId),
+        runRubberCentralQueue(queryClient, ownerUserId),
         syncPendingRubberBills(queryClient, ownerUserId, locationId),
         syncPendingIncomeExpense(queryClient, ownerUserId, locationId),
       ]);
@@ -40,11 +45,13 @@ export function useLanFlowOfflineSyncCoordinator({
         getPendingEvents({ entity: "income_expense", ownerUserId, locationId }).catch(() => []),
       ]);
       const syncTasks: Promise<unknown>[] = [];
+      syncTasks.push(runIncomeExpenseBackground(queryClient, ownerUserId));
+      syncTasks.push(runRubberCentralQueue(queryClient, ownerUserId));
 
       if (rubberEvents.some((event) => event.payload.background || event.status === "pending" || event.status === "conflict" || event.failureHttpStatus === undefined)) {
         syncTasks.push(syncPendingRubberBills(queryClient, ownerUserId, locationId));
       }
-      if (incomeExpenseEvents.some((event) => event.status === "pending")) {
+      if (incomeExpenseEvents.some((event) => !isIncomeExpenseBackgroundCommand(event) && event.status === "pending")) {
         syncTasks.push(syncPendingIncomeExpense(queryClient, ownerUserId, locationId));
       }
       await Promise.allSettled(syncTasks);

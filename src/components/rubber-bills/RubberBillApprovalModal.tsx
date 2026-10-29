@@ -124,7 +124,7 @@ export function RubberBillApprovalModal({
     try {
       setBusyId(request.approvalRequestId);
       await approveRequest(request.approvalRequestId, request.locationId);
-      toast.success("อนุมัติคำขอแล้ว");
+      onClose();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ");
     } finally {
@@ -139,7 +139,7 @@ export function RubberBillApprovalModal({
     try {
       setBusyId(request.approvalRequestId);
       await deleteRequest(request.approvalRequestId, request.locationId);
-      toast.success("ลบคำขอถาวรแล้ว");
+      onClose();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ");
     } finally {

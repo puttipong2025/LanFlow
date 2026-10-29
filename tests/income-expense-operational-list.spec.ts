@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { confirmedIncomeExpenseBackgroundOutcome, isIncomeExpenseBackgroundCommand } from "../src/lib/income-expense/background-command";
 
 import {
   incomeExpenseSyncProblems,
@@ -11,6 +12,28 @@ import type { SyncEvent } from "../src/lib/idb-queue";
 
 const ownerUserId = "owner";
 const locationId = "location";
+
+test("background contract excludes legacy, sales and mismatched command identity", () => {
+  const commandId = "10000000-0000-4000-8000-000000000001";
+  const serverId = "10000000-0000-4000-8000-000000000002";
+  const queued = event({ operation: "update", serverId });
+  queued.payload = { ...queued.payload, operation: "update", contractVersion: 2, background: true,
+    commandId, actorUserId: ownerUserId, expectedServerId: serverId };
+  expect(isIncomeExpenseBackgroundCommand(queued)).toBe(true);
+  for (const patch of [{ contractVersion: undefined }, { billOption: "บิลขาย" },
+    { actorUserId: "other" }, { locationId: "other" }, { operation: "delete" },
+    { expectedServerId: "10000000-0000-4000-8000-000000000003" }]) {
+    expect(isIncomeExpenseBackgroundCommand({ ...queued, payload: { ...queued.payload, ...patch } })).toBe(false);
+  }
+  const receipt = { commandId, serverId, actorUserId: ownerUserId, locationId,
+    clientTempId: queued.id, operation: "update", outcome: "rejected" };
+  expect(confirmedIncomeExpenseBackgroundOutcome(queued, receipt)).toBe("rejected");
+  for (const patch of [{ commandId: "other" }, { outcome: "failed" }, { serverId: "other" },
+    { outcome: "conflict" }, { actorUserId: "other" }, { locationId: "other" }]) {
+    expect(confirmedIncomeExpenseBackgroundOutcome(queued, { ...receipt, ...patch })).toBeNull();
+  }
+  expect(confirmedIncomeExpenseBackgroundOutcome(queued, { status: "conflict", errorMessage: "Revision mismatch" })).toBeNull();
+});
 
 function event(patch: Partial<SyncEvent> = {}): SyncEvent {
   const id = patch.id ?? "local-record";
@@ -71,6 +94,22 @@ test("projects an uncertain server submission marker onto the local row", () => 
     syncStatus: "pending",
     serverSubmissionAttempted: true,
   });
+});
+
+test("marked edit and delete overlay only status on authoritative rows without draft amounts", () => {
+  const current = serverRow("marked", "Server title");
+  const serverId = "73000000-0000-4000-8000-000000000003";
+  for (const operation of ["update", "delete"] as const) {
+    const queued = eventWithPayload({ operation, contractVersion: 2, background: true,
+      commandId: "73000000-0000-4000-8000-000000000004", actorUserId: ownerUserId,
+      expectedServerId: serverId, title: "Draft title", cost: 999 }, { id: "marked", operation, serverId });
+    const rows = mergeIncomeExpenseOperationalLatestPages([{ rows: [current] }], [queued], "Server title");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ title: "Server title", cost: current.cost, syncStatus: "pending" });
+    expect(rows[0].syncErrorMessage).toContain("กำลังส่ง");
+    const [problem] = incomeExpenseSyncProblems([{ ...queued, status: "failed", serverBillNo: "IE-123" }]);
+    expect(problem).toMatchObject({ id: serverId, serverBillNo: "IE-123", number: "IE-123" });
+  }
 });
 
 test("projects only failed and conflict queue records oldest first", () => {

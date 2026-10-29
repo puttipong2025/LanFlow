@@ -1,6 +1,7 @@
 import type { SyncEvent } from "@/lib/idb-queue";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import type { IncomeExpense } from "@/types";
+import { isIncomeExpenseBackgroundCommand } from "./background-command";
 
 export type IncomeExpenseOperationalMode = "latest" | "pending_approval" | "sync_problems";
 
@@ -17,8 +18,10 @@ export function normalizeIncomeExpenseSearch(value: string) {
 
 export function incomeExpenseFromSyncEvent(event: SyncEvent): IncomeExpense {
   const payload = event.payload as ReturnType<typeof buildIncomeExpensePayload>;
+  const background = isIncomeExpenseBackgroundCommand(event);
   return {
-    id: payload.clientTempId,
+    id: background ? event.serverId! : payload.clientTempId,
+    serverBillNo: background ? event.serverBillNo : undefined,
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
@@ -26,7 +29,7 @@ export function incomeExpenseFromSyncEvent(event: SyncEvent): IncomeExpense {
     idempotencyKey: payload.idempotencyKey,
     locationId: payload.locationId,
     type: payload.type,
-    number: payload.localBillNo,
+    number: background ? event.serverBillNo ?? payload.localBillNo : payload.localBillNo,
     txDate: payload.txDate,
     title: payload.title,
     cost: payload.cost,
@@ -78,6 +81,13 @@ export function mergeIncomeExpenseLocalEvents(
   const rows = new Map(serverRows.map((row) => [row.clientTempId, row]));
   for (const event of events) {
     const clientTempId = clientTempIdForEvent(event);
+    if (isIncomeExpenseBackgroundCommand(event)) {
+      const current = rows.get(clientTempId);
+      if (current) rows.set(clientTempId, { ...current, syncStatus: event.status,
+        serverSubmissionAttempted: event.status === "pending" || event.serverSubmissionAttempted === true, syncErrorMessage: event.errorMessage
+          ?? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") });
+      continue;
+    }
     if (event.operation === "delete") {
       if (event.status === "pending") {
         rows.delete(clientTempId);

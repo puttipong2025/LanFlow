@@ -4,6 +4,8 @@ export default defineConfig({
   testDir: './tests',
   testMatch: [
     "**/rubber-background.spec.ts",
+    '**/rubber-central-queue.spec.ts',
+    '**/rubber-central-queue-route.spec.ts',
     '**/rubber-command-context-route.spec.ts',
     '**/rubber-sync-recovery.spec.ts',
     '**/rubber-bill-receipt-idb.spec.ts',
@@ -38,6 +40,7 @@ export default defineConfig({
     '**/income-sale-approval-contract.spec.ts',
     '**/income-expense-route-contract.spec.ts',
     '**/income-expense-operational-list.spec.ts',
+    '**/income-expense-background.spec.ts',
     '**/integration-target.spec.ts',
     '**/location-preference.spec.ts',
     '**/money-transfer-slip-validation.spec.ts',

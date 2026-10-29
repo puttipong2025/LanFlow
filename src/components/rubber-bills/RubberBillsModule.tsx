@@ -55,6 +55,9 @@ import { AlertDialog } from "@/components/shared/AlertDialog";
 import { RubberBillDeleteDialog } from "./RubberBillDeleteDialog";
 import { RubberBillSyncDraftDialog } from "./RubberBillSyncDraftDialog";
 import { restartRubberDelete } from "@/lib/rubber-bills/restart-delete";
+import { registerRubberQueuePrinter } from "@/lib/rubber-bills/central-print";
+import { RubberCentralQueueStatus } from "./RubberCentralQueueStatus";
+import { canSyncCurrentSession } from "@/lib/auth-fetch";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -75,6 +78,10 @@ export function RubberBillsModule({
 }) {
   const queryClient = useQueryClient();
   const pdfShare = useSharePdf();
+  const queuePrintRef = useRef(handlePrint);
+  queuePrintRef.current = handlePrint;
+  useEffect(() => registerRubberQueuePrinter(profile.id, selectedLocation.id,
+    (bill, current) => queuePrintRef.current(bill, current, true), pdfShare.isBusy), [profile.id, selectedLocation.id, pdfShare.isBusy]);
   const canManageApprovals = canManageSystemFeatures(profile);
   const { settings: approvalSettings, refreshSettings: refreshApprovalSettings } = useRubberBillApprovals({
     locationId: selectedLocation.id,
@@ -206,7 +213,7 @@ export function RubberBillsModule({
   }
 
   function getPrintBlockReason(bill: RubberBill) {
-    return pdfShare.busy ? "กำลังสร้าง PDF" : getRubberBillPrintBlockReason(bill);
+    return pdfShare.isBusy() ? "กำลังสร้าง PDF" : getRubberBillPrintBlockReason(bill);
   }
 
   async function getPendingSubmissionBlockReason(bill: RubberBill) {
@@ -232,7 +239,9 @@ export function RubberBillsModule({
     }
   }
 
-  async function handlePrint(bill: RubberBill) {
+  async function handlePrint(bill: RubberBill, current: () => boolean = () => true, automatic = false) {
+    const canHandoff = async () => current() && (!automatic || await canSyncCurrentSession(profile.id, selectedLocation.id, { background: true })) && current();
+    if (!await canHandoff()) return;
     const blockReason = getPrintBlockReason(bill)
       ?? await getPendingSubmissionBlockReason(bill);
     if (blockReason) {
@@ -256,7 +265,8 @@ export function RubberBillsModule({
           html: renderRubberBillReceiptHtml(receipt),
           filename: receiptPdfFilename("LanFlow-rubber-bill", receipt.referenceNo),
         };
-      });
+      }, canHandoff);
+      if (!current()) return;
       if (delivery === "shared") {
         toast.success("แชร์ PDF ใบรับซื้อยางแล้ว");
       } else if (delivery === "downloaded") {
@@ -529,6 +539,8 @@ export function RubberBillsModule({
             <Clock3 size={17} />
             จับเวลา
           </button>
+          <RubberCentralQueueStatus key={`${profile.id}:${selectedLocation.id}`} ownerUserId={profile.id} locationId={selectedLocation.id} locationName={selectedLocation.name}
+            onCorrect={(bill) => { setEditingBill(bill); setModalOpen(true); void refreshPolicy(); }} />
           {canManageApprovals && (
             <button
               type="button"
@@ -721,7 +733,7 @@ export function RubberBillsModule({
               setOcrReviewItem(null);
               setModalOpen(false);
               if (isCreating) setPage(1);
-              if (savedBill.netTotal > 0 && !savedBill.approvalPending && (isCreating || savedBill.syncStatus === "synced")) {
+              if (savedBill.netTotal > 0 && !savedBill.approvalPending && !savedBill.serverSubmissionAttempted && (isCreating || savedBill.syncStatus === "synced")) {
                 void handlePrint(savedBill);
               }
               return true;

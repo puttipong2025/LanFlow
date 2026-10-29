@@ -10,7 +10,7 @@ export function scopeRubberBillLocalEventsToServerRows(
   includeLocalCreates: boolean,
 ) {
   const serverClientIds = new Set(serverBills.map((bill) => bill.clientTempId));
-  return events.filter((event) => (
+  return events.filter((event) => !event.payload.queueAction && (
     serverClientIds.has(event.id) || (includeLocalCreates && event.operation === "create")
   ));
 }
@@ -46,6 +46,7 @@ function hasAuthoritativeActionLock(bill: RubberBill | undefined) {
 }
 
 export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): RubberBill | null {
+  if (event.payload.queueAction) return null;
   if (event.operation === "delete" && event.status === "pending" && !event.payload.background) return null;
   const payload = event.payload;
   const serverId = event.operation !== "create" && event.serverId ? event.serverId : undefined;
@@ -77,11 +78,13 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
-    serverSubmissionAttempted: (event.payload.background && event.status === "pending") || event.serverSubmissionAttempted === true,
-    syncErrorMessage: event.status === "pending" && payload.background ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") : event.errorMessage,
+    serverSubmissionAttempted: (event.payload.background && event.status === "pending"
+      && (event.operation !== "create" || !event.payload.centralQueue)) || event.serverSubmissionAttempted === true,
+    syncErrorMessage: event.status === "pending" && payload.background ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : event.operation === "create" ? "กำลังส่งบิลใหม่" : "กำลังส่งการแก้ไข") : event.errorMessage,
     canRestartDelete: event.operation === "delete" && (payload.contractVersion !== 2 || event.failureCode === "STALE_COMMAND_CONTEXT"),
     canCorrectSyncFailure: event.status === "failed" && event.failureHttpStatus === 400
       && event.operation !== "delete" && event.serverSubmissionAttempted !== true,
+    canDiscardSyncFailure: event.payload.centralQueue !== true,
     idempotencyKey: payload.idempotencyKey,
     locationId: payload.locationId,
     serverBillNo,
@@ -136,7 +139,8 @@ export function mergeRubberBillLocalEvents(
       if (serverBill) byClientId.set(event.id, { ...serverBill, syncStatus: draft!.syncStatus,
         syncErrorMessage: event.status === "pending" ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") : event.errorMessage,
         serverSubmissionAttempted: event.status === "pending" || event.serverSubmissionAttempted,
-        canCorrectSyncFailure: draft!.canCorrectSyncFailure, canRestartDelete: draft!.canRestartDelete });
+        canCorrectSyncFailure: draft!.canCorrectSyncFailure, canRestartDelete: draft!.canRestartDelete,
+        canDiscardSyncFailure: draft!.canDiscardSyncFailure });
       continue;
     }
     if (mode === "server_authoritative" && !serverBill) continue;

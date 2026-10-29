@@ -131,8 +131,12 @@ reset role;
 do $cleanup$
 declare
   v_result jsonb;
+  v_max_batches integer := greatest(20,
+    ceil((public.get_history_retention_overview(1)->>'totalEligible')::numeric / 1000)::integer + 2);
 begin
-  for v_attempt in 1..20 loop
+  -- A long-lived Local database can contain more than 20,000 cron rows. Bound
+  -- the test by its actual fixture/history size instead of assuming a fresh DB.
+  for v_attempt in 1..v_max_batches loop
     v_result := private.cleanup_history_retention(1000);
     exit when not coalesce((v_result ->> 'hasMore')::boolean, true);
   end loop;

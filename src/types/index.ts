@@ -67,7 +67,7 @@ export type SelfPasswordChangeResponse = {
   readablePasswordAvailable: boolean;
 };
 
-export type RubberBill = { canCorrectSyncFailure?: boolean; canRestartDelete?: boolean;
+export type RubberBill = { canCorrectSyncFailure?: boolean; canRestartDelete?: boolean; canDiscardSyncFailure?: boolean;
   id: string;
   clientTempId: string;
   localBillNo: string;

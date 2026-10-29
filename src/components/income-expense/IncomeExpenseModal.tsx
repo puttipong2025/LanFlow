@@ -32,12 +32,12 @@ export function IncomeExpenseModal({
   nextLocalSequence,
   nonCurrentDateRequiresApproval = false,
   onClose,
-  onSave
+  onSave, acceptedLineIds = [], saveError,
 }: {
   selectedLocation: Location;
   profile: Profile;
   type: "income" | "expense";
-  transaction: IncomeExpense | null;
+  transaction: IncomeExpense | null; acceptedLineIds?: readonly string[]; saveError?: string | null;
   nextNumber: string;
   nextLocalSequence: number;
   nonCurrentDateRequiresApproval?: boolean;
@@ -286,7 +286,7 @@ export function IncomeExpenseModal({
 
     const saved = await onSave(
       filledLines.map((line, index) => {
-        const clientTempId = index === 0 && transaction ? transaction.clientTempId : makeClientTempId("cash");
+        const clientTempId = index === 0 && transaction ? transaction.clientTempId : transaction ? line.id : makeClientTempId("cash");
         const clientRecordedAt = index === 0 && transaction ? transaction.clientRecordedAt : makeClientRecordedAt();
         const localBillNo = index === 0 && transaction
           ? transaction.localBillNo
@@ -381,7 +381,7 @@ export function IncomeExpenseModal({
               label="วันที่"
               name="txDate"
               type="date"
-              value={txDate}
+              value={txDate} readOnly={acceptedLineIds.length > 0}
               onChange={(event) => setTxDate(event.target.value)}
               required
             />
@@ -452,7 +452,7 @@ export function IncomeExpenseModal({
                 </tr>
               </thead>
               <tbody>
-                {lines.map((line, index) => (
+                {lines.map((line, index) => acceptedLineIds.includes(line.id) ? <tr key={line.id}><td colSpan={3} className="px-2 py-3 text-pretty text-sm text-ink/70">{line.title} — รับรายการไว้แล้ว</td></tr> : (
                   <tr key={line.id} className="border-b border-black/10">
                     <td className="px-2 py-2">
                       {billOption === "บิลขาย" ? (
@@ -556,7 +556,7 @@ export function IncomeExpenseModal({
           </div>
         </section>
 
-        {/* Sync status indicator */}
+        {saveError && <p role="alert" className="px-3 py-2 text-pretty text-sm text-red-700">{saveError}</p>}
         {transaction && (
           <section className="p-3 sm:p-4">
             <div className="flex items-center gap-3">

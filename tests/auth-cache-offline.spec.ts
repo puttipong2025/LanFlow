@@ -206,7 +206,7 @@ test(`SMS revocation on reconnect preserves a pending queue${downgrade ? ' after
     await context.setOffline(true);
     const marker = crypto.randomUUID();
     await page.evaluate(({ marker, owner, location }) => new Promise<void>((resolve, reject) => {
-      const opened = indexedDB.open('lanflow_sync_db', 5);
+      const opened = indexedDB.open('lanflow_sync_db');
       opened.onerror = () => reject(opened.error);
       opened.onsuccess = () => {
         const db = opened.result;
@@ -236,7 +236,7 @@ test(`SMS revocation on reconnect preserves a pending queue${downgrade ? ' after
       expect((await page.request.get('/api/lanflow/dashboard')).status()).toBe(403);
     }
     const queued = await page.evaluate(marker => new Promise<Array<{ status: string; ownerUserId: string; locationId: string }>>((resolve, reject) => {
-      const opened = indexedDB.open('lanflow_sync_db', 5);
+      const opened = indexedDB.open('lanflow_sync_db');
       opened.onerror = () => reject(opened.error);
       opened.onsuccess = () => {
         const db = opened.result;

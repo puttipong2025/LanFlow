@@ -267,7 +267,7 @@ test("Stock sync waits for reads and offers read-only recovery at 360px", async 
   expect(locationId).toBeTruthy();
   await page.evaluate(async ({ ownerUserId, locationId }) => {
     await new Promise<void>((resolve, reject) => {
-      const open = indexedDB.open("lanflow_sync_db", 5);
+      const open = indexedDB.open("lanflow_sync_db");
       open.onerror = () => reject(open.error);
       open.onsuccess = () => {
         const db = open.result;

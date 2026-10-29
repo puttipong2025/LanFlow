@@ -1,9 +1,10 @@
 export const SYNC_QUEUE_STORE = "sync_queue";
 export const RUBBER_BILL_RECEIPT_STORE = "rubber_bill_receipts";
 export const RUBBER_BILL_RECEIPT_TOMBSTONE_STORE = "rubber_bill_receipt_tombstones";
+export const INCOME_EXPENSE_OUTCOME_STORE = "income_expense_outcomes";
 
 const DB_NAME = "lanflow_sync_db";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const LEGACY_QUEUE_ERROR = "รายการออฟไลน์นี้สร้างก่อนอัปเกรดและไม่มีข้อมูลผู้ใช้ จึงหยุดซิงก์เพื่อความปลอดภัย";
 
 type LegacyQueuedEvent = {
@@ -21,10 +22,20 @@ export function getSyncDb(): Promise<IDBDatabase> {
       return;
     }
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    let blocked = false;
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    request.onblocked = () => { blocked = true; reject(new Error("กรุณาปิดแท็บ LanFlow เก่าแล้วลองอีกครั้ง")); };
+    request.onsuccess = () => {
+      if (blocked) { request.result.close(); return; }
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
     request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
       const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(INCOME_EXPENSE_OUTCOME_STORE)) {
+        const outcomes = db.createObjectStore(INCOME_EXPENSE_OUTCOME_STORE, { keyPath: "commandId" });
+        outcomes.createIndex("ownerUserId", "ownerUserId");
+      }
       if (!db.objectStoreNames.contains(SYNC_QUEUE_STORE)) {
         const store = db.createObjectStore(SYNC_QUEUE_STORE, { keyPath: "queueId", autoIncrement: true });
         store.createIndex("entity", "entity", { unique: false });

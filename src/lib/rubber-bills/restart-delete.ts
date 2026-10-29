@@ -4,6 +4,7 @@ import { prepareRubberBillCommand } from "./command";
 import { sendRubberBillCommand, probeDeletedRubberCommand } from "./sync-request";
 import { isConfirmedRubberSyncResult } from "./sync-result";
 import { recordRubberSyncFailure } from "./sync-failure";
+import { isCentralRubberEvent } from "./central-sync";
 
 // Explicit user intent only. Never called by the background coordinator.
 export async function restartRubberDelete(ownerUserId: string, locationId: string, clientTempId: string) {
@@ -14,6 +15,7 @@ export async function restartRubberDelete(ownerUserId: string, locationId: strin
     throw new Error("มีคำสั่งอื่นค้างอยู่ กรุณาตรวจรายการก่อนเริ่มใหม่");
   }
   const event = events[0];
+  if (isCentralRubberEvent(event)) throw new Error("กรุณาตรวจผลคำสั่งในคิวซิงก์กลางก่อนเริ่มคำขอลบใหม่");
   const deleted = await probeDeletedRubberCommand(event);
   if (deleted) {
     if (!await acknowledgeRubberCommand(event, await deleted.json())) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล");

@@ -13,11 +13,11 @@ export class ApiResponseError extends Error {
   }
 }
 
-export async function authFetch(url: string, init?: RequestInit): Promise<Response> {
+export async function authFetch(url: string, init?: RequestInit, options?: { background?: boolean }): Promise<Response> {
   const response = await abortableFetch(url, {
     ...init,
     credentials: "same-origin"
-  });
+  }, !options?.background);
   if (response.status === 401 && typeof window !== "undefined") {
     const body = await response.clone().json().catch(() => ({}));
     if (["OTP_REQUIRED", "SESSION_REVOKED", "PASSWORD_REQUIRED"].includes(body?.errorCode)) {
@@ -53,9 +53,9 @@ export async function assertApiResponse(response: Response): Promise<void> {
 }
 
 /** Revalidate before touching a persisted queue, including on reconnect. */
-export async function canSyncCurrentSession(ownerUserId: string, locationId?: string): Promise<boolean> {
+export async function canSyncCurrentSession(ownerUserId: string, locationId?: string, options?: { background?: boolean }): Promise<boolean> {
   try {
-    const response = await authFetch("/api/auth/me", { cache: "no-store" });
+    const response = await authFetch("/api/auth/me", { cache: "no-store", signal: AbortSignal.timeout(8_000) }, options);
     if (!response.ok) return false;
     const data = await response.json();
     return data.profile?.id === ownerUserId && ["admin", "super_admin"].includes(data.profile?.role)

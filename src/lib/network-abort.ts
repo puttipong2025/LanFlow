@@ -20,6 +20,7 @@ export function abortNetworkRequests() {
 export async function abortableFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
+  trackServiceHealth = true,
 ) {
   const controller = new AbortController();
   const sourceSignal = init.signal;
@@ -41,7 +42,7 @@ export async function abortableFetch(
 
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
-    recordServiceResponse(input, response.status);
+    if (trackServiceHealth) recordServiceResponse(input, response.status);
     if (
       !response.body
       || response.status === 204
@@ -67,7 +68,7 @@ export async function abortableFetch(
         } catch (error) {
           release();
           if (isDeviceOnline() && !isNetworkCancellation(error)) {
-            recordServiceFailure(input);
+            if (trackServiceHealth) recordServiceFailure(input);
           }
           streamController.error(error);
         }
@@ -95,7 +96,7 @@ export async function abortableFetch(
   } catch (error) {
     release();
     if (isDeviceOnline() && !isNetworkCancellation(error)) {
-      recordServiceFailure(input);
+      if (trackServiceHealth) recordServiceFailure(input);
     }
     throw error;
   }

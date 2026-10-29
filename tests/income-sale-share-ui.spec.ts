@@ -1,5 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { expect, test } from "@playwright/test";
+import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
+test.beforeEach(async ({ page }) => installThresholdAlertHandler(page));
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -35,7 +37,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
   await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
-  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "ออกจากระบบ", exact: true }).first()).toBeVisible({ timeout: 30_000 });
 
   const meResponse = await page.request.get("/api/auth/me");
   expect(meResponse.ok()).toBeTruthy();
