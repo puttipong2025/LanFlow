@@ -9,6 +9,14 @@ import { bangkokDateString } from "../src/lib/bangkok-date";
 import { resolveRubberBillReceiptForPrint } from "../src/components/rubber-bills/bill-display";
 
 const owner = "ad000000-0000-4000-8000-000000000001", branch = "ad000000-0000-4000-8000-000000000002";
+
+test("deferred deletion preserves the revision confirmed by the user", async () => {
+  const command = loadSourceModule<typeof import("../src/lib/rubber-bills/command")>("src/lib/rubber-bills/command.ts", {
+    "@/lib/auth-fetch": { authFetch: async () => Response.json({ generation: 1, queueVersion: 1, revisionNo: 99 }), assertApiResponse: async () => {} },
+  }, { navigator: { onLine: true } });
+  const prepared = await command.prepareRubberBillCommand({ operation: "delete", locationId: branch, clientTempId: "local", expectedRevisionNo: 1 }, owner, { completingLocal: true });
+  expect(prepared).toMatchObject({ expectedRevisionNo: 1 });
+});
 const settings: EffectiveRubberApprovalSettings = { locationId: branch, centralPrice: 40, priceAllowance: 0,
   effectivePriceCap: 40, editWindowMinutes: 60, priceRuleRevision: 1, nonCurrentDateRequiresApproval: true, groupId: null, ruleSource: "ungrouped" };
 function bill(update = false): RubberBill {
@@ -45,7 +53,7 @@ test("the edited receipt is immutable, uses local reference and cannot reuse an 
   expect(receipt.approvalLabel).not.toContain("Old approver"); expect(receipt.weighItems[0].price).toBe(30);
 });
 
-for (const update of [false, true]) test(`${update ? "update" : "create"} with eligible policy accepts before any context GET or POST`, async () => {
+for (const scenario of ["create", "update", "approval_update", "delete"] as const) test(`${scenario} accepts locally before any context GET or POST`, async () => {
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: new IDBFactory() });
   Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
   let requests = 0;
@@ -54,9 +62,14 @@ for (const update of [false, true]) test(`${update ? "update" : "create"} with e
     "@/lib/idb-queue": queue,
     "@/lib/auth-fetch": { authFetch: async () => { requests++; return new Promise(() => {}); }, assertApiResponse: async () => {} },
   }, { navigator: { onLine: true } });
-  const mutations = hook.useRubberBillMutations(branch, owner, settings);
-  const saved = await (update ? mutations.updateBill(bill(true)) : mutations.addBill(bill()));
-  expect(requests).toBe(0); expect(saved.immediatePdfBill?.localBillNo).toBe("LOCAL-PDF");
+  const mutations = hook.useRubberBillMutations(branch, owner, scenario === "approval_update" ? { ...settings, effectivePriceCap: 1 } : settings);
+  if (scenario === "delete") await mutations.deleteBill({ bill: bill(true), deletedByName: "Operator", deletedByPhone: "000" });
+  else {
+    const saved = await (scenario !== "create" ? mutations.updateBill(bill(true)) : mutations.addBill(bill()));
+    if (scenario === "approval_update") expect(saved.immediatePdfBill).toBeNull();
+    else expect(saved.immediatePdfBill?.localBillNo).toBe("LOCAL-PDF");
+  }
+  expect(requests).toBe(0);
   const [event] = await queue.getPendingEvents({ entity: "rubber_bills", ownerUserId: owner, locationId: branch });
   expect(event.payload.localContextPending).toBe(true); expect(event.serverSubmissionAttempted).toBe(false);
 });

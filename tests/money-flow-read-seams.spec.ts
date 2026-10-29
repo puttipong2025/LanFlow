@@ -64,7 +64,7 @@ test("Rubber online local merge reapplies the active search", () => {
   )?.[0] ?? "";
 
   expect(onlineMergePath).toContain(
-    ".filter((bill) => matchesSearch(bill, normalizedSearch))"
+    ".filter((bill) => matchesRubberBillSearch(bill, normalizedSearch))"
   );
 });
 

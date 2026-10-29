@@ -1,5 +1,16 @@
 # Rubber background edit/delete contract
 
+2026-10-30 successor: pending edits now expose a compact proposed summary for
+table presentation while authoritative values remain unchanged. Local-state reads
+update the currently loaded list without awaiting its Server feed. Pending approval
+has an explicit edit/delete guard. The pending-update summary survives command
+acknowledgement/reload through the existing branch feed; forward migration
+`20261030010000_rubber_pending_update_display_summary.sql` is required. Deletes
+retain the user-confirmed revision during deferred preparation. See
+[verification ledger](rubber-immediate-feedback-verification.md) for current gates.
+The older Server-value-only presentation and mandatory context-wait descriptions
+below are historical; their authorization and terminal cleanup rules still apply.
+
 Local successor (2026-10-29): [central queue contract](rubber-central-queue-contract.md) / [ADR-0086](adr/0086-server-processed-rubber-command-queue.md) applies to newly marked `centralQueue` commands, including creates and manager decisions. The selected-branch browser replay below remains the legacy compatibility path. See the [verification ledger](rubber-central-queue-verification.md) for Local evidence and deployment limits.
 
 PDF timing successor: [ADR 0087](adr/0087-immediate-local-rubber-receipt.md)

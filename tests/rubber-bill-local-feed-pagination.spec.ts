@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { QueryClient } from "@tanstack/react-query";
+import { preserveRubberApprovalInCache } from "../src/lib/rubber-bills/feed-cache";
 
 import { coalesceQueueGroup } from "../src/lib/coalesceQueueGroup";
 import type { SyncEvent } from "../src/lib/idb-queue";
@@ -52,6 +54,52 @@ function serverBill() {
   };
 }
 
+test("pending background edit carries proposed table values without replacing authoritative identity", () => {
+  const event = syncEvent("update", "pending");
+  event.payload.background = true;
+  event.payload.customerName = "Proposed customer";
+  const server = serverBill();
+  const [merged] = mergeRubberBillLocalEvents([server], [event], ownerUserId);
+  expect(merged.approvalProposedSummary?.customerName).toBe("Proposed customer");
+  expect(merged.customerName).toBe(server.customerName);
+  expect(merged.revisionNo).toBe(server.revisionNo);
+  expect(merged.serverCreatedAt).toBe(server.serverCreatedAt);
+});
+
+test("stale local overlay cannot replace newer Server revision or approval proposal values", () => {
+  const event = syncEvent("update", "pending"); event.payload.background = true;
+  event.payload.customerName = "Old local proposal";
+  const newer = { ...serverBill(), revisionNo: 2, customerName: "Committed customer" };
+  const [committed] = mergeRubberBillLocalEvents([newer], [event], ownerUserId);
+  expect(committed.approvalProposedSummary).toBeUndefined();
+  expect(committed.customerName).toBe("Committed customer");
+  expect(getPendingServerActionBlockReason(committed)).not.toBeNull();
+  const summary = { customerName: "Current pending proposal", billDate: "2026-10-30", billType: "weighing",
+    netWeight: 1, averagePrice: 1, netRubberValue: 1, deductionTotal: 0, netTotal: 1 };
+  const pending = { ...serverBill(), approvalPending: true, approvalRequestId: "new-request", approvalProposedSummary: summary };
+  const [merged] = mergeRubberBillLocalEvents([pending], [event], ownerUserId);
+  expect(merged.approvalProposedSummary).toEqual(summary);
+  expect(merged.approvalRequestId).toBe("new-request");
+});
+
+test("approval handoff preserves proposed values and action lock before the local event is acknowledged", async () => {
+  const client = new QueryClient();
+  const event = syncEvent("update", "pending"); event.payload.background = true;
+  event.payload.customerName = "Pending proposal";
+  const key = ["rubberBillOperationalFeed", ownerUserId, locationId, "latest"];
+  const data = { pages: [{ bills: [serverBill()], evidenceStates: [], hasMore: false, nextCursor: null }], pageParams: [null] };
+  client.setQueryData(key, data);
+  const otherKey = ["rubberBillOperationalFeed", "other-owner", locationId, "latest"];
+  client.setQueryData(otherKey, data);
+  await preserveRubberApprovalInCache(client, event, "request-1");
+  const saved = client.getQueryData<typeof data>(key)!.pages[0].bills[0];
+  expect(saved).toMatchObject({ approvalPending: true, approvalOperation: "update", approvalRequestId: "request-1", revisionNo: 1 });
+  expect(saved.approvalProposedSummary?.customerName).toBe("Pending proposal");
+  expect(saved.customerName).toBe(serverBill().customerName);
+  expect(client.getQueryData(otherKey)).toEqual(data);
+  client.clear();
+});
+
 test("a local replacement is included once when its server bill arrives on a later page", () => {
   const event = syncEvent("update", "pending");
   const firstPage = mergeRubberBillLocalEvents([], [event], ownerUserId);
@@ -61,6 +109,37 @@ test("a local replacement is included once when its server bill arrives on a lat
   expect(bills).toHaveLength(1);
   expect(bills[0].clientTempId).toBe(clientTempId);
   expect(bills[0].syncStatus).toBe("pending");
+});
+
+test("late approval receipt cannot overwrite a newer authoritative revision or another pending request", async () => {
+  const client = new QueryClient();
+  const event = syncEvent("update", "pending"); event.payload.background = true;
+  for (const current of [
+    { ...serverBill(), revisionNo: 2 },
+    { ...serverBill(), approvalPending: true, approvalRequestId: "new-request" },
+  ]) {
+    const key = ["rubberBillOperationalFeed", ownerUserId, locationId, "latest"];
+    const data = { pages: [{ bills: [current], evidenceStates: [], hasMore: false, nextCursor: null }], pageParams: [null] };
+    client.setQueryData(key, data);
+    await preserveRubberApprovalInCache(client, event, "old-request");
+    expect(client.getQueryData(key)).toEqual(data);
+  }
+  client.clear();
+});
+
+test("create approval handoff never inserts rows into unrelated cached pages", async () => {
+  const client = new QueryClient();
+  const event = syncEvent("create", "pending"); event.payload.background = true;
+  const key = ["rubberBillOperationalFeed", ownerUserId, locationId, "latest", "any", "other-customer"];
+  const data = { pages: [{ bills: [], evidenceStates: [], hasMore: false, nextCursor: null }], pageParams: [null] };
+  client.setQueryData(key, data);
+  await preserveRubberApprovalInCache(client, event, "request-1");
+  expect(client.getQueryData(key)).toEqual(data);
+  const confirmed = { ...data, pages: [{ ...data.pages[0], bills: [serverBill()] }] };
+  client.setQueryData(key, confirmed);
+  await preserveRubberApprovalInCache(client, event, "request-1");
+  expect(client.getQueryData(key)).toEqual(confirmed);
+  client.clear();
 });
 
 test("a failed delete does not hide the unchanged server bill from a later page", () => {

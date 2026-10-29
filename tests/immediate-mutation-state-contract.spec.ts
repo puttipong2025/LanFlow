@@ -418,7 +418,7 @@ test.describe("immediate mutation state contract", () => {
     const source = readSource("src/hooks/useRubberBills.ts");
 
     expect(source).toContain(
-      'serverSubmissionAttempted: directSubmissionScope !== null',
+      'serverSubmissionAttempted: false',
     );
     expect(source).toContain(
       'if (event.serverSubmissionAttempted !== true)',

@@ -137,6 +137,12 @@ export function mergeRubberBillLocalEvents(
     if (event.payload.background && event.operation !== "create") {
       const draft = rubberBillFromSyncEvent(event, ownerUserId);
       if (serverBill) byClientId.set(event.id, { ...serverBill, syncStatus: draft!.syncStatus,
+        approvalProposedSummary: event.operation === "update" && event.status === "pending"
+          && !serverBill.approvalPending && serverBill.revisionNo === event.payload.expectedRevisionNo ? {
+          customerName: draft!.customerName, billDate: draft!.billDate, billType: draft!.billType,
+          netWeight: draft!.netWeight, averagePrice: draft!.price, netRubberValue: draft!.rubberValue,
+          deductionTotal: draft!.deductionTotal, netTotal: draft!.netTotal,
+        } : serverBill.approvalPending ? serverBill.approvalProposedSummary : undefined,
         syncErrorMessage: event.status === "pending" ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") : event.errorMessage,
         serverSubmissionAttempted: event.status === "pending" || event.serverSubmissionAttempted,
         canCorrectSyncFailure: draft!.canCorrectSyncFailure, canRestartDelete: draft!.canRestartDelete,

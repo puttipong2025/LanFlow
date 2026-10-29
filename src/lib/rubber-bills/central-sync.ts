@@ -10,6 +10,7 @@ import { prepareRubberBillCommand } from "./command";
 import { notifyRubberBackgroundFailure, notifyRubberManagerOutcome } from "./background-notifications";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
+import { preserveRubberApprovalInCache } from "./feed-cache";
 
 export const RUBBER_QUEUE_ENDPOINT = "/api/lanflow/rubber-bills/queue";
 const flight = createScopedSingleFlight();
@@ -136,6 +137,7 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
               : isConfirmedRubberSyncResult(row.result, event);
             const managerRetired = manager && row.result.status === "discarded" && row.result.commandId === event.payload.commandId
               && row.result.operation === manager && row.result.clientTempId === event.id;
+            if (confirmed && !manager && row.result.status === "pending_approval") await preserveRubberApprovalInCache(queryClient, event, String(row.result.requestId));
             if ((confirmed || managerRetired) && await acknowledgeRubberCommand(event, row.result)) {
               if (manager) notifyRubberManagerOutcome(event, managerRetired ? rubberQueueMessage(row)
                 : manager === "approve" ? "อนุมัติคำขอแล้ว" : "ลบคำขอแล้ว", !managerRetired);

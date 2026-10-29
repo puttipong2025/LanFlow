@@ -101,6 +101,7 @@ export function RubberBillsTable({
           </thead>
           <tbody>
             {visibleBills.map((bill) => {
+              const proposal = bill.approvalProposedSummary;
               const actionBlockReason = getActionBlockReason?.(bill) ?? null;
               const deleting = deletingBillId === bill.id;
               const hasSyncProblem = bill.syncStatus === "failed" || bill.syncStatus === "conflict";
@@ -221,7 +222,7 @@ export function RubberBillsTable({
                 </td>
                 <td>
                   <div className="flex flex-col items-start gap-1">
-                    <span>{bill.customerName}</span>
+                    <span>{proposal?.customerName ?? bill.customerName}</span>
                     {bill.sourceRubberExportId && (
                       <>
                         <span className="rounded-full bg-mint px-2 py-0.5 text-xs font-bold text-ink">รับจากสาขา</span>
@@ -249,7 +250,7 @@ export function RubberBillsTable({
                           return "พ้นเวลาที่กำหนด";
                         }).join(", ")}
                       >
-                        รออนุมัติ{bill.approvalOperation === "create" ? "สร้างบิล" : ""}
+                        รออนุมัติ{bill.approvalOperation === "create" ? "สร้างบิล" : bill.approvalOperation === "delete" ? "ลบ" : "แก้ไข"}
                         {bill.approvalReasons?.length
                           ? ` · ${bill.approvalReasons.map((reason) => {
                             if (reason === "price") return "ราคา";
@@ -271,15 +272,15 @@ export function RubberBillsTable({
                     )}
                   </div>
                 </td>
-                <td>{bill.billDate}</td>
+                <td>{proposal?.billDate ?? bill.billDate}</td>
                 <td>{formatBillTimestamp(bill.clientCreatedAt)}</td>
                 <td>{bill.createdByName?.trim() || "ไม่ระบุ"}</td>
-                <td>{bill.billType}</td>
-                <td>{formatNumber(bill.netWeight)}</td>
-                <td>{formatNumber(bill.rubberValue)}</td>
-                <td>{formatNumber(bill.price)}</td>
-                <td>{formatNumber(bill.deductionTotal)}</td>
-                <td>{formatNumber(bill.netTotal)}</td>
+                <td>{proposal?.billType ?? bill.billType}</td>
+                <td className="tabular-nums">{formatNumber(proposal?.netWeight ?? bill.netWeight)}</td>
+                <td className="tabular-nums">{formatNumber(proposal?.netRubberValue ?? bill.rubberValue)}</td>
+                <td className="tabular-nums">{formatNumber(proposal?.averagePrice ?? bill.price)}</td>
+                <td className="tabular-nums">{formatNumber(proposal?.deductionTotal ?? bill.deductionTotal)}</td>
+                <td className="tabular-nums">{formatNumber(proposal?.netTotal ?? bill.netTotal)}</td>
                 <td>
                   {evidenceState ? (
                     <span className={cn("rounded-full px-2 py-1 text-xs font-bold", evidenceStatusClass[evidenceState.reviewStatus])}>

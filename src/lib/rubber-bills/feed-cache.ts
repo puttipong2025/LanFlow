@@ -6,6 +6,24 @@ import {
   tombstoneRubberBillReceiptSnapshotsByClientTempId,
 } from "@/lib/idb-queue";
 import type { RubberBill } from "@/types";
+import type { SyncEvent } from "@/lib/idb-queue";
+import { mergeRubberBillLocalEvents } from "./local-feed";
+
+export async function preserveRubberApprovalInCache(queryClient: QueryClient, event: SyncEvent, requestId: string) {
+  const queryKey = [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), event.ownerUserId, event.locationId];
+  await queryClient.cancelQueries({ queryKey });
+  queryClient.setQueriesData<InfiniteData<RubberBillOperationalFeedPage>>({ queryKey }, cached => cached ? {
+    ...cached, pages: cached.pages.map(page => ({ ...page, bills: page.bills.map(bill => {
+      if (bill.clientTempId !== event.id
+        || (event.operation === "create" && Boolean(bill.serverBillNo))
+        || (event.operation !== "create" && bill.revisionNo !== event.payload.expectedRevisionNo)
+        || (bill.approvalPending && bill.approvalRequestId && bill.approvalRequestId !== requestId)) return bill;
+      const [merged] = mergeRubberBillLocalEvents([bill], [event], event.ownerUserId);
+      return { ...merged, syncStatus: "synced" as const, serverSubmissionAttempted: false,
+        approvalPending: true, approvalOperation: event.operation, approvalRequestId: requestId };
+    }) })),
+  } : cached);
+}
 
 type RubberBillEvidenceState = { billId: string };
 

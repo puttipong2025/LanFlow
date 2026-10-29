@@ -187,7 +187,7 @@ export function useRubberBillMutations(
       const immediatePdfBill = immediateRubberReceipt(calculatedBill, mutationApprovalSettings);
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
-      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true, expectedServerId: bill.id } : {}) }, ownerUserId, { deferContext: immediatePdfBill !== null });
+      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true, expectedServerId: bill.id } : {}) }, ownerUserId, { deferContext: operation === "update" || immediatePdfBill !== null });
       const centralQueue = "centralQueue" in payload && payload.centralQueue === true;
       if (clientEvents.some((event) => event.serverSubmissionAttempted === true)) {
         throw new Error(PENDING_SERVER_ACTION_MESSAGE);
@@ -393,7 +393,7 @@ export function useRubberBillMutations(
         ...calculatedPayload, background: true, expectedServerId: bill.id,
         expectedRevisionNo: targetRev,
         idempotencyKey: `delete:${clientTempId}:${targetRev}`
-      }, ownerUserId);
+      }, ownerUserId, { deferContext: true });
 
       const event: Omit<SyncEvent, "queueId"> = {
         id: clientTempId,
@@ -401,7 +401,7 @@ export function useRubberBillMutations(
         ownerUserId,
         locationId: mutationLocationId,
         operation: "delete",
-        serverSubmissionAttempted: directSubmissionScope !== null,
+        serverSubmissionAttempted: false,
         serverId: bill.id,
         serverBillNo: bill.serverBillNo,
         payload,
@@ -431,10 +431,7 @@ export function useRubberBillMutations(
         if (directSubmissionScope) endDirectSubmission(directSubmissionScope);
       }
     },
-    onSuccess: async (data, variables) => {
-      if (data.approvalPending) {
-        toast.success("ส่งคำขออนุมัติลบบิลยางแล้ว");
-      }
+    onSuccess: async (_data, variables) => {
       const mutationLocationId = variables?.bill.locationId || locationId;
       void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId: mutationLocationId });
       void syncPendingRubberBills(queryClient, ownerUserId, mutationLocationId);
@@ -469,6 +466,7 @@ export function useRubberBillMutations(
   }
 
   return {
+    pendingBillClientId: saveBillMutation.isPending ? saveBillMutation.variables?.bill.clientTempId : deleteBillMutation.isPending ? deleteBillMutation.variables?.bill.clientTempId : undefined,
     addBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill, approvalSettings: approvalSettings ?? null }),
     updateBill: (bill: RubberBill) => saveBillMutation.mutateAsync({ bill, approvalSettings: approvalSettings ?? null }),
     deleteBill: deleteBillMutation.mutateAsync,

@@ -39,10 +39,11 @@ async function localState(ownerUserId: string, locationId: string) {
   return { events, snapshots };
 }
 
-function matchesSearch(bill: RubberBill, search: string) {
+export function matchesRubberBillSearch(bill: RubberBill, search: string) {
   if (!search) return true;
   return [bill.billNo, bill.localBillNo, bill.serverBillNo, bill.billDate, bill.customerName,
-    bill.billType, bill.createdByName, bill.createdByPhone].join(" ").toLocaleLowerCase("th-TH").includes(search);
+    bill.billType, bill.createdByName, bill.createdByPhone, bill.approvalProposedSummary?.customerName,
+    bill.approvalProposedSummary?.billDate, bill.approvalProposedSummary?.billType].join(" ").toLocaleLowerCase("th-TH").includes(search.trim().toLocaleLowerCase("th-TH"));
 }
 
 function matchesMode(bill: RubberBill, mode: RubberBillListMode) {
@@ -104,6 +105,11 @@ export function useRubberBillList({
   search: string;
 }) {
   const normalizedSearch = search.trim().toLocaleLowerCase("th-TH");
+  const localQuery = useQuery({
+    queryKey: ["rubberBillLocalState", ownerUserId, locationId],
+    enabled: Boolean(ownerUserId && locationId), networkMode: "always",
+    queryFn: async () => ({ events: await getPendingEvents({ entity: "rubber_bills", ownerUserId, locationId }) }), staleTime: 0,
+  });
   const queryMode = mode === "sync_problem" ? "latest" : mode;
   const query = useInfiniteQuery({
     queryKey: moneyFlowQueryKeys.rubberBillOperationalFeed(
@@ -123,17 +129,17 @@ export function useRubberBillList({
           .sort((a, b) => b.timestamp - a.timestamp || b.id.localeCompare(a.id))
           .map((event) => rubberBillFromSyncEvent(event, ownerUserId))
           .filter((bill): bill is RubberBill => bill !== null)
-          .filter((bill) => matchesSearch(bill, normalizedSearch));
+          .filter((bill) => matchesRubberBillSearch(bill, normalizedSearch));
         return { bills, evidenceStates: [], nextCursor: null, hasMore: false };
       }
-      const { events, snapshots } = await localState(ownerUserId, locationId);
-      const normalEvents = events.filter((event) => event.status === "pending" || event.payload.background === true);
       if (typeof navigator !== "undefined" && !navigator.onLine) {
+        const { events, snapshots } = await localState(ownerUserId, locationId);
+        const normalEvents = events.filter((event) => event.status === "pending" || event.payload.background === true);
         const cached = snapshots.map((snapshot) => snapshot.bill);
         const merged = mergeRubberBillLocalEvents(cached, normalEvents, ownerUserId)
           .filter((bill) => matchesMode(bill, mode))
           .filter((bill) => matchesDocumentStatus(bill, documentStatus))
-          .filter((bill) => matchesSearch(bill, normalizedSearch));
+          .filter((bill) => matchesRubberBillSearch(bill, normalizedSearch));
         return {
           bills: sortBills(merged, mode),
           evidenceStates: [], nextCursor: null, hasMore: false,
@@ -162,9 +168,11 @@ export function useRubberBillList({
       // Approval rows can include transient proposed values and must not replace
       // the current-revision receipt snapshot used by offline printing.
       if (mode !== "pending_approval") await persistReceiptSnapshots(serverBills, signal);
+      const currentEvents = (await getPendingEvents({ entity: "rubber_bills", ownerUserId, locationId }))
+        .filter(event => event.status === "pending" || event.payload.background === true);
       const localEvents = documentStatus === "editable"
-        ? scopeRubberBillLocalEventsToServerRows(serverBills, normalEvents, pageParam === null)
-        : normalEvents;
+        ? scopeRubberBillLocalEventsToServerRows(serverBills, currentEvents, pageParam === null)
+        : currentEvents;
       const merged = mergeRubberBillLocalEvents(
         serverBills,
         localEvents,
@@ -181,7 +189,7 @@ export function useRubberBillList({
       )
         .filter((bill) => matchesMode(bill, mode))
         .filter((bill) => matchesDocumentStatus(bill, documentStatus))
-        .filter((bill) => matchesSearch(bill, normalizedSearch));
+        .filter((bill) => matchesRubberBillSearch(bill, normalizedSearch));
       return {
         bills: sortBills(merged, mode),
         evidenceStates: (payload.evidenceStates ?? []).map(mapRubberBillEvidenceState),
@@ -194,7 +202,11 @@ export function useRubberBillList({
     staleTime: 30_000,
   });
 
-  const bills = query.data?.pages.flatMap((page) => page.bills) ?? [];
+  const cachedBills = query.data?.pages.flatMap((page) => page.bills) ?? [];
+  const localEvents = localQuery.data?.events.filter(event => event.status === "pending" || event.payload.background) ?? [];
+  const bills = mode === "sync_problem" ? cachedBills : sortBills(mergeRubberBillLocalEvents(cachedBills,
+    documentStatus === "editable" ? scopeRubberBillLocalEventsToServerRows(cachedBills, localEvents, true) : localEvents, ownerUserId)
+    .filter(bill => matchesMode(bill, mode) && matchesDocumentStatus(bill, documentStatus) && matchesRubberBillSearch(bill, normalizedSearch)), mode);
   const evidenceStates = query.data?.pages.flatMap((page) => page.evidenceStates) ?? [];
   return {
     bills,

@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useRubberBillMutations } from "@/hooks/useRubberBills";
 import {
   useRubberBillList,
+  matchesRubberBillSearch,
   useRubberBillWorkCounts,
   type RubberBillDocumentStatus,
   type RubberBillListMode,
@@ -86,7 +87,7 @@ export function RubberBillsModule({
     locationId: selectedLocation.id,
     ownerUserId: profile.id,
   });
-  const { addBill, updateBill, deleteBill, discardSyncProblem } = useRubberBillMutations(
+  const { addBill, updateBill, deleteBill, discardSyncProblem, pendingBillClientId } = useRubberBillMutations(
     selectedLocation.id,
     profile.id,
     approvalSettings
@@ -191,21 +192,9 @@ export function RubberBillsModule({
 
   const displayedBills = list.bills;
 
-  const filteredBills = displayedBills.filter((bill: RubberBill) => {
-    const haystack = [
-      bill.billNo,
-      bill.localBillNo,
-      bill.serverBillNo,
-      bill.billDate,
-      bill.customerName,
-      bill.billType,
-      bill.createdByName,
-      bill.createdByPhone
-    ].join(" ");
-    return haystack.toLowerCase().includes(search.toLowerCase());
-  });
+  const filteredBills = displayedBills.filter(bill => matchesRubberBillSearch(bill, search));
   function getActionBlockReason(bill: RubberBill) {
-    return (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
+    return (bill.clientTempId === pendingBillClientId ? "กำลังดำเนินการ..." : null) ?? (bill.approvalPending ? "รายการนี้รออนุมัติ จึงยังแก้ไขหรือลบไม่ได้" : null) ?? (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
       ?? getOfflineSyncedActionBlockReason(bill, isOnline)
       ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null)
       ?? getPendingServerActionBlockReason(bill);

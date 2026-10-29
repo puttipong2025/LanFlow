@@ -26,7 +26,7 @@ export async function prepareRubberBillCommand(payload: Record<string, any>, act
     if (!options.completingLocal && payload.operation === "update" && context.revisionNo !== payload.expectedRevisionNo) {
       throw new Error("บิลถูกแก้ไขแล้ว กรุณาเปิดข้อมูลล่าสุดก่อนส่งใหม่");
     }
-    if (payload.operation === "delete") payload = { ...payload, expectedRevisionNo: context.revisionNo };
+    if (payload.operation === "delete" && !options.completingLocal && context.revisionNo !== payload.expectedRevisionNo) throw new Error("บิลถูกแก้ไขแล้ว กรุณาเปิดข้อมูลล่าสุดก่อนลบ");
     generation = context.generation;
     if (context.queueVersion !== undefined && (!Number.isSafeInteger(context.queueVersion) || context.queueVersion < 0)) {
       throw new Error("ตรวจสถานะคิวกลางไม่สำเร็จ กรุณาลองใหม่");

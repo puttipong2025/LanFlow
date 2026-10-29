@@ -21463,7 +21463,7 @@ begin
         'approval_operation', req.operation,
         'approval_reasons', req.matched_reasons,
         'approval_requested_by_name', case when p_mode = 'pending_approval' then req.requested_by_name else null end,
-        'approval_proposed_summary', case when req.id is null or p_mode <> 'pending_approval' then null else jsonb_build_object(
+        'approval_proposed_summary', case when req.id is null or (p_mode <> 'pending_approval' and req.operation <> 'update') then null else jsonb_build_object(
           'customerName', case when req.operation='delete' then b.customer_name else req.proposed_payload->>'customerName' end,
           'billDate', case when req.operation='delete' then b.bill_date::text else req.proposed_payload->>'billDate' end,
           'billType', case when req.operation='delete' then b.bill_type else req.proposed_payload->>'billType' end,
@@ -21508,7 +21508,10 @@ begin
       )
       and (v_search = '' or position(v_search in lower(concat_ws(' ',
         b.bill_no, b.local_bill_no, b.server_bill_no, b.bill_date::text,
-        b.customer_name, b.bill_type, b.created_by_name, b.created_by_phone
+        b.customer_name, b.bill_type, b.created_by_name, b.created_by_phone,
+        case when req.operation = 'update' then req.proposed_payload->>'customerName' end,
+        case when req.operation = 'update' then req.proposed_payload->>'billDate' end,
+        case when req.operation = 'update' then req.proposed_payload->>'billType' end
       ))) > 0)
   ), create_candidates as (
     select

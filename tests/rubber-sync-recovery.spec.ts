@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+
 import { loadSourceModule } from "./helpers/load-source-module";
 import { IDBFactory } from "fake-indexeddb";
 import * as queue from "../src/lib/idb-queue";
@@ -8,6 +9,17 @@ import { isConfirmedRubberSyncResult } from "../src/lib/rubber-bills/sync-result
 import { rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
 import { normalizeRubberBillQueueBeforeSync } from "../src/lib/rubber-bills/normalize-sync-queue";
 import { coalesceQueueGroup } from "../src/lib/coalesceQueueGroup";
+
+test("rubber search finds the proposed customer displayed in the table", () => {
+  const source = loadSourceModule<typeof import("../src/hooks/useRubberBillList")>("src/hooks/useRubberBillList.ts", {});
+  const record = { ...rubberBillFromSyncEvent(command(), "owner")!, customerName: "Original", approvalProposedSummary: {
+    customerName: "Proposed", billDate: "2026-10-30", billType: "weighing", netWeight: 1, averagePrice: 1,
+    netRubberValue: 1, deductionTotal: 0, netTotal: 1,
+  } };
+  expect(source.matchesRubberBillSearch(record, "proposed")).toBe(true);
+  expect(source.matchesRubberBillSearch(record, "Original")).toBe(true);
+  expect(source.matchesRubberBillSearch(record, "absent")).toBe(false);
+});
 
 async function retryWith(response: Response) {
   const event = { id: "local", entity: "rubber_bills", operation: "create", status: "failed", payload: { clientTempId: "local", operation: "create", expectedRevisionNo: 0 } };
@@ -89,12 +101,14 @@ test("coalescing unsent command drafts retains the first command identity and co
   }
 });
 
-test("new delete obtains current revision and a fresh identity once; update does not silently rebase", async () => {
+test("new delete and update reject stale revisions rather than silently rebasing", async () => {
   const module = loadSourceModule<typeof import("../src/lib/rubber-bills/command")>("src/lib/rubber-bills/command.ts", {
     "@/lib/auth-fetch": { authFetch: async () => Response.json({ generation: 8, revisionNo: 4, recordStatus: "active" }), assertApiResponse: async () => {} },
   }, { navigator: { onLine: true } });
   const input = { ...command().payload, operation: "delete", expectedRevisionNo: 3 };
-  const prepared = await module.prepareRubberBillCommand(input);
+  const rejected = await module.prepareRubberBillCommand(input).catch(error => ({ errorMessage: error.message }));
+  expect(rejected).toMatchObject({ errorMessage: "บิลถูกแก้ไขแล้ว กรุณาเปิดข้อมูลล่าสุดก่อนลบ" });
+  const prepared = await module.prepareRubberBillCommand({ ...input, expectedRevisionNo: 4 });
   expect(prepared).toMatchObject({ contractVersion: 2, expectedCommandGeneration: 8, expectedRevisionNo: 4 });
   expect(prepared.commandId).toBe(prepared.idempotencyKey);
   expect(prepared.commandId).not.toBe(input.idempotencyKey);
@@ -354,23 +368,25 @@ for (const status of [401, 408, 425, 429, 500, 503]) {
 
 for (const online of [true, false]) {
   test(`normal feed keeps authoritative values instead of a failed local update (${online ? "online" : "offline"})`, async () => {
+    let snapshotReads = 0;
     const event = command();
     event.status = "failed";
     event.payload.customerName = "unconfirmed local change";
     const server = { ...rubberBillFromSyncEvent(event, "owner")!, customerName: "authoritative", syncStatus: "synced", serverBillNo: "B1" };
     let queryFn: (context: { pageParam: null; signal: AbortSignal }) => Promise<{ bills: { customerName: string }[] }> = async () => ({ bills: [] });
     const hooks = loadSourceModule<typeof import("../src/hooks/useRubberBillList")>("src/hooks/useRubberBillList.ts", {
-      "@tanstack/react-query": { useInfiniteQuery: (options: { queryFn: typeof queryFn }) => { queryFn = options.queryFn; return {}; } },
+      "@tanstack/react-query": { useQuery: () => ({}), useInfiniteQuery: (options: { queryFn: typeof queryFn }) => { queryFn = options.queryFn; return {}; } },
       "@/components/rubber-bills/bill-display": { buildRubberBillReceiptModel: () => ({}) },
       "@/hooks/useRubberBillEvidenceReview": { mapRubberBillEvidenceState: (row: unknown) => row },
       "@/lib/auth-fetch": { authFetch: async () => Response.json({ rows: [server] }), assertApiResponse: async () => {} },
-      "@/lib/idb-queue": { getPendingEvents: async () => [event], getRubberBillReceiptSnapshots: async () => [{ bill: server }], putRubberBillReceiptSnapshots: async () => {}, pruneRubberBillReceiptSnapshots: async () => {} },
+      "@/lib/idb-queue": { getPendingEvents: async () => [event], getRubberBillReceiptSnapshots: async () => { snapshotReads++; return [{ bill: server }]; }, putRubberBillReceiptSnapshots: async () => {}, pruneRubberBillReceiptSnapshots: async () => {} },
       "@/lib/rubber-bills/map-feed-row": { mapRubberBillFeedRow: (row: unknown) => row },
       "@/lib/supabase/client": {},
     }, { navigator: { onLine: online } });
     hooks.useRubberBillList({ ownerUserId: "owner", locationId: "location", mode: "latest", documentStatus: "any", search: "" });
     const result = await queryFn({ pageParam: null, signal: new AbortController().signal });
     expect(result.bills.map((bill) => bill.customerName)).toEqual(["authoritative"]);
+    expect(snapshotReads).toBe(online ? 0 : 1);
   });
 }
 
