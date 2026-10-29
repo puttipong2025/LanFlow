@@ -15,6 +15,44 @@ function readSource(path: string) {
 }
 
 test.describe("immediate mutation state contract", () => {
+  test("rubber approval status reads cannot overlap and restore stale pending state", async () => {
+    const effects: Array<() => (() => void) | void> = [];
+    let tick: (() => void) | undefined;
+    let reads = 0;
+    let release: (() => void) | undefined;
+    const pending = new Promise<never[]>(resolve => { release = () => resolve([]); });
+    const noop = () => null;
+    const module = loadSourceModule<typeof import("../src/components/rubber-bills/RubberBillApprovalModal")>(
+      "src/components/rubber-bills/RubberBillApprovalModal.tsx", {
+        react: {
+          useState: (value: unknown) => [value, () => {}],
+          useRef: (value: unknown) => ({ current: value }),
+          useMemo: (factory: () => unknown) => factory(),
+          useEffect: (effect: () => void) => effects.push(effect),
+        },
+        "@/components/shared/AlertDialog": { AlertDialog: noop },
+        "@/components/shared/ModalShell": { ModalShell: noop },
+        "@/components/rubber-bills/RubberApprovalPolicyPanel": { RubberApprovalPolicyPanel: noop },
+        "@/hooks/useLocations": { useLocations: () => ({ locations: [] }) },
+        "@/hooks/useOnlineStatus": { useOnlineStatus: () => true },
+        "@/hooks/useRubberBillApprovals": { useRubberBillApprovals: () => ({}) },
+        "@/hooks/useRubberBillList": {
+          useRubberBillList: () => ({ bills: [], isLoading: true }),
+          useRubberBillWorkCounts: () => ({}),
+        },
+        "@/lib/rubber-bills/central-sync": { rubberOwnerWork: () => { reads++; return pending; } },
+      }, { window: { setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval: () => {} } },
+    );
+    module.RubberBillApprovalModal({ locationId: "branch", profile: { id: "owner" } as never, onClose: noop });
+    const cleanup = effects[0]();
+    tick?.();
+    tick?.();
+    expect(reads).toBe(1);
+    release?.();
+    await pending;
+    await expect.poll(() => { tick?.(); return reads; }).toBe(2);
+    cleanup?.();
+  });
   test("does not recreate a form draft when reconnect flush races with clear", async () => {
     let releaseWrite: (() => void) | undefined;
     let signalWriteStarted: (() => void) | undefined;

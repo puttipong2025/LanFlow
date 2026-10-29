@@ -17,6 +17,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
   const adminCheck = await requireSystemManager(request);
   if (!adminCheck.ok) return adminCheck.response;
 
@@ -32,7 +33,6 @@ export async function POST(
   }
   const decision = body.decision;
 
-  try {
     if (!isUuid(id)) {
       return NextResponse.json({ status: "failed", errorMessage: "Invalid request ID" }, { status: 400 });
     }
@@ -92,6 +92,8 @@ export async function POST(
     );
   } catch (error: unknown) {
     console.error("Decide income-expense approval request API error:", error);
-    return NextResponse.json({ status: "failed", errorMessage: "ดำเนินการคำขอไม่สำเร็จ" }, { status: 503 });
+    return NextResponse.json({ status: "failed", errorMessage: "ดำเนินการคำขอไม่สำเร็จ" }, {
+      status: 503, headers: { "Cache-Control": "private, no-store" },
+    });
   }
 }

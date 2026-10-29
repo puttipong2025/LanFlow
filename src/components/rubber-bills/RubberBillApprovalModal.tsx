@@ -16,6 +16,7 @@ import type {
 } from "@/types";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { formatNumber } from "@/lib/format";
+import { rubberOwnerWork } from "@/lib/rubber-bills/central-sync";
 
 const operationLabels = {
   create: "สร้างบิล",
@@ -67,11 +68,34 @@ export function RubberBillApprovalModal({
   const counts = useRubberBillWorkCounts(profile.id, locationFilter);
   const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [page, setPage] = useState(1);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [isSaving, setIsSaving] = useState(false);
   const [confirmation, setConfirmation] = useState<{ kind: "approve" | "delete"; bill: RubberBill } | null>(null);
   const settingsSaveRef = useRef(false);
   const requestLocksRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    let active = true;
+    let reading = false;
+    const refresh = async () => {
+      if (!active || reading) return;
+      reading = true;
+      try {
+        const events = await rubberOwnerWork(profile.id);
+        if (!active) return;
+        const pending = new Set<string>(requestLocksRef.current);
+        for (const event of events) {
+          if (event.locationId === locationFilter && event.payload.queueAction
+              && event.status === "pending") pending.add(event.payload.targetRequestId);
+        }
+        setBusyIds(pending);
+      } catch { /* Preserve pending controls until queue status can be read. */ }
+      finally { reading = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [profile.id, locationFilter]);
 
   useEffect(() => {
     if (!settings) return;
@@ -122,14 +146,13 @@ export function RubberBillApprovalModal({
     if (!request.approvalRequestId || requestLocksRef.current.has(request.approvalRequestId)) return;
     requestLocksRef.current.add(request.approvalRequestId);
     try {
-      setBusyId(request.approvalRequestId);
+      setBusyIds(previous => new Set(previous).add(request.approvalRequestId!));
       await approveRequest(request.approvalRequestId, request.locationId);
-      onClose();
     } catch (error) {
+      setBusyIds(previous => { const next = new Set(previous); next.delete(request.approvalRequestId!); return next; });
       toast.error(error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ");
     } finally {
       requestLocksRef.current.delete(request.approvalRequestId);
-      setBusyId(null);
     }
   }
 
@@ -137,14 +160,13 @@ export function RubberBillApprovalModal({
     if (!request.approvalRequestId || requestLocksRef.current.has(request.approvalRequestId)) return;
     requestLocksRef.current.add(request.approvalRequestId);
     try {
-      setBusyId(request.approvalRequestId);
+      setBusyIds(previous => new Set(previous).add(request.approvalRequestId!));
       await deleteRequest(request.approvalRequestId, request.locationId);
-      onClose();
     } catch (error) {
+      setBusyIds(previous => { const next = new Set(previous); next.delete(request.approvalRequestId!); return next; });
       toast.error(error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ");
     } finally {
       requestLocksRef.current.delete(request.approvalRequestId);
-      setBusyId(null);
     }
   }
 
@@ -153,7 +175,7 @@ export function RubberBillApprovalModal({
       title="ตั้งค่าและอนุมัติบิลยาง"
       subtitle={`รออนุมัติ ${counts.data?.pendingApproval ?? 0} รายการ`}
       onClose={onClose}
-      closeDisabled={isSaving || busyId !== null}
+      closeDisabled={isSaving}
       size="wide"
     >
       <div className="space-y-5">
@@ -213,17 +235,17 @@ export function RubberBillApprovalModal({
                     <div className="flex shrink-0 gap-1.5 whitespace-nowrap">
                       <button
                         type="button"
-                        disabled={busyId === request.approvalRequestId}
+                        disabled={busyIds.has(request.approvalRequestId ?? "")}
                         onClick={() => setConfirmation({ kind: "approve", bill: request })}
                         className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                         title="อนุมัติ"
                         aria-label="อนุมัติ"
                       >
-                        <Check size={17} />
+                        {busyIds.has(request.approvalRequestId ?? "") ? <span className="text-xs">รอผล</span> : <Check size={17} />}
                       </button>
                       <button
                         type="button"
-                        disabled={busyId === request.approvalRequestId}
+                        disabled={busyIds.has(request.approvalRequestId ?? "")}
                         onClick={() => setConfirmation({ kind: "delete", bill: request })}
                         className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
                         title="ลบคำขอถาวร"
@@ -294,12 +316,13 @@ export function RubberBillApprovalModal({
         title={confirmation?.kind === "delete" ? "ลบคำขอถาวร?" : "อนุมัติคำขอนี้?"}
         description={confirmation?.kind === "delete" ? "คำขอจะถูกลบถาวรและกู้คืนไม่ได้ แต่บิลจริงจะไม่ถูกสร้างหรือแก้ไข" : "ระบบจะตรวจ revision และ relation lock ล่าสุดก่อนบันทึก"}
         confirmLabel={confirmation?.kind === "delete" ? "ยืนยันลบคำขอ" : "ยืนยันอนุมัติ"}
-        busy={busyId !== null}
+        busy={false}
         onCancel={() => setConfirmation(null)}
         onConfirm={() => {
           if (!confirmation) return;
           const action = confirmation.kind === "delete" ? handleDelete : handleApprove;
-          void action(confirmation.bill).finally(() => setConfirmation(null));
+          setConfirmation(null);
+          void action(confirmation.bill);
         }}
       />
     </ModalShell>

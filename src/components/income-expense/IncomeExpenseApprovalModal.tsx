@@ -65,8 +65,8 @@ export function IncomeExpenseApprovalModal({
   const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [decidingId, setDecidingId] = useState<string | null>(null);
-  const decidingRef = useRef<string | null>(null);
+  const [decidingIds, setDecidingIds] = useState<Set<string>>(new Set());
+  const decidingRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!settings) return;
@@ -187,17 +187,17 @@ export function IncomeExpenseApprovalModal({
   }
 
   async function runDecision(id: string, mutate: () => Promise<unknown>, successMessage: string, fallbackMessage: string) {
-    if (decidingRef.current !== null) return;
-    decidingRef.current = id;
-    setDecidingId(id);
+    if (decidingRef.current.has(id)) return;
+    decidingRef.current.add(id);
+    setDecidingIds(new Set(decidingRef.current));
     try {
       await mutate();
       toast.success(successMessage);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : fallbackMessage);
     } finally {
-      decidingRef.current = null;
-      setDecidingId(null);
+      decidingRef.current.delete(id);
+      setDecidingIds(new Set(decidingRef.current));
     }
   }
 
@@ -251,7 +251,7 @@ export function IncomeExpenseApprovalModal({
       title="ตั้งค่าและอนุมัติรับ-จ่าย"
       subtitle={`คำขอรออนุมัติ ${pendingCount} รายการ`}
       onClose={onClose}
-      closeDisabled={decidingId !== null}
+      closeDisabled={decidingIds.size > 0}
       size="wide"
     >
       <div className="space-y-5">
@@ -325,7 +325,7 @@ export function IncomeExpenseApprovalModal({
                     <BranchTransferDeleteApprovalRow
                       key={`branch-delete:${request.id}`}
                       request={request}
-                      isDeciding={decidingId !== null}
+                      isDeciding={decidingIds.has(request.id)}
                       onDecision={(id, decision) => void handleBranchDeleteDecision(id, decision)}
                     />
                   ))}
@@ -334,13 +334,13 @@ export function IncomeExpenseApprovalModal({
                       <td className="py-3 pr-3">
                         {request.requestStatus === "pending" && (
                           <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingId !== null}
+                            <button type="button" disabled={decidingIds.has(request.id)}
                               onClick={() => void handleCashDeleteDecision(request.id, "approved")}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                               title="อนุมัติการลบ" aria-label="อนุมัติการลบ">
                               <Check size={17} />
                             </button>
-                            <button type="button" disabled={decidingId !== null}
+                            <button type="button" disabled={decidingIds.has(request.id)}
                               onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
                               title="ปฏิเสธการลบ" aria-label="ปฏิเสธการลบ">
@@ -368,7 +368,7 @@ export function IncomeExpenseApprovalModal({
                               ? "bg-leaf/10 text-leaf"
                               : "bg-clay/10 text-clay"
                         }`}>
-                          {statusLabels[request.requestStatus]}
+                          {decidingIds.has(request.id) ? "รอผล" : statusLabels[request.requestStatus]}
                         </span>
                       </td>
                       <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
@@ -383,12 +383,12 @@ export function IncomeExpenseApprovalModal({
                       <td className="py-3 pr-3">
                         {request.requestStatus === "pending" && (
                           <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingId !== null} onClick={() => void handleApprove(request.id)}
+                            <button type="button" disabled={decidingIds.has(request.id)} onClick={() => void handleApprove(request.id)}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                               title="อนุมัติ" aria-label="อนุมัติ">
                               <Check size={17} />
                             </button>
-                            <button type="button" disabled={decidingId !== null} onClick={() => void handleReject(request.id)}
+                            <button type="button" disabled={decidingIds.has(request.id)} onClick={() => void handleReject(request.id)}
                               className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
                               title="ปฏิเสธ" aria-label="ปฏิเสธ">
                               <X size={17} />
@@ -428,7 +428,7 @@ export function IncomeExpenseApprovalModal({
                               ? "bg-leaf/10 text-leaf"
                               : "bg-clay/10 text-clay"
                         }`}>
-                          {statusLabels[request.requestStatus]}
+                          {decidingIds.has(request.id) ? "รอผล" : statusLabels[request.requestStatus]}
                         </span>
                       </td>
                       <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>

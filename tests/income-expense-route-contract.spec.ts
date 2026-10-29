@@ -8,6 +8,19 @@ const locationId = "71000000-0000-4000-8000-000000000021";
 const recordId = "71000000-0000-4000-8000-000000000022";
 const requestId = "71000000-0000-4000-8000-000000000023";
 
+test("approval decision contains unexpected authentication failures", async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/approval-requests/[id]/decide/route")>(
+    "src/app/api/lanflow/income-expense/approval-requests/[id]/decide/route.ts",
+    { "@/lib/server/auth": { requireSystemManager: async () => { throw new Error("private diagnostic"); } } },
+  );
+  const response = await route.POST(new Request("http://local/decide", {
+    method: "POST", body: JSON.stringify({ decision: "approved" }),
+  }) as never, { params: Promise.resolve({ id: requestId }) }).catch(() => undefined);
+  expect(response?.status).toBe(503);
+  expect(response?.headers.get("cache-control")).toContain("no-store");
+  expect(JSON.stringify(await response?.json())).not.toContain("private diagnostic");
+});
+
 function validSyncPayload(overrides: Record<string, unknown> = {}) {
   return {
     operation: "create",
