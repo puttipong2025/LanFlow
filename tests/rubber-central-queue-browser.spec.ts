@@ -85,7 +85,8 @@ test("two devices see server processing while the origin leaves the branch; mana
     const admitted = await observer.request.post("/api/lanflow/rubber-bills/queue", { data: { ...currentPayload, centralQueue: true,
       actorUserId: actor, contractVersion: 2, commandId: deleteId, idempotencyKey: deleteId, operation: "delete",
       locationId: branch, clientTempId: approvalBill, expectedRevisionNo: 1, expectedCommandGeneration: 0, expectedQueueVersion: 0 } });
-    expect(admitted.status(), await admitted.text()).toBe(202);
+    expect([200, 202]).toContain(admitted.status());
+    expect((await admitted.json()).commandId).toBe(deleteId);
     await expect.poll(() => sql(`select result->>'status' from private.rubber_queue_jobs where command_id='${deleteId}'`), { timeout: 25_000 }).toBe("pending_approval");
     const requestId = sql(`select id from public.rubber_bill_approval_requests where location_id='${branch}' and client_temp_id='${approvalBill}' and request_status='pending'`);
     const pendingFeed = await observer.request.get(`/api/lanflow/rubber-bills/feed?locationId=${branch}&mode=pending_approval&documentStatus=any&limit=25`);
@@ -103,11 +104,22 @@ test("two devices see server processing while the origin leaves the branch; mana
       await route.continue();
     });
     await approvals.getByRole("button", { name: "อนุมัติ", exact: true }).click();
-    await viewing.getByRole("alertdialog", { name: "อนุมัติคำขอนี้?" }).getByRole("button", { name: "ยืนยันอนุมัติ", exact: true }).click();
-    await expect(approvals).not.toBeVisible();
+    const confirm = viewing.getByRole("alertdialog", { name: "อนุมัติคำขอนี้?" }).getByRole("button", { name: "ยืนยันอนุมัติ", exact: true });
+    await confirm.focus();
+    await expect(confirm).toBeFocused();
+    await confirm.press("Enter");
+    await expect(approvals).toBeVisible();
+    await expect(approvals.getByRole("button", { name: "รอผลคำสั่ง", exact: true })).toHaveCount(2);
+    for (const button of await approvals.getByRole("button", { name: "รอผลคำสั่ง", exact: true }).all()) {
+      await expect(button).toBeDisabled();
+    }
     console.info('CQ browser: manager accepted before POST');
+    mkdirSync("output", { recursive: true });
+    await viewing.screenshot({ path: "output/rubber-central-queue-pending.png", fullPage: true });
     await expect.poll(() => managerCommand).not.toBe("");
     expect(sql(`select record_status from public.rubber_bills where id='${approvalBill}'`)).toBe("active");
+    await approvals.getByRole("button", { name: "ปิด", exact: true }).click();
+    await expect(approvals).not.toBeVisible();
     await selectAppLocation(viewing, other); release();
     await expect.poll(() => sql(`select result->>'status' from private.rubber_queue_jobs where command_id='${managerCommand}'`), { timeout: 25_000 }).toBe("approved");
     expect(sql(`select record_status from public.rubber_bills where id='${approvalBill}'`)).toBe("deleted");

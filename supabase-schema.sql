@@ -1853,6 +1853,10 @@ begin
     raise exception 'Unsupported money event source table: %', tg_table_name;
   end if;
 
+  if v_source_type='rubber_bill' and (private.rubber_execution_job()).command_id is not null then
+    v_actor_user_id:=private.rubber_execution_actor();
+    select name into v_actor_name from public.profiles where id=v_actor_user_id;
+  end if;
   perform private.reconcile_dashboard_money_source(
     v_source_type, v_source_id, v_actor_user_id, v_actor_name
   );
@@ -1884,6 +1888,23 @@ $$;
 
 
 ALTER FUNCTION "private"."capture_financial_history_creator"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."capture_income_background_approval_outcome"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.request_status in ('approved','rejected') then
+    update private.income_expense_background_commands
+    set result = result || jsonb_build_object('outcome',case when new.request_status='approved' then 'synced' else 'rejected' end)
+    where result->>'requestId'=new.id::text and result->>'outcome'='pending_approval';
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."capture_income_background_approval_outcome"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."capture_money_history_creator"() RETURNS "trigger"
@@ -2262,6 +2283,8 @@ begin
     v_counts := v_counts || jsonb_build_object('cleanup_run_history', v_count);
 
     perform set_config('app.history_retention_cleanup', coalesce(v_previous_cleanup_flag, ''), true);
+    v_count := private.compact_rubber_queue_history(v_days,p_batch_size);
+    v_counts := v_counts || jsonb_build_object('sync_queue_history',v_count);
     v_has_more := private.history_retention_has_work(v_days);
     select jsonb_object_agg(c.key, coalesce((v_run.deleted_counts ->> c.key)::bigint, 0) + c.value::bigint),
       jsonb_object_agg(c.key, case when v_has_more
@@ -2325,6 +2348,33 @@ $$;
 
 
 ALTER FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."compact_rubber_queue_history"("p_days" integer, "p_batch_size" integer) RETURNS bigint
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare n bigint;
+begin
+  if p_batch_size is null or p_batch_size not between 1 and 5000 then raise exception 'HISTORY_RETENTION_BATCH_INVALID'; end if;
+  with candidates as (
+    select j.command_id from private.rubber_queue_jobs j
+    where j.state='done' and j.history_purged_at is null
+      and j.completed_at < private.history_retention_cutoff_date(p_days)::timestamp at time zone 'Asia/Bangkok'
+      and private.rubber_queue_history_finished_at(j) < private.history_retention_cutoff_date(p_days)::timestamp at time zone 'Asia/Bangkok'
+    order by j.completed_at,j.command_id limit p_batch_size for update of j skip locked
+  )
+  update private.rubber_queue_jobs j set payload=null,policy='{}',reference='',target_fingerprint=null,
+    retired_by=null,attempts=0,history_purged_at=clock_timestamp(),version=j.version+1,
+    result=case when j.result->>'status'='pending_approval' then
+      (select r.result from private.rubber_command_receipts r where r.command_id=j.command_id) else j.result end
+  from candidates c where j.command_id=c.command_id;
+  get diagnostics n=row_count;
+  return n;
+end $$;
+
+
+ALTER FUNCTION "private"."compact_rubber_queue_history"("p_days" integer, "p_batch_size" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."create_branch_rubber_receipt"("p_destination_location_id" "uuid", "p_source_rubber_export_id" "uuid", "p_remaining_yard_weight" numeric) RETURNS "jsonb"
@@ -5261,6 +5311,10 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_has_work"("p_days" integ
     exists (select 1 from cron.job_run_details, bounds where status in ('succeeded', 'failed') and start_time < cutoff_at)
     or
     exists (select 1 from public.history_cleanup_runs, bounds where status <> 'running' and coalesce(completed_at, started_at) < cutoff_at)
+
+    or exists (select 1 from private.rubber_queue_jobs j,bounds
+      where j.state='done' and j.history_purged_at is null and j.completed_at < cutoff_at
+        and private.rubber_queue_history_finished_at(j) < cutoff_at)
     or exists (select 1 from public.admin_account_audit_logs where status = 'pending' and created_at < now() - interval '24 hours')
 $$;
 
@@ -5326,12 +5380,18 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" i
     from public.history_cleanup_runs, bounds
     where status <> 'running'
       and coalesce(completed_at, started_at) < cutoff_at
+
+    union all
+    select 'sync_queue_history', (private.rubber_queue_history_finished_at(j) at time zone 'Asia/Bangkok')::date
+    from private.rubber_queue_jobs j,bounds
+    where j.state='done' and j.history_purged_at is null and j.completed_at < cutoff_at
+      and private.rubber_queue_history_finished_at(j) < cutoff_at
   ), keys(group_key) as (values
     ('dashboard_money_events'), ('time_tracking_audit_logs'),
     ('admin_account_audit_logs'), ('income_expense_approval_requests'),
     ('cash_transfer_delete_requests'), ('branch_transfer_delete_requests'), ('rubber_bill_approval_requests'),
     ('stock_entry_approval_requests'), ('stock_product_approval_requests'),
-    ('scheduler_run_history'), ('cleanup_run_history')
+    ('scheduler_run_history'), ('cleanup_run_history'), ('sync_queue_history')
   )
   select keys.group_key, count(groups.item_date), min(groups.item_date)
   from keys left join groups using (group_key)
@@ -7041,6 +7101,140 @@ $$;
 ALTER FUNCTION "private"."process_dashboard_refresh_tick"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."process_rubber_queue"("p_limit" integer DEFAULT 20) RETURNS integer
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$ select private.process_rubber_queue_batch(p_limit,null) $$;
+
+
+ALTER FUNCTION "private"."process_rubber_queue"("p_limit" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."process_rubber_queue_batch"("p_limit" integer, "p_location_id" "uuid") RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  candidate record; j private.rubber_queue_jobs; req public.rubber_bill_approval_requests%rowtype;
+  bill public.rubber_bills%rowtype; r jsonb; code text; message text; processed integer:=0;
+  next_state text; terminal boolean; successful boolean; tick_started timestamptz:=clock_timestamp();
+begin
+  -- A transaction owns an entire attempt. Connection loss rolls back both its
+  -- business writes and its receipt; no permanent running lease needs repair.
+  for candidate in select command_id,location_id from (
+      select command_id,location_id,next_attempt_at,accepted_at,
+        row_number() over(partition by location_id order by next_attempt_at,accepted_at,command_id) as branch_position
+      from private.rubber_queue_jobs where state in ('queued','retry_wait','paused')
+        and (p_location_id is null or location_id=p_location_id) and next_attempt_at<=clock_timestamp()) due
+      order by branch_position,next_attempt_at,accepted_at,command_id
+
+  loop
+    exit when clock_timestamp()-tick_started>=interval '7 seconds' or processed>=greatest(1,least(coalesce(p_limit,20),100));
+    if not pg_try_advisory_xact_lock(hashtextextended(candidate.location_id::text,0)) then continue; end if;
+    select * into j from private.rubber_queue_jobs where command_id=candidate.command_id
+      and state in ('queued','retry_wait','paused') and next_attempt_at<=clock_timestamp() for update skip locked;
+    if j.command_id is null then continue; end if;
+    processed:=processed+1; r:=null; code:=null; next_state:='retry_wait'; terminal:=false; successful:=false;
+    insert into private.rubber_queue_execution values(pg_backend_pid(),txid_current(),j.command_id);
+    begin
+      if not exists(select 1 from auth.users where id=j.actor_user_id)
+        or not private.rubber_actor_location(j.location_id)
+        or (j.action in ('approve','cancel') and not private.rubber_actor_manager())
+        or not exists(select 1 from public.locations where id=j.location_id and is_active) then
+        code:='ACTOR_PERMISSION_PAUSED'; next_state:='paused';
+      elsif exists(select 1 from public.cash_count_sessions where location_id=j.location_id and status='active' and expires_at>clock_timestamp())
+        or coalesce((private.cash_count_lock_state(j.location_id,clock_timestamp())->>'locked')::boolean,false) then
+        code:='CASH_COUNT_PAUSED'; next_state:='paused';
+      else
+        if j.action in ('approve','cancel') then
+          select * into req from public.rubber_bill_approval_requests where id=j.target_request_id
+            and location_id=j.location_id and request_status='pending' for update;
+          if req.id is null or private.try_rubber_bill_submission_fingerprint(req.proposed_payload) is distinct from j.target_fingerprint then
+            code:='REQUEST_CHANGED'; terminal:=true;
+          elsif j.action='approve' then
+            r:=public.approve_rubber_bill_approval_request(j.target_request_id);
+          else
+            perform public.delete_rubber_bill_approval_request(j.target_request_id);
+            r:=jsonb_build_object('status','cancelled','requestId',j.target_request_id);
+          end if;
+        else
+          select * into bill from public.rubber_bills where location_id=j.location_id and client_temp_id=j.client_temp_id;
+          if j.payload->>'expectedServerId' is not null and bill.id::text is distinct from j.payload->>'expectedServerId' then
+      code:='BILL_CHANGED_OR_LOCKED'; terminal:=true;
+    elsif bill.record_status='deleted' and j.action in ('update','delete') then
+            code:='BILL_ALREADY_DELETED'; terminal:=true;
+          elsif j.action in ('update','delete') and bill.id is not null and
+            (bill.revision_no is distinct from (j.payload->>'expectedRevisionNo')::integer
+              or private.active_report_no('rubber_bill',bill.id) is not null
+              or private.rubber_bill_has_active_transfer(bill.id)) then
+            code:='BILL_CHANGED_OR_LOCKED'; terminal:=true;
+          else
+            r:=public.sync_rubber_bill(j.payload);
+          end if;
+        end if;
+        successful:=case when j.action='approve' then r->>'status'='approved' and r->'syncResult'->>'status'='synced'
+          when j.action='cancel' then r->>'status'='cancelled'
+          else (r->>'status'='synced' and r->>'id' is not null and r->>'revisionNo' is not null)
+            or (r->>'status'='pending_approval' and r->>'requestId' is not null)
+            or r->>'status'='discarded' end;
+        if successful then terminal:=true;
+        elsif not terminal then
+          -- JSON failures must roll back any partial core writes too.
+          raise exception using errcode='P0002',message='ROLLBACK_RUBBER_QUEUE_ATTEMPT';
+        end if;
+      end if;
+    exception
+      when query_canceled then
+        next_state:='retry_wait'; code:='ATTEMPT_TIMEOUT';
+        successful:=false; terminal:=false; r:=null;
+      when others then
+        message:=sqlerrm;
+        if r->>'errorCode'='STALE_COMMAND_CONTEXT' or (r->>'status'='conflict'
+      and r->>'errorMessage' in ('Revision mismatch','Record already exists')) then
+          terminal:=true; code:='STALE_COMMAND_CONTEXT';
+        elsif message like '%CASH_COUNT_%' or coalesce(r->>'errorMessage','') like '%CASH_COUNT_%' then
+          next_state:='paused'; code:='CASH_COUNT_PAUSED';
+        elsif j.action in ('approve','cancel') and (message='Revision mismatch' or message like 'บิลอยู่ในรายงาน%'
+          or message='บิลอยู่ในรายการโอนเงินแล้ว จึงอนุมัติไม่ได้') then
+          terminal:=true; code:='BILL_CHANGED_OR_LOCKED';
+        elsif j.action='create' and coalesce(r->>'errorMessage',message) in (
+      'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขอ','ข้อมูลอ้างอิงรูป OCR ไม่ถูกต้อง',
+      'รูป OCR นี้ถูกยกเลิกแล้ว','รูป OCR นี้ถูกจองโดยคำขออื่น','บิลยางที่เพิ่มเองห้ามใช้รูป OCR',
+      'วิธีเพิ่มบิลยางไม่ถูกต้อง','ไม่รับข้อมูลอ้างอิง OCR ภายในจากอุปกรณ์') then
+      next_state:='correction_required'; code:='CORRECTION_REQUIRED';
+    elsif j.action in ('update','delete') and coalesce(r->>'errorMessage',message) in (
+       'Revision mismatch','รายการนี้ถูกล็อก ต้องลบ item ออกจากรายการโอนก่อน',
+       'รายการหักสินค้าต้องเลือกสินค้าในสต็อกและระบุจำนวน','ไม่พบสินค้าในสต็อกสำหรับรายการหักสินค้า',
+       'สต็อกสินค้าไม่พอสำหรับรายการหักสินค้าในบิลยาง','Customer not found') then
+       terminal:=true; code:='BUSINESS_REJECTED';
+     elsif j.action='create' and not exists(select 1 from public.rubber_bills
+          where location_id=j.location_id and client_temp_id=j.client_temp_id)
+          and coalesce(r->>'errorMessage',message) ~ '^(ข้อมูลตัวเลขในบิลยางไม่ถูกต้อง|วันที่บิลไม่ถูกต้อง|ราคายางต้อง|Invalid bill|Invalid item|น้ำหนัก|ราคา|Customer not found|deductWeight must|รายการหักสินค้า|ไม่พบสินค้าในสต็อก|สต็อกสินค้าไม่พอ)' then
+          next_state:='correction_required'; code:='CORRECTION_REQUIRED';
+        else code:='RETRY_REQUIRED'; end if;
+    end;
+    if terminal then
+      if not coalesce(successful,false) then
+        r:=jsonb_build_object('status','discarded','operation',j.action,'clientTempId',j.client_temp_id,'errorCode',code);
+      end if;
+      r:=r||jsonb_build_object('commandId',j.command_id);
+    else r:=null; end if;
+    update private.rubber_queue_jobs set state=case when terminal then 'done' else next_state end,
+      result=r,error_code=code,attempts=attempts+1,version=version+1,
+      next_attempt_at=clock_timestamp()+make_interval(secs=>case when next_state='paused' then 30
+        else least(300,5*power(2,least(j.attempts,6))::integer) end),
+      completed_at=case when terminal then clock_timestamp() end,
+      payload=case when terminal then null else payload end
+      where command_id=j.command_id;
+    delete from private.rubber_queue_execution where backend_pid=pg_backend_pid() and transaction_id=txid_current();
+  end loop;
+  return processed;
+end $$;
+
+
+ALTER FUNCTION "private"."process_rubber_queue_batch"("p_limit" integer, "p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."raise_report_lock"("p_report_no" "text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -8510,7 +8704,7 @@ begin
   where s.id = v_upload_id
   for update;
   if v_source.id is null
-     or v_source.owner_user_id <> auth.uid()
+     or v_source.owner_user_id <> private.rubber_execution_actor()
      or v_source.location_id <> v_location_id then
     return jsonb_build_object('status', 'conflict', 'errorMessage', 'ข้อมูลอ้างอิงรูป OCR ไม่ตรงกับคำขอ');
   end if;
@@ -8603,7 +8797,7 @@ $$;
 ALTER FUNCTION "private"."reset_rubber_price_allowances"("p_now" timestamp with time zone) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "non_current_date_requires_approval" boolean)
+CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_before_queue"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "non_current_date_requires_approval" boolean)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -8626,6 +8820,26 @@ CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_without_q
     on g.id = gl.group_id
   where s.id = true
 $$;
+
+
+ALTER FUNCTION "private"."resolve_rubber_bill_price_policy_before_queue"("p_location_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "non_current_date_requires_approval" boolean)
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare j private.rubber_queue_jobs;
+begin
+  j:=private.rubber_execution_job();
+  if j.command_id is not null and j.location_id=p_location_id then
+    return query select p.* from jsonb_to_record(j.policy) as p(group_id uuid,rule_source text,central_price numeric,
+      price_allowance numeric,effective_price_cap numeric,edit_window_minutes integer,price_rule_revision bigint,
+      updated_by_name text,updated_by_phone text,updated_at timestamptz,non_current_date_requires_approval boolean);
+  else
+    return query select * from private.resolve_rubber_bill_price_policy_before_queue(p_location_id);
+  end if;
+end $$;
 
 
 ALTER FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") OWNER TO "postgres";
@@ -8665,6 +8879,42 @@ end $$;
 
 
 ALTER FUNCTION "private"."revoke_browser_on_password_change"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_actor_active"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists(select 1 from public.profiles where id=private.rubber_execution_actor()
+    and is_active and role in ('admin','super_admin'))
+$$;
+
+
+ALTER FUNCTION "private"."rubber_actor_active"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_actor_location"("p_location" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.rubber_actor_active() and (private.rubber_actor_manager() or exists(
+    select 1 from public.user_locations where user_id=private.rubber_execution_actor() and location_id=p_location))
+$$;
+
+
+ALTER FUNCTION "private"."rubber_actor_location"("p_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_actor_manager"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists(select 1 from public.profiles where id=private.rubber_execution_actor()
+    and is_active and (role='super_admin' or (role='admin' and can_access_super_admin_features)))
+$$;
+
+
+ALTER FUNCTION "private"."rubber_actor_manager"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_current_work_items"("p_location_id" "uuid") RETURNS TABLE("location_id" "uuid", "work_kind" "text", "work_identity" "text", "bill_id" "uuid", "sort_at" timestamp with time zone)
@@ -9056,6 +9306,25 @@ CREATE OR REPLACE FUNCTION "private"."rubber_bill_report_blockers"("p_location_i
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+  select * from private.rubber_bill_report_blockers_before_queue(p_location_id,p_cutoff_at)
+  union all
+  select 'central_queue',j.command_id from private.rubber_queue_jobs j
+  where j.location_id=p_location_id and j.state<>'done' and j.accepted_at<=p_cutoff_at
+    and not exists(select 1 from public.rubber_bill_approval_requests a
+      where a.location_id=j.location_id and a.request_status='pending'
+        and (a.client_temp_id=j.client_temp_id or a.id=j.target_request_id) and a.requested_at<=p_cutoff_at)
+    and not exists(select 1 from private.rubber_bill_report_blockers_before_queue(p_location_id,p_cutoff_at) old
+      join public.rubber_bills b on b.id=old.blocker_id where b.client_temp_id=j.client_temp_id)
+$$;
+
+
+ALTER FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_bill_report_blockers_before_queue"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_type" "text", "blocker_id" "uuid")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
   select 'zero_price'::text, b.id
   from public.rubber_bills b
   where b.location_id = p_location_id
@@ -9082,7 +9351,7 @@ CREATE OR REPLACE FUNCTION "private"."rubber_bill_report_blockers"("p_location_i
 $$;
 
 
-ALTER FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
+ALTER FUNCTION "private"."rubber_bill_report_blockers_before_queue"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_bill_submission_decision"("payload" "jsonb") RETURNS "jsonb"
@@ -9103,7 +9372,7 @@ declare
   v_non_price_approval boolean := false;
 begin
   v_operation := payload->>'operation';
-  if not coalesce(private.is_active_user(), false) then
+  if not coalesce(private.rubber_actor_active(), false) then
     return jsonb_build_object('disposition', 'failed', 'errorMessage', 'Unauthorized or inactive user');
   end if;
   if v_operation is null or v_operation not in ('create', 'update', 'delete') then
@@ -9117,7 +9386,7 @@ begin
   if v_location_id is null
      or coalesce(payload->>'clientTempId', '') = ''
      or coalesce(payload->>'idempotencyKey', '') = ''
-     or not public.can_access_location(v_location_id) then
+     or not private.rubber_actor_location(v_location_id) then
     return jsonb_build_object('disposition', 'failed', 'errorMessage', 'Location access denied or invalid identity');
   end if;
   begin
@@ -9174,13 +9443,13 @@ begin
     if private.rubber_bill_has_active_transfer(v_bill.id) then
       return jsonb_build_object('disposition', 'failed', 'errorMessage', 'บิลอยู่ในรายการโอนเงินแล้ว จึงดำเนินการไม่ได้');
     end if;
-    if clock_timestamp() >= v_bill.created_at
+    if private.rubber_evaluation_time() >= v_bill.created_at
        + make_interval(mins => v_policy.edit_window_minutes) then
       v_non_price_approval := true;
     end if;
   end if;
   if v_policy.non_current_date_requires_approval
-     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+     and v_business_date is distinct from (private.rubber_evaluation_time() at time zone 'Asia/Bangkok')::date then
     v_non_price_approval := true;
   end if;
 
@@ -9258,6 +9527,71 @@ $$;
 
 
 ALTER FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_evaluation_time"() RETURNS timestamp with time zone
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce((private.rubber_execution_job()).accepted_at,clock_timestamp())
+$$;
+
+
+ALTER FUNCTION "private"."rubber_evaluation_time"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_execution_actor"() RETURNS "uuid"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select coalesce((private.rubber_execution_job()).actor_user_id,auth.uid())
+$$;
+
+
+ALTER FUNCTION "private"."rubber_execution_actor"() OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_queue_jobs" (
+    "command_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "client_temp_id" "text" NOT NULL,
+    "action" "text" NOT NULL,
+    "fingerprint" "text" NOT NULL,
+    "payload" "jsonb",
+    "target_request_id" "uuid",
+    "target_fingerprint" "text",
+    "accepted_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "policy" "jsonb" NOT NULL,
+    "state" "text" DEFAULT 'queued'::"text" NOT NULL,
+    "result" "jsonb",
+    "attempts" integer DEFAULT 0 NOT NULL,
+    "next_attempt_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "error_code" "text",
+    "version" bigint DEFAULT 1 NOT NULL,
+    "completed_at" timestamp with time zone,
+    "retired_by" "uuid",
+    "reference" "text" DEFAULT ''::"text" NOT NULL,
+    "history_purged_at" timestamp with time zone,
+    CONSTRAINT "rubber_queue_jobs_action_check" CHECK (("action" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text", 'approve'::"text", 'cancel'::"text"]))),
+    CONSTRAINT "rubber_queue_jobs_client_temp_id_check" CHECK ((("length"("client_temp_id") >= 1) AND ("length"("client_temp_id") <= 512))),
+    CONSTRAINT "rubber_queue_jobs_state_check" CHECK (("state" = ANY (ARRAY['queued'::"text", 'retry_wait'::"text", 'paused'::"text", 'correction_required'::"text", 'done'::"text"])))
+);
+
+
+ALTER TABLE "private"."rubber_queue_jobs" OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_execution_job"() RETURNS "private"."rubber_queue_jobs"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select j.* from private.rubber_queue_execution e join private.rubber_queue_jobs j using(command_id)
+  where e.backend_pid=pg_backend_pid() and e.transaction_id=txid_current()
+$$;
+
+
+ALTER FUNCTION "private"."rubber_execution_job"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rubber_export_age_hours"("p_bill_date" "date", "p_age_source_at" timestamp with time zone, "p_cutoff_at" timestamp with time zone) RETURNS numeric
@@ -9398,6 +9732,53 @@ COMMENT ON FUNCTION "private"."rubber_export_raw_age_summary"("p_export_id" "uui
 
 
 
+CREATE OR REPLACE FUNCTION "private"."rubber_queue_acid_balance"("p_location_id" "uuid", "p_product_id" "uuid") RETURNS numeric
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.rubber_actor_location(p_location_id) then raise exception 'Location access denied'; end if;
+  return (select coalesce(sum(quantity_delta),0) from public.acid_stock_movements
+    where location_id=p_location_id and product_id=p_product_id);
+end $$;
+
+
+ALTER FUNCTION "private"."rubber_queue_acid_balance"("p_location_id" "uuid", "p_product_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_queue_history_finished_at"("j" "private"."rubber_queue_jobs") RETURNS timestamp with time zone
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select case when j.state <> 'done' or j.history_purged_at is not null then null
+    when j.result->>'status' = 'pending_approval' then (
+      select greatest(j.completed_at,r.resolved_at) from private.rubber_command_receipts r
+      where r.command_id=j.command_id and r.resolved_at is not null
+        and r.result->>'status' is distinct from 'pending_approval')
+    else j.completed_at end
+$$;
+
+
+ALTER FUNCTION "private"."rubber_queue_history_finished_at"("j" "private"."rubber_queue_jobs") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rubber_queue_view"("j" "private"."rubber_queue_jobs") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select jsonb_build_object('commandId',j.command_id,'actorUserId',j.actor_user_id,'locationId',j.location_id,
+    'reference',j.reference,'clientTempId',j.client_temp_id,'action',j.action,'state',j.state,'acceptedAt',j.accepted_at,
+    'version',j.version,'attempts',j.attempts,'nextAttemptAt',j.next_attempt_at,'errorCode',j.error_code,
+    'result',case when j.state='done' and j.result->>'status'='pending_approval' then
+      coalesce((select r.result from private.rubber_command_receipts r where r.command_id=j.command_id),j.result)
+      else j.result end,'completedAt',j.completed_at,'canRetire',private.rubber_actor_manager()
+      and not exists(select 1 from auth.users where id=j.actor_user_id))
+$$;
+
+
+ALTER FUNCTION "private"."rubber_queue_view"("j" "private"."rubber_queue_jobs") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."save_cash_count_alert_group_base"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -9464,6 +9845,23 @@ end $$;
 
 
 ALTER FUNCTION "private"."sms_session_status"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."stamp_rubber_command_resolution"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  if new.result->>'status' is distinct from 'pending_approval' then
+    if TG_OP = 'INSERT' then new.resolved_at := clock_timestamp();
+    elsif old.result->>'status' = 'pending_approval' then new.resolved_at := clock_timestamp();
+    else new.resolved_at := coalesce(old.resolved_at,new.resolved_at); end if;
+  else new.resolved_at := null; end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."stamp_rubber_command_resolution"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") RETURNS "jsonb"
@@ -9892,7 +10290,7 @@ declare
   v_actor_phone text;
   v_report_no text;
 begin
-  if not coalesce(private.is_active_user(), false) then
+  if not coalesce(private.rubber_actor_active(), false) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
   end if;
 
@@ -9909,7 +10307,7 @@ begin
 
   if coalesce(v_client_temp_id, '') = ''
      or coalesce(v_idempotency_key, '') = ''
-     or not public.can_access_location(v_location_id) then
+     or not private.rubber_actor_location(v_location_id) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
   end if;
 
@@ -10016,7 +10414,7 @@ begin
   select name, phone
     into v_actor_name, v_actor_phone
   from public.profiles
-  where id = auth.uid();
+  where id = private.rubber_execution_actor();
 
   select effective.group_id, effective.price_time_exempt,
          effective.edit_window_minutes, effective.configured_price
@@ -10190,7 +10588,7 @@ begin
       );
     end if;
 
-    if not v_price_time_exempt and clock_timestamp() >= v_bill.created_at + make_interval(mins => v_edit_window_minutes) then
+    if not v_price_time_exempt and private.rubber_evaluation_time() >= v_bill.created_at + make_interval(mins => v_edit_window_minutes) then
       v_reasons := array_append(v_reasons, 'time');
     end if;
 
@@ -10243,7 +10641,7 @@ begin
     v_group_id,
     v_original_payload,
     payload,
-    auth.uid(),
+    private.rubber_execution_actor(),
     coalesce(v_actor_name, ''),
     coalesce(v_actor_phone, '')
   )
@@ -11074,7 +11472,7 @@ CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_re
     AS $$
 declare v_request public.rubber_bill_approval_requests%rowtype; v_result jsonb;
 begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then raise exception 'ไม่มีสิทธิ์อนุมัติคำขอบิลยาง'; end if;
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then raise exception 'ไม่มีสิทธิ์อนุมัติคำขอบิลยาง'; end if;
   select * into v_request from public.rubber_bill_approval_requests where id=p_request_id;
   if v_request.id is null then raise exception 'คำขอไม่มีอยู่หรือถูกแทนแล้ว'; end if;
   perform pg_advisory_xact_lock(hashtextextended(v_request.location_id::text,0));
@@ -11106,7 +11504,7 @@ declare
   v_created_bill_id uuid;
   v_report_no text;
 begin
-  if not private.is_active_user() or not public.can_access_super_admin_features() then
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then
     raise exception 'ไม่มีสิทธิ์อนุมัติคำขอบิลยาง';
   end if;
   select * into v_request from public.rubber_bill_approval_requests
@@ -11152,7 +11550,7 @@ begin
   end if;
   v_created_bill_id := (v_result->>'id')::uuid;
   select name, phone into v_actor_name, v_actor_phone
-  from public.profiles where id = auth.uid();
+  from public.profiles where id = private.rubber_execution_actor();
 
   update public.rubber_bills
   set created_by_user_id = case when v_request.operation = 'create' then v_request.requested_by_user_id else created_by_user_id end,
@@ -11170,7 +11568,7 @@ begin
   where id = v_created_bill_id;
 
   update public.rubber_bill_approval_requests
-  set request_status = 'approved', approved_by_user_id = auth.uid(),
+  set request_status = 'approved', approved_by_user_id = private.rubber_execution_actor(),
       approved_by_name = coalesce(v_actor_name, ''), approved_by_phone = coalesce(v_actor_phone, ''),
       approved_at = now(), created_bill_id = case when operation = 'create' then v_created_bill_id else null end
   where id = p_request_id;
@@ -16081,7 +16479,7 @@ CREATE OR REPLACE FUNCTION "public"."delete_rubber_bill_approval_request"("p_req
     AS $$
 declare v_request public.rubber_bill_approval_requests%rowtype;
 begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then raise exception 'ไม่มีสิทธิ์ลบคำขอบิลยาง'; end if;
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then raise exception 'ไม่มีสิทธิ์ลบคำขอบิลยาง'; end if;
   select * into v_request from public.rubber_bill_approval_requests where id=p_request_id;
   if v_request.id is null then raise exception 'ไม่พบคำขอที่รออนุมัติ'; end if;
   perform pg_advisory_xact_lock(hashtextextended(v_request.location_id::text,0));
@@ -16106,7 +16504,7 @@ declare
   v_request_fingerprint text;
   v_upload_id uuid;
 begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then
     raise exception 'ไม่มีสิทธิ์ลบคำขอบิลยาง';
   end if;
 
@@ -16684,24 +17082,22 @@ CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts"() RETURNS TABL
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  with hidden as (
-    select child.location_id, count(*)::bigint item_count
-    from public.money_transfers child
-    where child.bundle_parent_id is not null and child.record_status <> 'deleted'
-      and child.transfer_method = 'bank'
-      and child.transfer_status in ('pending', 'partial', 'advance_payment')
-    group by child.location_id
-  ), adjusted as (
-    select base.location_id, base.module_id,
-      case when base.module_id = 'money-transfer'
-        then greatest(base.item_count - coalesce(hidden.item_count, 0), 0)
-        else base.item_count end item_count
-    from public.get_actionable_badge_counts_before_payment_bundles() base
-    left join hidden on hidden.location_id = base.location_id and base.module_id = 'money-transfer'
+  with counts as (
+    select * from public.get_actionable_badge_counts_before_rubber_queue()
+    union all
+    select j.location_id,'rubber'::text,count(*)::bigint
+    from private.rubber_queue_jobs j
+    where j.state<>'done' and private.can_access_business_modules() and public.can_access_location(j.location_id)
+      and exists(select 1 from public.locations l where l.id=j.location_id and l.is_active)
+      and not exists(
+        select 1 from private.rubber_bill_current_work_items(j.location_id) w
+        where (w.work_kind='unpriced' or (private.can_access_super_admin_features() and w.work_kind='pending_approval'))
+          and (w.bill_id in(select b.id from public.rubber_bills b where b.location_id=j.location_id and b.client_temp_id=j.client_temp_id)
+            or (j.target_request_id is not null and w.work_identity like '%'||j.target_request_id::text)))
+    group by j.location_id
   )
-  select adjusted.location_id, adjusted.module_id, adjusted.item_count
-  from adjusted where adjusted.item_count > 0
-  order by adjusted.location_id, adjusted.module_id;
+  select counts.location_id,counts.module_id,sum(counts.item_count)::bigint
+  from counts group by counts.location_id,counts.module_id order by counts.location_id,counts.module_id
 $$;
 
 
@@ -16789,6 +17185,34 @@ $$;
 
 
 ALTER FUNCTION "public"."get_actionable_badge_counts_before_payment_bundles"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts_before_rubber_queue"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with hidden as (
+    select child.location_id, count(*)::bigint item_count
+    from public.money_transfers child
+    where child.bundle_parent_id is not null and child.record_status <> 'deleted'
+      and child.transfer_method = 'bank'
+      and child.transfer_status in ('pending', 'partial', 'advance_payment')
+    group by child.location_id
+  ), adjusted as (
+    select base.location_id, base.module_id,
+      case when base.module_id = 'money-transfer'
+        then greatest(base.item_count - coalesce(hidden.item_count, 0), 0)
+        else base.item_count end item_count
+    from public.get_actionable_badge_counts_before_payment_bundles() base
+    left join hidden on hidden.location_id = base.location_id and base.module_id = 'money-transfer'
+  )
+  select adjusted.location_id, adjusted.module_id, adjusted.item_count
+  from adjusted where adjusted.item_count > 0
+  order by adjusted.location_id, adjusted.module_id;
+$$;
+
+
+ALTER FUNCTION "public"."get_actionable_badge_counts_before_rubber_queue"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_adjustments"() RETURNS TABLE("location_id" "uuid", "module_id" "text", "item_count" bigint)
@@ -20773,6 +21197,21 @@ CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_command_context"("p_locatio
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+declare context jsonb; head bigint;
+begin
+  context:=public.get_rubber_bill_context_before_queue(p_location_id,p_client_temp_id);
+  select version into head from private.rubber_queue_heads where location_id=p_location_id and client_temp_id=p_client_temp_id;
+  return context||jsonb_build_object('queueVersion',coalesce(head,0));
+end $$;
+
+
+ALTER FUNCTION "public"."get_rubber_bill_command_context"("p_location_id" "uuid", "p_client_temp_id" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_context_before_queue"("p_location_id" "uuid", "p_client_temp_id" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
 declare v_generation bigint; v_bill public.rubber_bills%rowtype; v_ocr text;
 begin
   if not private.is_active_user() or not public.can_access_location(p_location_id)
@@ -20790,7 +21229,7 @@ begin
 end $$;
 
 
-ALTER FUNCTION "public"."get_rubber_bill_command_context"("p_location_id" "uuid", "p_client_temp_id" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."get_rubber_bill_context_before_queue"("p_location_id" "uuid", "p_client_temp_id" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_evidence_feed"("p_location_id" "uuid", "p_view" "text" DEFAULT 'pending'::"text", "p_search" "text" DEFAULT ''::"text", "p_bill_id" "uuid" DEFAULT NULL::"uuid", "p_cursor_sort_at" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_cursor_bill_id" "uuid" DEFAULT NULL::"uuid", "p_page_size" integer DEFAULT 75) RETURNS "jsonb"
@@ -21025,14 +21464,14 @@ begin
         'approval_reasons', req.matched_reasons,
         'approval_requested_by_name', case when p_mode = 'pending_approval' then req.requested_by_name else null end,
         'approval_proposed_summary', case when req.id is null or p_mode <> 'pending_approval' then null else jsonb_build_object(
-          'customerName', req.proposed_payload->>'customerName',
-          'billDate', req.proposed_payload->>'billDate',
-          'billType', req.proposed_payload->>'billType',
-          'netWeight', req.proposed_payload->'netWeight',
-          'averagePrice', req.proposed_payload->'averagePrice',
-          'netRubberValue', req.proposed_payload->'netRubberValue',
-          'deductionTotal', req.proposed_payload->'deductionTotal',
-          'netTotal', req.proposed_payload->'netTotal'
+          'customerName', case when req.operation='delete' then b.customer_name else req.proposed_payload->>'customerName' end,
+          'billDate', case when req.operation='delete' then b.bill_date::text else req.proposed_payload->>'billDate' end,
+          'billType', case when req.operation='delete' then b.bill_type else req.proposed_payload->>'billType' end,
+          'netWeight', case when req.operation='delete' then to_jsonb(b.net_weight) else req.proposed_payload->'netWeight' end,
+          'averagePrice', case when req.operation='delete' then to_jsonb(b.average_price) else req.proposed_payload->'averagePrice' end,
+          'netRubberValue', case when req.operation='delete' then to_jsonb(b.net_rubber_value) else req.proposed_payload->'netRubberValue' end,
+          'deductionTotal', case when req.operation='delete' then to_jsonb(b.deduction_total) else req.proposed_payload->'deductionTotal' end,
+          'netTotal', case when req.operation='delete' then to_jsonb(b.net_total) else req.proposed_payload->'netTotal' end
         ) end
       ) row_json
     from public.rubber_bills b
@@ -21520,6 +21959,49 @@ $$;
 
 
 ALTER FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_queue"("p_location_id" "uuid", "p_command_id" "uuid" DEFAULT NULL::"uuid", "p_limit" integer DEFAULT 50, "p_before" timestamp with time zone DEFAULT NULL::timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare rows jsonb; counts jsonb;
+begin
+  if not private.rubber_actor_location(p_location_id) then raise exception 'FORBIDDEN'; end if;
+  if p_command_id is not null then
+    select private.rubber_queue_view(j) into rows from private.rubber_queue_jobs j
+      where command_id=p_command_id and location_id=p_location_id;
+    return rows;
+  end if;
+  select coalesce(jsonb_agg(private.rubber_queue_view(j) order by j.accepted_at desc,j.command_id),'[]') into rows
+    from (select * from private.rubber_queue_jobs where location_id=p_location_id
+      and (p_before is null or accepted_at<p_before)
+      order by accepted_at desc,command_id limit greatest(1,least(coalesce(p_limit,50),100))) j;
+  select jsonb_build_object('pending',count(*) filter(where state in ('queued','retry_wait','paused','correction_required')),
+    'attention',count(*) filter(where state in ('paused','correction_required')),
+    'oldestAcceptedAt',min(accepted_at) filter(where state<>'done')) into counts
+    from private.rubber_queue_jobs where location_id=p_location_id;
+  return jsonb_build_object('rows',rows,'counts',counts);
+end $$;
+
+
+ALTER FUNCTION "public"."get_rubber_queue"("p_location_id" "uuid", "p_command_id" "uuid", "p_limit" integer, "p_before" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_rubber_queue_draft"("p_command_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare j private.rubber_queue_jobs;
+begin
+  select * into j from private.rubber_queue_jobs where command_id=p_command_id and state='correction_required' and action='create';
+  if j.command_id is null or not private.rubber_actor_location(j.location_id) then raise exception 'FORBIDDEN'; end if;
+  return jsonb_build_object('commandId',j.command_id,'locationId',j.location_id,'clientTempId',j.client_temp_id,
+    'actorUserId',j.actor_user_id,'payload',j.payload);
+end $$;
+
+
+ALTER FUNCTION "public"."get_rubber_queue_draft"("p_command_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_rubber_weight_alert_check"() RETURNS "jsonb"
@@ -22398,6 +22880,27 @@ $$;
 ALTER FUNCTION "public"."get_withdrawal_adjustment_summaries"("p_profile_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."income_expense_background_context"("p_server_id" "uuid", "p_location_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare v public.income_expense%rowtype;
+begin
+  if not coalesce(private.is_active_user(),false) or not public.can_access_location(p_location_id) then
+    return jsonb_build_object('status','forbidden');
+  end if;
+  select * into v from public.income_expense where id=p_server_id and location_id=p_location_id;
+  if not found then return jsonb_build_object('status','missing'); end if;
+  return jsonb_build_object('status','ok','serverId',v.id,'locationId',v.location_id,
+    'clientTempId',v.client_temp_id,'revisionNo',v.revision_no,'recordStatus',v.record_status,
+    'billOption',v.bill_option,'approvalPending',exists(select 1 from public.income_expense_approval_requests
+      where source_income_expense_id=v.id and request_status='pending'));
+end $$;
+
+
+ALTER FUNCTION "public"."income_expense_background_context"("p_server_id" "uuid", "p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."is_current_auth_session_active"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -22619,6 +23122,62 @@ $$;
 ALTER FUNCTION "public"."list_rubber_approval_groups"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean DEFAULT false, "p_before" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_before_id" "uuid" DEFAULT NULL::"uuid", "p_limit" integer DEFAULT 50, "p_search" "text" DEFAULT ''::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare rows jsonb; counts jsonb; notices jsonb;
+begin
+  if not private.rubber_actor_location(p_location_id) then raise exception 'FORBIDDEN'; end if;
+  select coalesce(jsonb_agg(private.rubber_queue_view(j) order by j.accepted_at desc,j.command_id desc),'[]') into rows
+    from (select * from private.rubber_queue_jobs where location_id=p_location_id
+      and strpos(lower(reference||' '||client_temp_id),lower(left(coalesce(p_search,''),512)))>0
+      and case when p_history then state='done' and history_purged_at is null
+    and (private.rubber_queue_history_finished_at(rubber_queue_jobs) is null
+      or private.rubber_queue_history_finished_at(rubber_queue_jobs) >= private.history_retention_cutoff_date()::timestamp at time zone 'Asia/Bangkok') else state<>'done' end
+      and (p_before is null or (accepted_at,command_id)<(p_before,coalesce(p_before_id,'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)))
+      order by accepted_at desc,command_id desc limit greatest(1,least(coalesce(p_limit,50),100))) j;
+  select jsonb_build_object('revision',coalesce(sum(version),0)::text,'pending',count(*) filter(where state<>'done'),
+    'attention',count(*) filter(where state in ('paused','correction_required')),
+    'oldestAcceptedAt',min(accepted_at) filter(where state<>'done')) into counts
+    from private.rubber_queue_jobs where location_id=p_location_id;
+  select coalesce(jsonb_agg(private.rubber_queue_view(j) order by j.completed_at desc,j.command_id),'[]') into notices
+      from (select * from private.rubber_queue_jobs where location_id=p_location_id and state='done'
+        and history_purged_at is null
+    and (private.rubber_queue_history_finished_at(rubber_queue_jobs) is null
+      or private.rubber_queue_history_finished_at(rubber_queue_jobs) >= private.history_retention_cutoff_date()::timestamp at time zone 'Asia/Bangkok')
+    and error_code is not null and error_code<>'BILL_ALREADY_DELETED'
+        order by completed_at desc,command_id limit 5) j;
+    return jsonb_build_object('rows',rows,'counts',counts,'notices',notices);
+end $$;
+
+
+ALTER FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer, "p_search" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."list_rubber_queue_before_search"("p_location_id" "uuid", "p_history" boolean DEFAULT false, "p_before" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_before_id" "uuid" DEFAULT NULL::"uuid", "p_limit" integer DEFAULT 50) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare rows jsonb; counts jsonb;
+begin
+  if not private.rubber_actor_location(p_location_id) then raise exception 'FORBIDDEN'; end if;
+  select coalesce(jsonb_agg(private.rubber_queue_view(j) order by j.accepted_at desc,j.command_id desc),'[]') into rows
+    from (select * from private.rubber_queue_jobs where location_id=p_location_id
+      and case when p_history then state='done' else state<>'done' end
+      and (p_before is null or (accepted_at,command_id)<(p_before,coalesce(p_before_id,'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)))
+      order by accepted_at desc,command_id desc limit greatest(1,least(coalesce(p_limit,50),100))) j;
+  select jsonb_build_object('pending',count(*) filter(where state<>'done'),
+    'attention',count(*) filter(where state in ('paused','correction_required')),
+    'oldestAcceptedAt',min(accepted_at) filter(where state<>'done')) into counts
+    from private.rubber_queue_jobs where location_id=p_location_id;
+  return jsonb_build_object('rows',rows,'counts',counts);
+end $$;
+
+
+ALTER FUNCTION "public"."list_rubber_queue_before_search"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."list_rubber_weight_alert_groups"() RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -22693,6 +23252,34 @@ end $$;
 
 
 ALTER FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."manage_rubber_queue"("p_command_id" "uuid", "p_version" bigint, "p_action" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare j private.rubber_queue_jobs;
+begin
+  select * into j from private.rubber_queue_jobs where command_id=p_command_id;
+  if j.command_id is null or not private.rubber_actor_location(j.location_id) then raise exception 'FORBIDDEN'; end if;
+  perform pg_advisory_xact_lock(hashtextextended(j.location_id::text,0));
+  select * into j from private.rubber_queue_jobs where command_id=p_command_id for update;
+  if j.version<>p_version or j.state='done' then raise exception 'QUEUE_CHANGED'; end if;
+  if p_action='retry' and j.state<>'correction_required' then
+    update private.rubber_queue_jobs set state='queued',next_attempt_at=clock_timestamp(),version=version+1
+      where command_id=p_command_id returning * into j;
+  elsif p_action='retire' and private.rubber_actor_manager()
+    and not exists(select 1 from auth.users where id=j.actor_user_id) then
+    update private.rubber_queue_jobs set state='done',payload=null,retired_by=auth.uid(),completed_at=clock_timestamp(),
+      version=version+1,error_code='ACCOUNT_CLOSED',result=jsonb_build_object('status','discarded','commandId',command_id,
+        'operation',action,'clientTempId',client_temp_id,'errorCode','ACCOUNT_CLOSED')
+      where command_id=p_command_id returning * into j;
+  else raise exception 'FORBIDDEN_ACTION'; end if;
+  return private.rubber_queue_view(j);
+end $$;
+
+
+ALTER FUNCTION "public"."manage_rubber_queue"("p_command_id" "uuid", "p_version" bigint, "p_action" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."open_rubber_bill_evidence_review_period"("p_location_id" "uuid") RETURNS "jsonb"
@@ -27403,6 +27990,87 @@ end $$;
 ALTER FUNCTION "public"."submit_cash_count_v3"("p_session_id" "uuid", "p_actual_counts" "jsonb", "p_evidence_ids" "uuid"[]) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  j private.rubber_queue_jobs; loc uuid; cmd uuid; target uuid; client text; action text;
+  fp text; policy jsonb; normalized jsonb; req public.rubber_bill_approval_requests%rowtype;
+  head bigint; expected_head bigint; stale boolean:=false; correction boolean:=false;
+begin
+  if not private.is_active_user() then raise exception 'FORBIDDEN'; end if;
+  if jsonb_typeof(payload)<>'object' or octet_length(payload::text)>1048576 then raise exception 'INVALID_COMMAND'; end if;
+  loc:=(payload->>'locationId')::uuid; cmd:=(payload->>'commandId')::uuid;
+  client:=payload->>'clientTempId'; action:=coalesce(payload->>'queueAction',payload->>'operation');
+  if cmd is null or loc is null or client is null or length(client) not between 1 and 512
+    or payload->>'contractVersion' is distinct from '2' or payload->>'idempotencyKey' is distinct from cmd::text
+    or action not in ('create','update','delete','approve','cancel')
+    or not private.rubber_actor_location(loc) then raise exception 'FORBIDDEN_OR_INVALID_COMMAND'; end if;
+  if action in ('approve','cancel') and not private.rubber_actor_manager() then raise exception 'FORBIDDEN'; end if;
+  perform pg_advisory_xact_lock(hashtextextended(loc::text,0));
+  -- Canonical fingerprint ignores only transport fields. Identity/version changes are not retries.
+  if action in ('create','update','delete') then
+    begin
+      normalized:=private.normalize_rubber_bill_calculation_payload(payload);
+      fp:=private.rubber_bill_submission_fingerprint(normalized);
+    exception when raise_exception or invalid_text_representation or numeric_value_out_of_range then
+      if action<>'create' then raise; end if;
+      correction:=true; normalized:=payload; fp:='invalid-'||md5(payload::text);
+    end;
+    fp:=fp
+      || ':' || coalesce(payload->>'expectedCommandGeneration','') || ':' || coalesce(payload->>'expectedQueueVersion','0');
+    if (payload->>'expectedCommandGeneration')::bigint<0 or payload->>'expectedCommandGeneration' is null
+      or payload->>'operation' is distinct from action then raise exception 'INVALID_COMMAND'; end if;
+  else
+    target:=(payload->>'targetRequestId')::uuid;
+    if target is null or client is distinct from 'request:'||target::text then raise exception 'INVALID_COMMAND'; end if;
+    normalized:=payload;
+    fp:=action||':'||target::text;
+  end if;
+  select * into j from private.rubber_queue_jobs where command_id=cmd;
+  if j.command_id is not null then
+    if j.actor_user_id<>auth.uid() or j.location_id<>loc or j.client_temp_id<>client
+      or j.action<>action or j.fingerprint<>fp then raise exception 'COMMAND_MISMATCH'; end if;
+    return private.rubber_queue_view(j);
+  end if;
+  if action in ('approve','cancel') then
+    select * into req from public.rubber_bill_approval_requests where id=target and location_id=loc and request_status='pending';
+    if req.id is null then stale:=true; end if;
+  else
+    insert into private.rubber_queue_heads(location_id,client_temp_id) values(loc,client) on conflict do nothing;
+    select version into head from private.rubber_queue_heads where location_id=loc and client_temp_id=client for update;
+    expected_head:=coalesce((payload->>'expectedQueueVersion')::bigint,0);
+    if expected_head<0 then raise exception 'INVALID_COMMAND'; end if;
+    stale:=head<>expected_head;
+    if not stale then
+      -- A context read permits replacing this exact outstanding proposal.
+      update private.rubber_queue_jobs q set state='done',payload=null,completed_at=clock_timestamp(),version=q.version+1,
+        error_code='COMMAND_SUPERSEDED',result=jsonb_build_object('status','discarded','commandId',command_id,
+          'operation',q.action,'clientTempId',client_temp_id,'errorCode','COMMAND_SUPERSEDED')
+        where location_id=loc and client_temp_id=client and state in ('queued','retry_wait','paused','correction_required');
+      update private.rubber_queue_heads set version=version+1 where location_id=loc and client_temp_id=client;
+    end if;
+  end if;
+  select to_jsonb(p) into policy from private.resolve_rubber_bill_price_policy_without_quota(loc) p;
+  if policy is null or policy->>'central_price' is null then raise exception 'POLICY_UNAVAILABLE'; end if;
+  insert into private.rubber_queue_jobs(command_id,location_id,actor_user_id,client_temp_id,action,fingerprint,payload,
+    target_request_id,target_fingerprint,reference,policy,state,result,completed_at,error_code)
+  values(cmd,loc,auth.uid(),client,action,fp,case when stale then null else normalized end,target,
+    case when target is not null then private.try_rubber_bill_submission_fingerprint(req.proposed_payload) end,
+      left(coalesce(normalized->>'localBillNo',req.proposed_payload->>'localBillNo',client),128),policy,
+    case when stale then 'done' when correction then 'correction_required' else 'queued' end,
+    case when stale then jsonb_build_object('status','discarded','commandId',cmd,'operation',action,
+      'clientTempId',client,'errorCode',case when target is not null then 'REQUEST_CHANGED' else 'STALE_COMMAND_CONTEXT' end) end,
+    case when stale then clock_timestamp() end,case when stale then case when target is not null then 'REQUEST_CHANGED' else 'STALE_COMMAND_CONTEXT' end when correction then 'CORRECTION_REQUIRED' end)
+  returning * into j;
+  return private.rubber_queue_view(j);
+end $$;
+
+
+ALTER FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -27676,6 +28344,81 @@ ALTER FUNCTION "public"."sync_income_expense"("payload" "jsonb") OWNER TO "postg
 
 COMMENT ON FUNCTION "public"."sync_income_expense"("payload" "jsonb") IS 'Synchronizes Income/Expense writes. Original client payload fingerprints survive approval normalization and reject changed replays.';
 
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_income_expense_background"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_id uuid := (payload->>'commandId')::uuid;
+  v_actor uuid := (payload->>'actorUserId')::uuid;
+  v_location uuid := (payload->>'locationId')::uuid;
+  v_server uuid := (payload->>'expectedServerId')::uuid;
+  v_op text := payload->>'operation';
+  v_fingerprint text := private.income_expense_submission_fingerprint(payload);
+  v_saved private.income_expense_background_commands%rowtype;
+  v_row public.income_expense%rowtype;
+  v_result jsonb;
+  v_outcome text;
+  v_status text;
+  v_identity jsonb;
+begin
+  if v_actor is distinct from auth.uid() or not coalesce(private.is_active_user(),false)
+    or not public.can_access_location(v_location) then
+    return jsonb_build_object('status','failed','errorMessage','Location access denied');
+  end if;
+  if payload->>'contractVersion' is distinct from '2' or payload->>'background' is distinct from 'true'
+    or v_op not in ('update','delete') or payload->>'billOption' not in ('รายรับ','ค่าใช้จ่าย') then
+    return jsonb_build_object('status','failed','errorMessage','Invalid operation');
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('income-background:'||v_id::text,0));
+  select * into v_saved from private.income_expense_background_commands where command_id=v_id;
+  if found then
+    if v_saved.actor_user_id<>v_actor or v_saved.fingerprint<>v_fingerprint then
+      return jsonb_build_object('status','failed','errorMessage','ข้อมูลคำขอไม่ตรงกับคำขอเดิม');
+    end if;
+    -- Never recreate an approval on replay, even after rejection/history cleanup.
+    v_result := v_saved.result;
+    if v_result->>'outcome'='pending_approval' then
+      select request_status into v_status from public.income_expense_approval_requests
+        where id=(v_result->>'requestId')::uuid;
+      if v_status='rejected' then
+        v_result := v_result || jsonb_build_object('outcome','rejected');
+      elsif v_status='approved' then
+        v_result := v_result || jsonb_build_object('outcome','synced');
+      end if;
+    end if;
+    return v_result;
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('income-expense-submission:'||(payload->>'idempotencyKey'),0));
+  -- Same source lock as the preserved dispatcher; also serializes cross-tab submits.
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('income_expense:'||(payload->>'clientTempId')));
+  select * into v_row from public.income_expense where id=v_server and location_id=v_location for update;
+  if not found or v_row.client_temp_id is distinct from payload->>'clientTempId'
+    or v_row.bill_option not in ('รายรับ','ค่าใช้จ่าย') or v_row.bill_option is distinct from payload->>'billOption' then
+    return jsonb_build_object('status','failed','errorMessage','ไม่พบรายการรับ-จ่าย');
+  end if;
+  v_identity := jsonb_build_object('commandId',v_id,'actorUserId',v_actor,'serverId',v_server,
+    'locationId',v_location,'clientTempId',v_row.client_temp_id,'operation',v_op);
+  if v_row.record_status='deleted' then v_outcome := 'deleted';
+  elsif v_row.revision_no is distinct from (payload->>'expectedRevisionNo')::integer then
+    v_outcome := 'revision_conflict';
+  elsif exists(select 1 from public.income_expense_approval_requests where source_income_expense_id=v_server and request_status='pending') then
+    return jsonb_build_object('status','failed','errorMessage','รายการนี้กำลังรออนุมัติการเปลี่ยนแปลง');
+  else
+    v_result := public.sync_income_expense(payload);
+    if v_result->>'status' not in ('synced','pending_approval') then return v_result; end if;
+    v_outcome := v_result->>'status';
+  end if;
+  v_result := coalesce(v_result,'{}'::jsonb) || v_identity || jsonb_build_object('outcome',v_outcome);
+  insert into private.income_expense_background_commands values
+    (v_id,v_actor,v_location,v_server,v_row.client_temp_id,v_op,v_fingerprint,v_result);
+  return v_result;
+end $$;
+
+
+ALTER FUNCTION "public"."sync_income_expense_background"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") RETURNS "jsonb"
@@ -28034,6 +28777,50 @@ CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") RETURN
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+declare j private.rubber_queue_jobs; ctx private.rubber_queue_jobs; fp text;
+begin
+  if not private.rubber_actor_location((payload->>'locationId')::uuid) then
+    return jsonb_build_object('status','failed','errorMessage','ไม่มีสิทธิ์ทำรายการบิลยาง');
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended((payload->>'locationId')::uuid::text,0));
+  select * into j from private.rubber_queue_jobs where command_id::text=sync_rubber_bill.payload->>'idempotencyKey';
+  if j.command_id is not null then
+    if not private.rubber_actor_location(j.location_id) or j.actor_user_id<>private.rubber_execution_actor()
+      or j.location_id::text is distinct from payload->>'locationId'
+      or j.client_temp_id is distinct from payload->>'clientTempId' or j.action is distinct from payload->>'operation' then
+      return jsonb_build_object('status','conflict','errorCode','COMMAND_MISMATCH','errorMessage','ข้อมูลคำสั่งไม่ตรงกัน');
+    end if;
+    fp:=private.try_rubber_bill_submission_fingerprint(payload);
+    if fp is null or split_part(j.fingerprint,':',1)<>fp then
+      return jsonb_build_object('status','conflict','errorCode','COMMAND_MISMATCH','errorMessage','ข้อมูลคำสั่งไม่ตรงกัน');
+    end if;
+    if j.state='done' then return j.result; end if;
+    ctx:=private.rubber_execution_job();
+    if ctx.command_id is distinct from j.command_id then
+      return jsonb_build_object('status','failed','errorCode','CENTRAL_QUEUE_PENDING','errorMessage','รายการอยู่ในคิวซิงก์กลาง');
+    end if;
+  elsif exists(select 1 from private.rubber_queue_heads h where h.location_id::text=payload->>'locationId'
+      and h.client_temp_id=payload->>'clientTempId' and h.version>0)
+      and not exists(select 1 from private.rubber_command_receipts r where r.command_id::text=payload->>'idempotencyKey')
+      and not exists(select 1 from public.rubber_bills b where b.idempotency_key=payload->>'idempotencyKey')
+      and not exists(select 1 from public.rubber_bill_approval_requests a where a.idempotency_key=payload->>'idempotencyKey')
+      and not exists(select 1 from private.approval_request_replay_guards g where g.workflow='rubber_bill' and g.request_key=payload->>'idempotencyKey') then
+    return jsonb_build_object('status','failed','errorCode','CENTRAL_ADMISSION_REQUIRED',
+      'errorMessage','กรุณาอัปเดตแอปและส่งผ่านคิวซิงก์กลาง');
+  elsif payload->>'centralQueue'='true' then
+    return jsonb_build_object('status','failed','errorCode','CENTRAL_ADMISSION_REQUIRED','errorMessage','กรุณาส่งผ่านคิวซิงก์กลาง');
+  end if;
+  return public.sync_rubber_bill_before_central_queue(payload-'centralQueue'-'expectedQueueVersion');
+end $$;
+
+
+ALTER FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_before_central_queue"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
 declare
   v_location uuid; v_client text := payload->>'clientTempId'; v_command uuid;
   v_generation bigint; v_expected bigint; v_fingerprint text; v_result jsonb;
@@ -28042,7 +28829,7 @@ declare
   v_payload jsonb := payload - 'contractVersion' - 'commandId' - 'expectedCommandGeneration';
   v_ocr uuid; v_transfer boolean := false; v_known boolean;
 begin
-  if not private.is_active_user() then
+  if not private.rubber_actor_active() then
     return jsonb_build_object('status','failed','errorMessage','Unauthorized or inactive user');
   end if;
   begin
@@ -28050,8 +28837,8 @@ begin
   exception when invalid_text_representation then
     return jsonb_build_object('status','failed','errorMessage','ข้อมูลสาขาไม่ถูกต้อง');
   end;
-  if v_location is null or nullif(btrim(v_client),'') is null or not public.can_access_location(v_location)
-     or not exists(select 1 from public.profiles where id=auth.uid() and role in ('admin','super_admin')) then
+  if v_location is null or nullif(btrim(v_client),'') is null or not private.rubber_actor_location(v_location)
+     or not exists(select 1 from public.profiles where id=private.rubber_execution_actor() and role in ('admin','super_admin')) then
     return jsonb_build_object('status','failed','errorMessage','ไม่มีสิทธิ์ทำรายการบิลยาง');
   end if;
   -- Location first is also the order used by the approval/discard wrappers below.
@@ -28091,7 +28878,7 @@ begin
   end if;
   select * into v_receipt from private.rubber_command_receipts where command_id=v_command;
   if found then
-    if v_receipt.owner_user_id <> auth.uid() or v_receipt.location_id <> v_location
+    if v_receipt.owner_user_id <> private.rubber_execution_actor() or v_receipt.location_id <> v_location
        or v_receipt.client_temp_id <> v_client or v_receipt.operation <> payload->>'operation'
        or v_receipt.fingerprint <> v_fingerprint then
       return jsonb_build_object('status','conflict','errorMessage','รหัสคำสั่งไม่ตรงกับข้อมูลที่ส่ง','errorCode','COMMAND_MISMATCH');
@@ -28119,10 +28906,10 @@ begin
       if v_old.operation='create' and v_old.proposed_payload->>'inputMethod'='ocr' then
         v_ocr := (v_old.proposed_payload->>'ocrUploadId')::uuid;
         v_transfer := payload->>'inputMethod'='ocr' and payload->>'ocrUploadId'=v_ocr::text
-          and v_old.requested_by_user_id=auth.uid();
+          and v_old.requested_by_user_id=private.rubber_execution_actor();
         if v_transfer then
           update public.rubber_bill_ocr_sources set reserved_idempotency_key=v_command::text,updated_at=now()
-          where id=v_ocr and state='reserved' and owner_user_id=auth.uid() and location_id=v_location
+          where id=v_ocr and state='reserved' and owner_user_id=private.rubber_execution_actor() and location_id=v_location
             and reserved_client_temp_id=v_client and reserved_idempotency_key=v_old.idempotency_key;
         else
           update public.rubber_bill_ocr_sources set state='abandoned',abandoned_at=now(),updated_at=now()
@@ -28144,7 +28931,7 @@ begin
       raise exception using errcode='P0002',message='ROLLBACK_COMMAND_REPLACEMENT';
     end if;
     v_result := v_result || jsonb_build_object('commandId',v_command);
-    insert into private.rubber_command_receipts values(v_command,v_location,v_client,auth.uid(),payload->>'operation',v_fingerprint,
+    insert into private.rubber_command_receipts values(v_command,v_location,v_client,private.rubber_execution_actor(),payload->>'operation',v_fingerprint,
       jsonb_strip_nulls(jsonb_build_object('status',v_result->>'status','commandId',v_command,
         'requestId',v_result->'requestId','operation',payload->>'operation','clientTempId',v_client,
         'id',v_result->'id','serverBillNo',v_result->'serverBillNo','revisionNo',v_result->'revisionNo',
@@ -28157,7 +28944,7 @@ begin
 end $$;
 
 
-ALTER FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."sync_rubber_bill_before_central_queue"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill_before_commands_20261028010000"("payload" "jsonb") RETURNS "jsonb"
@@ -28178,7 +28965,7 @@ declare
   v_existing_bill public.rubber_bills%rowtype;
   v_existing_request public.rubber_bill_approval_requests%rowtype;
 begin
-  if not coalesce(private.is_active_user(), false) then
+  if not coalesce(private.rubber_actor_active(), false) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
   end if;
   if v_operation is null or v_operation not in ('create', 'update', 'delete') then
@@ -28193,7 +28980,7 @@ begin
   if v_location_id is null or v_expected_revision is null or v_expected_revision < 0
      or coalesce(payload->>'clientTempId', '') = ''
      or coalesce(payload->>'idempotencyKey', '') = ''
-     or not public.can_access_location(v_location_id) then
+     or not private.rubber_actor_location(v_location_id) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied or invalid identity');
   end if;
 
@@ -28360,9 +29147,9 @@ begin
   end;
   select coalesce(non_current_date_requires_approval, false)
   into v_requires_approval
-  from public.rubber_bill_approval_settings where id = true;
+  from private.resolve_rubber_bill_price_policy_without_quota(v_location_id);
   if v_requires_approval
-     and v_business_date is distinct from (clock_timestamp() at time zone 'Asia/Bangkok')::date then
+     and v_business_date is distinct from (private.rubber_evaluation_time() at time zone 'Asia/Bangkok')::date then
     payload := payload || jsonb_build_object('forceNonCurrentDateApproval', true);
   end if;
 
@@ -28460,7 +29247,7 @@ declare
   v_source public.rubber_bill_ocr_sources%rowtype;
   v_upload_id uuid;
   v_bill_id uuid;
-  v_expected_owner uuid := auth.uid();
+  v_expected_owner uuid := private.rubber_execution_actor();
   v_operation text := payload->>'operation';
   v_input_method text := coalesce(nullif(payload->>'inputMethod', ''), 'manual');
 begin
@@ -28595,12 +29382,12 @@ declare
   v_projected_balance numeric;
 begin
   payload := private.normalize_rubber_bill_calculation_payload(payload);
-  v_active_user := private.is_active_user();
+  v_active_user := private.rubber_actor_active();
   if not coalesce(v_active_user, false) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Unauthorized or inactive user');
   end if;
 
-  v_created_by_user_id := auth.uid();
+  v_created_by_user_id := private.rubber_execution_actor();
   select name, phone into v_created_by_name, v_created_by_phone
   from public.profiles
   where id = v_created_by_user_id;
@@ -28630,7 +29417,7 @@ begin
     end if;
   end if;
 
-  if not public.can_access_location(v_location_id) then
+  if not private.rubber_actor_location(v_location_id) then
     return jsonb_build_object('status', 'failed', 'errorMessage', 'Location access denied');
   end if;
 
@@ -28740,7 +29527,7 @@ begin
       perform pg_advisory_xact_lock(
         hashtext('acid-stock:' || v_location_id::text || ':' || v_stock_row.product_id::text)
       );
-      v_current_balance := public.get_acid_stock_balance(
+      v_current_balance := private.rubber_queue_acid_balance(
         v_location_id,
         v_stock_row.product_id
       );
@@ -30191,6 +30978,20 @@ $$;
 ALTER FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."wake_rubber_queue"("p_location_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.rubber_actor_location(p_location_id) then raise exception 'FORBIDDEN'; end if;
+  perform set_config('lock_timeout','250ms',true);
+  perform private.process_rubber_queue_batch(5,p_location_id);
+end $$;
+
+
+ALTER FUNCTION "public"."wake_rubber_queue"("p_location_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."withdraw_time_tracking_withdrawal_adjustment"("p_adjustment_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -30308,6 +31109,22 @@ COMMENT ON TABLE "private"."document_number_counters" IS 'Durable per-location/d
 
 
 
+CREATE TABLE IF NOT EXISTS "private"."income_expense_background_commands" (
+    "command_id" "uuid" NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "server_id" "uuid" NOT NULL,
+    "client_temp_id" "text" NOT NULL,
+    "operation" "text" NOT NULL,
+    "fingerprint" "text" NOT NULL,
+    "result" "jsonb" NOT NULL,
+    CONSTRAINT "income_expense_background_commands_operation_check" CHECK (("operation" = ANY (ARRAY['update'::"text", 'delete'::"text"])))
+);
+
+
+ALTER TABLE "private"."income_expense_background_commands" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."money_transfer_delete_context" (
     "backend_pid" integer NOT NULL,
     "transaction_id" bigint NOT NULL,
@@ -30364,11 +31181,32 @@ CREATE TABLE IF NOT EXISTS "private"."rubber_command_receipts" (
     "operation" "text" NOT NULL,
     "fingerprint" "text" NOT NULL,
     "result" "jsonb" NOT NULL,
+    "resolved_at" timestamp with time zone,
     CONSTRAINT "rubber_command_receipts_operation_check" CHECK (("operation" = ANY (ARRAY['create'::"text", 'update'::"text", 'delete'::"text"])))
 );
 
 
 ALTER TABLE "private"."rubber_command_receipts" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_queue_execution" (
+    "backend_pid" integer NOT NULL,
+    "transaction_id" bigint NOT NULL,
+    "command_id" "uuid" NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_queue_execution" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_queue_heads" (
+    "location_id" "uuid" NOT NULL,
+    "client_temp_id" "text" NOT NULL,
+    "version" bigint DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_queue_heads" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "private"."sms_account_security" (
@@ -30752,10 +31590,10 @@ CREATE TABLE IF NOT EXISTS "public"."cash_count_bank_evidence" (
     "amount" numeric(14,2) NOT NULL,
     "balance_kind" "text" NOT NULL,
     "drive_file_id" "text",
-    "count_id" "uuid",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "drive_uploaded_at" timestamp with time zone,
     "upload_started_at" timestamp with time zone,
+    "count_id" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "slot_id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "account_position" integer,
     CONSTRAINT "cash_count_bank_attached_position" CHECK (((("count_id" IS NULL) AND ("account_position" IS NULL)) OR (("count_id" IS NOT NULL) AND ("account_position" IS NOT NULL)))),
@@ -32104,6 +32942,11 @@ ALTER TABLE ONLY "private"."document_number_counters"
 
 
 
+ALTER TABLE ONLY "private"."income_expense_background_commands"
+    ADD CONSTRAINT "income_expense_background_commands_pkey" PRIMARY KEY ("command_id");
+
+
+
 ALTER TABLE ONLY "private"."money_transfer_delete_context"
     ADD CONSTRAINT "money_transfer_delete_context_pkey" PRIMARY KEY ("backend_pid", "transaction_id", "transfer_id");
 
@@ -32121,6 +32964,21 @@ ALTER TABLE ONLY "private"."rubber_command_contexts"
 
 ALTER TABLE ONLY "private"."rubber_command_receipts"
     ADD CONSTRAINT "rubber_command_receipts_pkey" PRIMARY KEY ("command_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_queue_execution"
+    ADD CONSTRAINT "rubber_queue_execution_pkey" PRIMARY KEY ("backend_pid", "transaction_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_queue_heads"
+    ADD CONSTRAINT "rubber_queue_heads_pkey" PRIMARY KEY ("location_id", "client_temp_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_queue_jobs"
+    ADD CONSTRAINT "rubber_queue_jobs_pkey" PRIMARY KEY ("command_id");
 
 
 
@@ -32797,11 +33655,27 @@ CREATE INDEX "browser_latest_approval" ON "private"."sms_security_audit" USING "
 
 
 
+CREATE INDEX "income_background_pending_request_idx" ON "private"."income_expense_background_commands" USING "btree" ((("result" ->> 'requestId'::"text"))) WHERE (("result" ->> 'outcome'::"text") = 'pending_approval'::"text");
+
+
+
 CREATE INDEX "rubber_bill_evidence_projection_history" ON "private"."rubber_bill_evidence_projection" USING "btree" ("location_id", "reviewed_at" DESC, "bill_id" DESC) WHERE ("review_status" = ANY (ARRAY['pass'::"text", 'improve'::"text"]));
 
 
 
 CREATE INDEX "rubber_bill_evidence_projection_queue" ON "private"."rubber_bill_evidence_projection" USING "btree" ("location_id", "review_status", "client_created_at", "bill_id");
+
+
+
+CREATE INDEX "rubber_queue_branch" ON "private"."rubber_queue_jobs" USING "btree" ("location_id", "accepted_at" DESC, "command_id");
+
+
+
+CREATE INDEX "rubber_queue_due" ON "private"."rubber_queue_jobs" USING "btree" ("next_attempt_at", "accepted_at") WHERE ("state" = ANY (ARRAY['queued'::"text", 'retry_wait'::"text", 'paused'::"text"]));
+
+
+
+CREATE INDEX "rubber_queue_history_retention" ON "private"."rubber_queue_jobs" USING "btree" ("completed_at", "command_id") WHERE (("state" = 'done'::"text") AND ("history_purged_at" IS NULL));
 
 
 
@@ -33261,6 +34135,10 @@ CREATE UNIQUE INDEX "user_locations_one_primary_per_user" ON "public"."user_loca
 
 
 
+CREATE OR REPLACE TRIGGER "stamp_rubber_command_resolution" BEFORE INSERT OR UPDATE ON "private"."rubber_command_receipts" FOR EACH ROW EXECUTE FUNCTION "private"."stamp_rubber_command_resolution"();
+
+
+
 CREATE OR REPLACE TRIGGER "archive_terminal_approval_request" BEFORE DELETE ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."archive_terminal_approval_request"();
 
 
@@ -33553,6 +34431,10 @@ CREATE OR REPLACE TRIGGER "handle_updated_at" BEFORE UPDATE ON "public"."time_se
 
 
 
+CREATE OR REPLACE TRIGGER "income_background_approval_outcome" AFTER UPDATE OF "request_status" ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."capture_income_background_approval_outcome"();
+
+
+
 CREATE OR REPLACE TRIGGER "income_expense_lock_location" BEFORE UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_location_change"();
 
 
@@ -33743,6 +34625,21 @@ ALTER TABLE ONLY "private"."rubber_command_contexts"
 
 ALTER TABLE ONLY "private"."rubber_command_receipts"
     ADD CONSTRAINT "rubber_command_receipts_location_id_client_temp_id_fkey" FOREIGN KEY ("location_id", "client_temp_id") REFERENCES "private"."rubber_command_contexts"("location_id", "client_temp_id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."rubber_queue_execution"
+    ADD CONSTRAINT "rubber_queue_execution_command_id_fkey" FOREIGN KEY ("command_id") REFERENCES "private"."rubber_queue_jobs"("command_id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."rubber_queue_heads"
+    ADD CONSTRAINT "rubber_queue_heads_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."rubber_queue_jobs"
+    ADD CONSTRAINT "rubber_queue_jobs_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
 
 
 
@@ -35799,6 +36696,10 @@ REVOKE ALL ON FUNCTION "private"."capture_financial_history_creator"() FROM PUBL
 
 
 
+REVOKE ALL ON FUNCTION "private"."capture_income_background_approval_outcome"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."capture_money_history_creator"() FROM PUBLIC;
 
 
@@ -35847,6 +36748,10 @@ REVOKE ALL ON FUNCTION "private"."clear_cash_count_unlock_on_submit"() FROM PUBL
 
 
 REVOKE ALL ON FUNCTION "private"."clear_weight_evidence_completion_on_bill_change"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."compact_rubber_queue_history"("p_days" integer, "p_batch_size" integer) FROM PUBLIC;
 
 
 
@@ -36152,6 +37057,14 @@ REVOKE ALL ON FUNCTION "private"."process_dashboard_refresh_tick"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."process_rubber_queue"("p_limit" integer) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."process_rubber_queue_batch"("p_limit" integer, "p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_active_report_balance_chain"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -36232,6 +37145,10 @@ REVOKE ALL ON FUNCTION "private"."reset_rubber_price_allowances"("p_now" timesta
 
 
 
+REVOKE ALL ON FUNCTION "private"."resolve_rubber_bill_price_policy_before_queue"("p_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."resolve_rubber_bill_price_policy_without_quota"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -36241,6 +37158,18 @@ REVOKE ALL ON FUNCTION "private"."revoke_browser_on_manager_promotion"() FROM PU
 
 
 REVOKE ALL ON FUNCTION "private"."revoke_browser_on_password_change"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_actor_active"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_actor_location"("p_location" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_actor_manager"() FROM PUBLIC;
 
 
 
@@ -36280,11 +37209,27 @@ REVOKE ALL ON FUNCTION "private"."rubber_bill_report_blockers"("p_location_id" "
 
 
 
+REVOKE ALL ON FUNCTION "private"."rubber_bill_report_blockers_before_queue"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_decision"("payload" "jsonb") FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."rubber_bill_submission_fingerprint"("p_payload" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_evaluation_time"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_execution_actor"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_execution_job"() FROM PUBLIC;
 
 
 
@@ -36296,11 +37241,27 @@ REVOKE ALL ON FUNCTION "private"."rubber_export_candidates"("p_location_id" "uui
 
 
 
+REVOKE ALL ON FUNCTION "private"."rubber_queue_acid_balance"("p_location_id" "uuid", "p_product_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_queue_history_finished_at"("j" "private"."rubber_queue_jobs") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rubber_queue_view"("j" "private"."rubber_queue_jobs") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."save_cash_count_alert_group_base"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) FROM PUBLIC;
 
 
 
 GRANT ALL ON FUNCTION "private"."sms_access_allowed"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."stamp_rubber_command_resolution"() FROM PUBLIC;
 
 
 
@@ -36833,6 +37794,10 @@ REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_payment_bund
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_rubber_queue"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_adjustments"() FROM PUBLIC;
 
 
@@ -37073,6 +38038,10 @@ GRANT ALL ON FUNCTION "public"."get_rubber_bill_command_context"("p_location_id"
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_rubber_bill_context_before_queue"("p_location_id" "uuid", "p_client_temp_id" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_rubber_bill_evidence_feed"("p_location_id" "uuid", "p_view" "text", "p_search" "text", "p_bill_id" "uuid", "p_cursor_sort_at" timestamp with time zone, "p_cursor_bill_id" "uuid", "p_page_size" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_rubber_bill_evidence_feed"("p_location_id" "uuid", "p_view" "text", "p_search" "text", "p_bill_id" "uuid", "p_cursor_sort_at" timestamp with time zone, "p_cursor_bill_id" "uuid", "p_page_size" integer) TO "authenticated";
 
@@ -37132,6 +38101,16 @@ GRANT ALL ON FUNCTION "public"."get_rubber_export_page_ids"("p_location_id" "uui
 
 REVOKE ALL ON FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_rubber_export_work_transfer_ids"("p_export_ids" "uuid"[]) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_rubber_queue"("p_location_id" "uuid", "p_command_id" "uuid", "p_limit" integer, "p_before" timestamp with time zone) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_queue"("p_location_id" "uuid", "p_command_id" "uuid", "p_limit" integer, "p_before" timestamp with time zone) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_rubber_queue_draft"("p_command_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_queue_draft"("p_command_id" "uuid") TO "authenticated";
 
 
 
@@ -37240,6 +38219,11 @@ GRANT ALL ON FUNCTION "public"."get_withdrawal_adjustment_summaries"("p_profile_
 
 
 
+REVOKE ALL ON FUNCTION "public"."income_expense_background_context"("p_server_id" "uuid", "p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."income_expense_background_context"("p_server_id" "uuid", "p_location_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."is_current_auth_session_active"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_current_auth_session_active"() TO "authenticated";
 
@@ -37275,6 +38259,15 @@ GRANT ALL ON FUNCTION "public"."list_rubber_approval_groups"() TO "authenticated
 
 
 
+REVOKE ALL ON FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer, "p_search" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer, "p_search" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."list_rubber_queue_before_search"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer) FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "service_role";
@@ -37283,6 +38276,11 @@ GRANT ALL ON FUNCTION "public"."list_rubber_weight_alert_groups"() TO "service_r
 
 REVOKE ALL ON FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."manage_browser_approval"("p_actor" "uuid", "p_target" "uuid", "p_action" "text", "p_id" "uuid") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."manage_rubber_queue"("p_command_id" "uuid", "p_version" bigint, "p_action" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."manage_rubber_queue"("p_command_id" "uuid", "p_version" bigint, "p_action" "text") TO "authenticated";
 
 
 
@@ -37905,6 +38903,11 @@ GRANT ALL ON FUNCTION "public"."submit_cash_count_v3"("p_session_id" "uuid", "p_
 
 
 
+REVOKE ALL ON FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") TO "authenticated";
 
@@ -37912,6 +38915,11 @@ GRANT ALL ON FUNCTION "public"."sync_acid_stock_entry"("payload" "jsonb") TO "au
 
 REVOKE ALL ON FUNCTION "public"."sync_income_expense"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."sync_income_expense"("payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_income_expense_background"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."sync_income_expense_background"("payload" "jsonb") TO "authenticated";
 
 
 
@@ -37925,6 +38933,10 @@ REVOKE ALL ON FUNCTION "public"."sync_money_transfer_item_source_fks"() FROM PUB
 
 REVOKE ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_rubber_bill_before_central_queue"("payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -38026,6 +39038,11 @@ GRANT ALL ON FUNCTION "public"."verify_sms_challenge"("p_user" "uuid", "p_sessio
 
 REVOKE ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."verify_telegram_badge_dispatch_secret"("p_secret" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."wake_rubber_queue"("p_location_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."wake_rubber_queue"("p_location_id" "uuid") TO "authenticated";
 
 
 

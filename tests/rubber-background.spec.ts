@@ -10,6 +10,18 @@ import { loadSourceModule } from "./helpers/load-source-module";
 import { rubberBillFromSyncEvent, mergeRubberBillLocalEvents } from "../src/lib/rubber-bills/local-feed";
 
 const serverId = "71000000-0000-4000-8000-000000000021";
+
+test("manager outcome feedback is scoped to the active owner and branch and distinguishes success from retirement", async () => {
+  const event = await fixture(); event.payload.queueAction = "approve";
+  const notices: Array<[string, string | undefined]> = [];
+  const stop = registerRubberBackgroundNotifications("owner", "location", (message, kind) => notices.push([message, kind]));
+  notifications.notifyRubberManagerOutcome({ ...event, ownerUserId: "other" }, "wrong owner", true);
+  notifications.notifyRubberManagerOutcome({ ...event, locationId: "other" }, "wrong branch", true);
+  notifications.notifyRubberManagerOutcome(event, "confirmed", true);
+  notifications.notifyRubberManagerOutcome(event, "request changed", false);
+  stop(); notifications.notifyRubberManagerOutcome(event, "unmounted", true);
+  expect(notices).toEqual([["confirmed", "success"], ["request changed", "error"]]);
+});
 test("delete confirmation blocks same-render reentry and unlocks after rejection", async () => {
   let calls = 0;
   let reject!: (cause: Error) => void;

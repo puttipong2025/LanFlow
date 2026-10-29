@@ -9,11 +9,13 @@ import { AlertDialog } from "@/components/shared/AlertDialog";
 import type { HistoryCleanupStatus, HistoryRetentionOverview } from "@/types/history-retention";
 
 const GROUP_LABELS: Record<string, { label: string; detail: string }> = {
+  sync_queue_history: { label: "ประวัติคิวซิงก์", detail: "ล้างรายละเอียดเฉพาะงานที่จบแล้ว เก็บผลยืนยันเพื่อป้องกันคำสั่งซ้ำ ไม่ลบงานค้างหรือคำขอรออนุมัติ" },
   dashboard_money_events: { label: "ประวัติรายการเงินล่าสุด", detail: "เหตุการณ์เพิ่ม แก้ไข และลบบน Dashboard" },
   time_tracking_audit_logs: { label: "ประวัติเวลาและเงินเดือน", detail: "Audit การจัดการเวลา การลา ค่าแรง และช่วงทำงาน" },
   admin_account_audit_logs: { label: "ประวัติจัดการบัญชี", detail: "รายการที่สำเร็จ ล้มเหลว หรือไม่ทราบผล; pending ยังไม่ถูกลบ" },
   income_expense_approval_requests: { label: "คำขออนุมัติรับ–จ่าย", detail: "เฉพาะคำขอที่อนุมัติ ปฏิเสธ หรือยกเลิกแล้ว" },
   cash_transfer_delete_requests: { label: "คำขอลบรายการโยกเงิน", detail: "เฉพาะคำขอที่ตัดสินแล้ว" },
+  branch_transfer_delete_requests: { label: "คำขอลบรายการโยกเงินระหว่างสาขา", detail: "เฉพาะคำขอที่สิ้นสุดแล้ว ไม่ลบรายการเงินต้นทาง" },
   rubber_bill_approval_requests: { label: "คำขออนุมัติบิลยาง", detail: "เฉพาะคำขอที่สิ้นสุดแล้ว ไม่ลบบิลจริง" },
   stock_entry_approval_requests: { label: "คำขออนุมัติรายการสต็อก", detail: "เฉพาะคำขอที่ตัดสินแล้ว" },
   stock_product_approval_requests: { label: "คำขออนุมัติสินค้า", detail: "เฉพาะคำขอที่ตัดสินแล้ว" },

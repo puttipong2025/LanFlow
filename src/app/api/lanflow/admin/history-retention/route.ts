@@ -34,7 +34,7 @@ function retentionError(message: string) {
   return errorResponse("จัดการระยะเก็บประวัติไม่สำเร็จ", 500);
 }
 
-export async function GET(request: NextRequest) {
+async function getHistoryRetention(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
   const { data, error } = await result.supabase.rpc(
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(data, { headers: NO_STORE_HEADERS });
 }
 
-export async function POST(request: NextRequest) {
+async function updateHistoryRetention(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
   const body = await request.json().catch(() => null) as {
@@ -90,4 +90,14 @@ export async function POST(request: NextRequest) {
   });
   if (error) return retentionError(error.message);
   return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+}
+
+export async function GET(request: NextRequest) {
+  try { return await getHistoryRetention(request); }
+  catch { return errorResponse("ติดต่อระบบเก็บประวัติไม่สำเร็จ กรุณาลองใหม่", 503); }
+}
+
+export async function POST(request: NextRequest) {
+  try { return await updateHistoryRetention(request); }
+  catch { return errorResponse("ติดต่อระบบเก็บประวัติไม่สำเร็จ กรุณาลองใหม่", 503); }
 }

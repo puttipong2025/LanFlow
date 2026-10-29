@@ -44,10 +44,47 @@ function runner(fetch: (url: string, init?: RequestInit) => Promise<Response>, s
     "./complete-command": completion,
     "@/lib/rubber-bills/complete-command": completion,
     "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => {} },
-    "@/lib/rubber-bills/background-notifications": { notifyRubberBackgroundFailure: async () => {} },
+    "@/lib/rubber-bills/background-notifications": { notifyRubberBackgroundFailure: async () => {}, notifyRubberManagerOutcome: () => {} },
   }, { navigator: { onLine: true } });
 }
 const client = { invalidateQueries: async () => {} } as never;
+
+for (const disposeDuringRead of [true, false]) {
+test(disposeDuringRead ? "active polling does not start a stale scope after its IndexedDB read completes"
+  : "active polling stops scheduling when the owner has no pending work", async () => {
+  let cleanup!: () => void;
+  let poll!: () => Promise<void>;
+  let release!: (events: queue.SyncEvent[]) => void;
+  let calls = 0;
+  let activeTimers = 0;
+  const hook = loadSourceModule<typeof import("../src/hooks/useLanFlowOfflineSyncCoordinator")>("src/hooks/useLanFlowOfflineSyncCoordinator.ts", {
+    react: { useEffect: (effect: () => () => void) => { cleanup = effect(); } },
+    sonner: { toast: { error: () => {} } },
+    "@tanstack/react-query": { useQueryClient: () => client },
+    "@/lib/connectivity": { isDeviceOnline: () => true, subscribeConnectivity: () => () => {} },
+    "@/lib/rubber-bills/background-notifications": { registerRubberBackgroundNotifications: () => () => {} },
+    "@/hooks/useIncomeExpense": { syncPendingIncomeExpense: async () => {} },
+    "@/hooks/useRubberBills": { syncPendingRubberBills: async () => {} },
+    "@/lib/income-expense/background-sync": { runIncomeExpenseBackground: async () => {} },
+    "@/lib/rubber-bills/central-sync": { runRubberCentralQueue: async () => { calls++; },
+      subscribeRubberQueueActivity: (_owner: string, callback: () => void) => { callback(); return () => {}; },
+      rubberOwnerWork: () => new Promise(resolve => { release = resolve; }) },
+  }, { window: { addEventListener: () => {}, removeEventListener: () => {} },
+    setInterval: () => 1,
+    clearInterval: () => {}, setTimeout: (callback: () => Promise<void>, delay: number) => {
+      if (delay === 2_000) { poll = callback; activeTimers++; } return 1;
+    }, clearTimeout: () => {} });
+  hook.useLanFlowOfflineSyncCoordinator({ ownerUserId: owner, locationId: branch });
+  const initialCalls = calls;
+  const pending = poll();
+  if (disposeDuringRead) cleanup();
+  release(disposeDuringRead ? [await fixture()] : []);
+  await pending;
+  expect(calls).toBe(initialCalls);
+  expect(activeTimers).toBe(1);
+  if (!disposeDuringRead) cleanup();
+});
+}
 
 for (const central of [false, true]) {
   test(`local discard ${central ? "preserves a central correction" : "still removes a legacy failure"}`, async () => {
@@ -109,6 +146,123 @@ test("central admission keeps immutable local work until a confirmed business re
   expect(sends).toHaveLength(1);
   expect(sends[0].url).toBe("/api/lanflow/rubber-bills/queue");
   expect(sends[0].payload).toEqual(event.payload);
+});
+
+test("new work arriving during admission drains without another recovery tick and keeps one upload active", async () => {
+  const first = await fixture();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const commands: string[] = [];
+  let active = 0, maximum = 0;
+  const sync = runner(async (_url, init) => {
+    active++; maximum = Math.max(maximum, active);
+    const payload = JSON.parse(String(init?.body));
+    commands.push(payload.commandId);
+    if (commands.length === 1) { entered(); await gate; }
+    active--;
+    const current = (await queue.getPendingEvents(first)).find(event => event.payload.commandId === payload.commandId)!;
+    return Response.json(row(current));
+  });
+  const running = sync.runRubberCentralQueue(client, owner);
+  await started;
+  const second = await fixture();
+  const joined = sync.runRubberCentralQueue(client, owner);
+  release();
+  await Promise.all([running, joined]);
+  expect(commands).toEqual([first.payload.commandId, second.payload.commandId]);
+  expect(maximum).toBe(1);
+  expect(await queue.getPendingEvents(first)).toHaveLength(2);
+});
+
+test("continuous new arrivals are capped at three rounds per flight", async () => {
+  await fixture();
+  let sends = 0;
+  let sync!: ReturnType<typeof runner>;
+  sync = runner(async (_url, init) => {
+    const payload = JSON.parse(String(init?.body));
+    const current = (await queue.getPendingEvents({ entity: "rubber_bills", ownerUserId: owner, locationId: branch }))
+      .find(event => event.payload.commandId === payload.commandId)!;
+    sends++;
+    await fixture();
+    void sync.runRubberCentralQueue(client, owner);
+    return Response.json(row(current));
+  });
+  await sync.runRubberCentralQueue(client, owner);
+  expect(sends).toBe(3);
+});
+
+test("unchanged admitted pending status does not refetch business queries on each poll", async () => {
+  const event = await fixture();
+  await queue.updateSyncEvent({ ...event, centralAccepted: true } as queue.SyncEvent);
+  let invalidations = 0;
+  const sync = runner(async () => Response.json(row(event)));
+  await sync.runRubberCentralQueue({ invalidateQueries: async () => { invalidations++; } } as never, owner);
+  expect(invalidations).toBe(0);
+  expect(await queue.getPendingEvents(event)).toHaveLength(1);
+});
+
+for (const state of ['paused', 'retry_wait'] as const) {
+  test(`server ${state} backoff avoids polling the same job every two seconds`, async () => {
+    const event = await fixture();
+    await queue.updateSyncEvent({ ...event, centralAccepted: true } as queue.SyncEvent);
+    const started = Date.now();
+    let reads = 0;
+    const sync = runner(async () => { reads++; return Response.json({ ...row(event), state,
+      nextAttemptAt: new Date(started + 60_000).toISOString() }); });
+    await sync.runRubberCentralQueue(client, owner);
+    const [retained] = await sync.rubberOwnerWork(owner);
+    expect(retained.nextAttemptAt).toBeGreaterThanOrEqual(started + 30_000);
+    expect(retained.nextAttemptAt).toBeLessThanOrEqual(Date.now() + 30_000);
+    await sync.runRubberCentralQueue(client, owner);
+    expect(reads).toBe(1);
+    expect(retained.payload).toEqual(event.payload);
+  });
+}
+
+test('explicit recovery can recheck an admitted receipt before its backoff without resubmitting it', async () => {
+  const event = await fixture();
+  await queue.updateSyncEvent({ ...event, centralAccepted: true, nextAttemptAt: Date.now() + 30_000 } as queue.SyncEvent);
+  const methods: string[] = [];
+  const sync = runner(async (_url, init) => { methods.push(init?.method ?? 'GET'); return Response.json(row(event, true)); });
+  await sync.runRubberCentralQueue(client, owner);
+  expect(methods).toEqual([]);
+  await sync.runRubberCentralQueue(client, owner, true);
+  expect(methods).toEqual(['GET']);
+  expect(await queue.getPendingEvents(event)).toHaveLength(0);
+});
+
+test('explicit receipt recovery preserves admission backoff for an unknown command', async () => {
+  const event = await fixture();
+  await queue.updateSyncEvent({ ...event, serverSubmissionAttempted: true, nextAttemptAt: Date.now() + 30_000 } as queue.SyncEvent);
+  let requests = 0;
+  const sync = runner(async () => { requests++; throw new Error('Do not resubmit unknown admission early'); });
+  await sync.runRubberCentralQueue(client, owner, true);
+  expect(requests).toBe(0);
+  expect((await queue.getPendingEvents(event))[0].payload).toEqual(event.payload);
+});
+
+test('receipt recovery arriving during admission joins the owner flight without losing its wake', async () => {
+  const admitted = await fixture();
+  await queue.updateSyncEvent({ ...admitted, centralAccepted: true, nextAttemptAt: Date.now() + 30_000 } as queue.SyncEvent);
+  const fresh = await fixture();
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const methods: string[] = [];
+  const sync = runner(async (url, init) => {
+    methods.push(init?.method ?? 'GET');
+    if (init?.method === 'POST') { entered(); await gate; return Response.json(row(fresh)); }
+    const id = new URL(url, 'https://example.test').searchParams.get('commandId');
+    return Response.json(row(id === admitted.payload.commandId ? admitted : fresh, true));
+  });
+  const running = sync.runRubberCentralQueue(client, owner);
+  await started;
+  const joined = sync.runRubberCentralQueue(client, owner, true);
+  release(); await Promise.all([running, joined]);
+  expect(methods).toEqual(['POST', 'GET', 'GET']);
+  expect(await queue.getPendingEvents(admitted)).toHaveLength(0);
 });
 
 for (const mismatch of ["actorUserId", "locationId", "clientTempId", "commandId", "emptyResult", "wrongRevision"] as const) {

@@ -2,18 +2,22 @@ import { expect, test, type Page } from "@playwright/test";
 import type { HistoryRetentionOverview } from "../src/types/history-retention";
 
 const keys = ["dashboard_money_events", "time_tracking_audit_logs", "admin_account_audit_logs",
-  "income_expense_approval_requests", "cash_transfer_delete_requests", "rubber_bill_approval_requests",
-  "stock_entry_approval_requests", "stock_product_approval_requests", "scheduler_run_history", "cleanup_run_history"];
+  "income_expense_approval_requests", "cash_transfer_delete_requests", "branch_transfer_delete_requests", "rubber_bill_approval_requests",
+  "stock_entry_approval_requests", "stock_product_approval_requests", "scheduler_run_history", "cleanup_run_history", "sync_queue_history"];
 function initial(): HistoryRetentionOverview {
   return { currentDays: 15, requestedDays: 15, cutoffDate: "2026-08-20", updatedAt: "2026-09-03T01:00:00Z",
     updatedByName: "manager", totalEligible: 1005,
     groups: keys.map(key => ({ key, eligibleCount: key === "scheduler_run_history" ? 1005 : 0, oldestDate: key === "scheduler_run_history" ? "2026-08-01" : null })), lastCleanup: null };
 }
 async function openSettings(page: Page) {
+  await page.route("**/api/lanflow/threshold-alert", route => route.fulfill({ json: {
+    config: { thresholdKg: 10000, intervalMinutes: 60 }, configuredCount: 0, checkedCount: 0, candidates: [], unavailable: [],
+  } }));
   await page.goto("/");
   await page.getByRole("button", { name: "Admin", exact: true }).click();
   await page.getByRole("button", { name: "การเก็บประวัติ", exact: true }).click();
   await expect(page.getByLabel("จำนวนวันที่เก็บ")).toHaveValue("15");
+  await expect(page.getByText("ประวัติคิวซิงก์", { exact: true })).toBeVisible();
 }
 test.describe("background history retention UI", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });

@@ -2,11 +2,18 @@ import { getSyncDb, SYNC_QUEUE_STORE } from "@/lib/idb-core";
 import { isSameSyncCommand } from "@/lib/sync-event-comparison";
 import type { SyncEvent } from "@/lib/idb-queue";
 
-let active: { ownerUserId: string; locationId: string; notify: (message: string) => void } | undefined;
-export function registerRubberBackgroundNotifications(ownerUserId: string, locationId: string, notify: (message: string) => void) {
+let active: { ownerUserId: string; locationId: string; notify: (message: string, kind?: "success" | "error") => void } | undefined;
+export function registerRubberBackgroundNotifications(ownerUserId: string, locationId: string, notify: (message: string, kind?: "success" | "error") => void) {
   const scope = { ownerUserId, locationId, notify };
   active = scope;
   return () => { if (active === scope) active = undefined; };
+}
+
+export function notifyRubberManagerOutcome(event: SyncEvent, message: string, success: boolean) {
+  const scope = active;
+  if (event.payload.queueAction && scope?.ownerUserId === event.ownerUserId && scope.locationId === event.locationId) {
+    scope.notify(message, success ? "success" : "error");
+  }
 }
 
 export function isRubberBackgroundScopeActive(ownerUserId: string, locationId: string) {

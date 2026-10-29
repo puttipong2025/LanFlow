@@ -27,7 +27,7 @@ test("history retention API rejects coercible values and enforces manager access
     };
     expect(overview.currentDays).toBe(15);
     expect(overview.requestedDays).toBe(15);
-    expect(overview.groups).toHaveLength(10);
+    expect(overview.groups).toHaveLength(12);
 
     for (const retentionDays of [true, "15", null]) {
       const invalid = await manager.request.post("/api/lanflow/admin/history-retention", {

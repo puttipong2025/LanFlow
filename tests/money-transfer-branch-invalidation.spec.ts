@@ -170,19 +170,20 @@ test("branch receipt and approved deletion invalidate every affected money-flow 
   expect(invalidation).toContain("moneyFlowQueryKeys.dashboardBranchSummaries()");
 });
 
-test("approval modal keeps every decision modal-wide single-flight", async () => {
+test("approval modal guards each request synchronously while independent requests remain available", async () => {
   const source = await readFile(
     "src/components/income-expense/IncomeExpenseApprovalModal.tsx",
     "utf8",
   );
 
-  expect(source).toContain("const decidingRef = useRef<string | null>(null);");
-  expect(source).toContain("if (decidingRef.current !== null) return;");
+  expect(source).toContain("const decidingRef = useRef(new Set<string>());");
+  expect(source).toContain("if (decidingRef.current.has(id)) return;");
+  expect(source).toContain("decidingRef.current.add(id);");
+  expect(source).toContain("decidingRef.current.delete(id);");
   expect(source.match(/await runDecision\(/g)).toHaveLength(4);
-  expect(source).toContain("closeDisabled={decidingId !== null}");
-  expect(source).toContain("isDeciding={decidingId !== null}");
-  expect(source.match(/disabled={decidingId !== null}/g)).toHaveLength(4);
-  expect(source).not.toContain("disabled={decidingId === request.id}");
+  expect(source).toContain("closeDisabled={decidingIds.size > 0}");
+  expect(source).toContain("isDeciding={decidingIds.has(request.id)}");
+  expect(source.match(/disabled={decidingIds.has\(request.id\)}/g)).toHaveLength(4);
 });
 
 test("branch receipt route rejects a malformed successful RPC result", async () => {

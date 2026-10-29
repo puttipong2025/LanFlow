@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/server/auth";
-import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
+import { isIsoTimestamp, isJsonObject, isUuid } from "@/lib/server/management-route-error";
 import { isRubberQueueRow, isRubberQueueSubmission } from "@/lib/rubber-bills/central-queue-contract";
+import { processRubberQueueImmediately } from "@/lib/server/rubber-queue-immediate";
 
 const headers = { "Cache-Control": "private, no-store, max-age=0" };
 const failure = (status = 503) => NextResponse.json({ errorMessage: "ยังยืนยันสถานะคิวซิงก์ไม่ได้ กรุณาลองใหม่" }, { status, headers });
@@ -34,7 +35,7 @@ export async function GET(request: Request) {
     const draftCommandId = params.get("draftCommandId");
     const beforeId = params.get("beforeId");
     if (!isUuid(locationId) || (commandId !== null && !isUuid(commandId))
-      || (before !== null && !Number.isFinite(Date.parse(before))) || (draftCommandId !== null && !isUuid(draftCommandId))
+      || (before !== null && !isIsoTimestamp(before)) || (draftCommandId !== null && !isUuid(draftCommandId))
       || (beforeId !== null && !isUuid(beforeId))) return failure(400);
     if (draftCommandId) {
       const { data, error } = await auth.supabase.rpc("get_rubber_queue_draft", { p_command_id: draftCommandId });
@@ -74,7 +75,16 @@ export async function POST(request: Request) {
     if (!isRubberQueueRow(data) || data.commandId !== payload.commandId || data.actorUserId !== auth.auth.sub
       || data.locationId !== payload.locationId || data.clientTempId !== payload.clientTempId
       || data.action !== (payload.queueAction ?? payload.operation)) return failure();
-    return NextResponse.json(data, { status: data.state === "done" ? 200 : 202, headers });
+    let receipt = data;
+    try {
+      if (data.state === "queued" && await processRubberQueueImmediately(data.locationId)) {
+        const refreshed = await auth.supabase.rpc("get_rubber_queue", { p_location_id: data.locationId, p_command_id: data.commandId });
+        if (!refreshed.error && isRubberQueueRow(refreshed.data) && refreshed.data.commandId === data.commandId
+          && refreshed.data.actorUserId === data.actorUserId && refreshed.data.locationId === data.locationId
+          && refreshed.data.clientTempId === data.clientTempId && refreshed.data.action === data.action) receipt = refreshed.data;
+      }
+    } catch { /* Admission is already committed; cron and receipt polling retain ownership. */ }
+    return NextResponse.json(receipt, { status: receipt.state === "done" ? 200 : 202, headers });
   } catch { return failure(); }
 }
 

@@ -7,12 +7,23 @@ import { acknowledgeRubberCommand } from "./complete-command";
 import { isConfirmedRubberSyncResult } from "./sync-result";
 import { isConfirmedRubberManagerResult, isRubberQueueRow, rubberQueueMessage, type RubberQueueRow } from "./central-queue-contract";
 import { prepareRubberBillCommand } from "./command";
-import { notifyRubberBackgroundFailure } from "./background-notifications";
+import { notifyRubberBackgroundFailure, notifyRubberManagerOutcome } from "./background-notifications";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
 
 export const RUBBER_QUEUE_ENDPOINT = "/api/lanflow/rubber-bills/queue";
 const flight = createScopedSingleFlight();
+const requestedOwners = new Set<string>();
+const receiptCheckOwners = new Set<string>();
+const activityListeners = new Map<string, Set<() => void>>();
+export function subscribeRubberQueueActivity(owner: string, listener: () => void) {
+  const listeners = activityListeners.get(owner) ?? new Set<() => void>();
+  listeners.add(listener); activityListeners.set(owner, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) activityListeners.delete(owner);
+  };
+}
 type CentralEvent = SyncEvent & { nextAttemptAt?: number; attempts?: number; centralAccepted?: boolean };
 export const isCentralRubberEvent = (event: SyncEvent) => event.entity === "rubber_bills" && event.payload.centralQueue === true;
 
@@ -65,10 +76,21 @@ export async function acceptRubberManagerCommand(ownerUserId: string, locationId
   return { queued: true };
 }
 
-export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserId: string) {
+export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserId: string, forceReceiptCheck = false) {
+  for (const listener of activityListeners.get(ownerUserId) ?? []) listener();
+  requestedOwners.add(ownerUserId);
+  if (forceReceiptCheck) receiptCheckOwners.add(ownerUserId);
   return flight(ownerUserId, async () => {
+    for (let round = 0; round < 3 && requestedOwners.delete(ownerUserId); round++) {
+      await runRubberCentralQueueRound(queryClient, ownerUserId, receiptCheckOwners.delete(ownerUserId));
+    }
+  });
+}
+
+async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId: string, forceReceiptCheck: boolean) {
     if (!ownerUserId || !navigator.onLine) return;
-    const events = (await rubberOwnerWork(ownerUserId)).filter(event => (event.nextAttemptAt ?? 0) <= Date.now())
+    const events = (await rubberOwnerWork(ownerUserId)).filter(event => (event.nextAttemptAt ?? 0) <= Date.now()
+      || (forceReceiptCheck && event.centralAccepted && event.status === 'pending'))
       .sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0));
     const changed = new Set<string>();
     const deferredBranches = new Set<string>();
@@ -115,6 +137,8 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
             const managerRetired = manager && row.result.status === "discarded" && row.result.commandId === event.payload.commandId
               && row.result.operation === manager && row.result.clientTempId === event.id;
             if ((confirmed || managerRetired) && await acknowledgeRubberCommand(event, row.result)) {
+              if (manager) notifyRubberManagerOutcome(event, managerRetired ? rubberQueueMessage(row)
+                : manager === "approve" ? "อนุมัติคำขอแล้ว" : "ลบคำขอแล้ว", !managerRetired);
               const scope = { ownerUserId, locationId: event.locationId };
               try {
                 if (manager) {
@@ -134,12 +158,15 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
             continue;
           }
           const correction = row.state === "correction_required";
+          const now = Date.now();
+          const delay = row.state === "paused" || row.state === "retry_wait"
+            ? Math.max(2_000, Math.min(30_000, Date.parse(row.nextAttemptAt) - now)) : 2_000;
           const next: CentralEvent = { ...event, centralAccepted: true, status: correction ? "failed" : "pending",
             serverSubmissionAttempted: !correction, failureHttpStatus: correction ? 400 : undefined,
             errorMessage: correction ? rubberQueueMessage(row) : undefined,
-            nextAttemptAt: Date.now() + 10_000 };
+            nextAttemptAt: now + delay };
           if (await reconcileSyncEventsIfCurrent([event], next)) {
-            changed.add(event.locationId);
+            if (!event.centralAccepted || correction) changed.add(event.locationId);
             if (correction) await notifyRubberBackgroundFailure(next);
           }
         } else {
@@ -157,5 +184,4 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
       await queryClient.invalidateQueries({ queryKey: ["rubberCentralQueue", ownerUserId, locationId] });
       await invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
     }
-  });
 }

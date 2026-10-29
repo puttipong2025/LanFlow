@@ -10,22 +10,80 @@ const accepted = { commandId, actorUserId: owner, locationId: branch, clientTemp
   acceptedAt: "2026-10-28T00:00:00Z", version: 1, attempts: 0, nextAttemptAt: "2026-10-28T00:00:00Z",
   errorCode: null, result: null, completedAt: null, canRetire: false };
 type Routes = typeof import("../src/app/api/lanflow/rubber-bills/queue/route");
-function route(data: unknown, error: unknown = null, authOk = true) {
+function route(data: unknown, error: unknown = null, authOk = true,
+  immediate: () => Promise<boolean> = async () => false, refreshed: unknown = data) {
   let calls = 0;
   const handlers = loadSourceModule<Routes>("src/app/api/lanflow/rubber-bills/queue/route.ts", {
+    "@/lib/server/rubber-queue-immediate": { processRubberQueueImmediately: immediate },
     "@/lib/server/auth": { requireAuth: async () => authOk ? { ok: true, auth: { sub: owner },
-      supabase: { rpc: async () => { calls++; return { data, error }; } } } : { ok: false, response: Response.json({}, { status: 401 }) } },
+      supabase: { rpc: async () => { calls++; return { data: calls === 1 ? data : typeof refreshed === 'function' ? await refreshed() : refreshed, error }; } } } : { ok: false, response: Response.json({}, { status: 401 }) } },
   });
   return { ...handlers, calls: () => calls };
 }
 const post = (value: unknown) => new Request("https://example.test/api/lanflow/rubber-bills/queue", {
   method: "POST", body: JSON.stringify(value), headers: { "Content-Type": "application/json" },
 });
+
 test("POST returns 202 admission without claiming business success and disables caching", async () => {
   const response = await route(accepted).POST(post(payload));
   expect(response.status).toBe(202);
   expect((await response.json()).state).toBe("queued");
   expect(response.headers.get("cache-control")).toContain("no-store");
+});
+
+test("an immediate attempt cannot replace the admitted command with another receipt", async () => {
+  for (const refreshed of [null, {}, { ...accepted, commandId: owner }, { ...accepted, locationId: owner }]) {
+    const handlers = route(accepted, null, true, async () => true, refreshed);
+    const response = await handlers.POST(post(payload));
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual(accepted);
+    expect(handlers.calls()).toBe(2);
+  }
+});
+
+test("only verified committed business success can return 200 from immediate processing", async () => {
+  const done = { ...accepted, state: "done", completedAt: accepted.acceptedAt,
+    result: { status: "synced", commandId, id: branch, revisionNo: 1, serverBillNo: "S-1", serverReceivedAt: accepted.acceptedAt } };
+  const response = await route(accepted, null, true, async () => true, done).POST(post(payload));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(done);
+});
+
+test("failed acceleration keeps durable admission and unauthorized requests never run a worker", async () => {
+  let starts = 0;
+  const immediate = async () => { starts++; return false; };
+  expect((await route(accepted, null, false, immediate).POST(post(payload))).status).toBe(401);
+  expect((await route(accepted, null, true, immediate).POST(post({ ...payload, actorUserId: branch }))).status).toBe(403);
+  expect(starts).toBe(0);
+  expect((await route(accepted, null, true, immediate).POST(post(payload))).status).toBe(202);
+  expect(starts).toBe(1);
+});
+
+test("optional acceleration and receipt-read exceptions cannot erase a validated durable admission", async () => {
+  const unavailable = async () => { throw new Error('transport unavailable'); };
+  for (const handlers of [route(accepted, null, true, unavailable), route(accepted, null, true, async () => true, unavailable)]) {
+    const response = await handlers.POST(post(payload));
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual(accepted);
+  }
+});
+
+test("non-central envelopes are rejected before RPC", async () => {
+  for (const centralQueue of [undefined, false, 'true', 1]) {
+    const handlers = route(accepted);
+    expect((await handlers.POST(post({ ...payload, centralQueue }))).status).toBe(400);
+    expect(handlers.calls()).toBe(0);
+  }
+});
+test("malformed timestamp cursors are rejected before RPC while ISO cursors remain valid", async () => {
+  for (const before of ['0', '2026-02-30T00:00:00Z', '2026-10-29']) {
+    const handlers = route(accepted);
+    expect((await handlers.GET(new Request(`https://example.test?locationId=${branch}&before=${encodeURIComponent(before)}`))).status).toBe(400);
+    expect(handlers.calls()).toBe(0);
+  }
+  const handlers = route({ rows: [], counts: { pending: 0, attention: 0 } });
+  expect((await handlers.GET(new Request(`https://example.test?locationId=${branch}&before=2026-10-29T00:00:00Z`))).status).toBe(200);
+  expect(handlers.calls()).toBe(1);
 });
 for (const bad of [null, {}, { ...accepted, commandId: owner }, { ...accepted, locationId: owner },
   { ...accepted, actorUserId: branch }, { ...accepted, action: "delete" }, { ...accepted, state: "done", result: {} }]) {

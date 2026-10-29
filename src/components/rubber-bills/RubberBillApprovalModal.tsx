@@ -69,6 +69,7 @@ export function RubberBillApprovalModal({
   const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [page, setPage] = useState(1);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [confirmation, setConfirmation] = useState<{ kind: "approve" | "delete"; bill: RubberBill } | null>(null);
   const settingsSaveRef = useRef(false);
@@ -143,28 +144,38 @@ export function RubberBillApprovalModal({
   }
 
   async function handleApprove(request: RubberBill) {
-    if (!request.approvalRequestId || requestLocksRef.current.has(request.approvalRequestId)) return;
+    if (!request.approvalRequestId || busyIds.has(request.approvalRequestId) || requestLocksRef.current.has(request.approvalRequestId)) return;
     requestLocksRef.current.add(request.approvalRequestId);
+    const errorKey = `${profile.id}:${request.locationId}:${request.approvalRequestId}`;
+    setActionErrors(previous => ({ ...previous, [errorKey]: undefined }));
     try {
       setBusyIds(previous => new Set(previous).add(request.approvalRequestId!));
       await approveRequest(request.approvalRequestId, request.locationId);
+      toast.message("ส่งคำสั่งอนุมัติแล้ว รอยืนยันผล");
     } catch (error) {
       setBusyIds(previous => { const next = new Set(previous); next.delete(request.approvalRequestId!); return next; });
-      toast.error(error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ");
+      const message = error instanceof Error ? error.message : "อนุมัติคำขอไม่สำเร็จ";
+      setActionErrors(previous => ({ ...previous, [errorKey]: message }));
+      toast.error(message);
     } finally {
       requestLocksRef.current.delete(request.approvalRequestId);
     }
   }
 
   async function handleDelete(request: RubberBill) {
-    if (!request.approvalRequestId || requestLocksRef.current.has(request.approvalRequestId)) return;
+    if (!request.approvalRequestId || busyIds.has(request.approvalRequestId) || requestLocksRef.current.has(request.approvalRequestId)) return;
     requestLocksRef.current.add(request.approvalRequestId);
+    const errorKey = `${profile.id}:${request.locationId}:${request.approvalRequestId}`;
+    setActionErrors(previous => ({ ...previous, [errorKey]: undefined }));
     try {
       setBusyIds(previous => new Set(previous).add(request.approvalRequestId!));
       await deleteRequest(request.approvalRequestId, request.locationId);
+      toast.message("ส่งคำสั่งลบแล้ว รอยืนยันผล");
     } catch (error) {
       setBusyIds(previous => { const next = new Set(previous); next.delete(request.approvalRequestId!); return next; });
-      toast.error(error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ");
+      const message = error instanceof Error ? error.message : "ลบคำขอไม่สำเร็จ";
+      setActionErrors(previous => ({ ...previous, [errorKey]: message }));
+      toast.error(message);
     } finally {
       requestLocksRef.current.delete(request.approvalRequestId);
     }
@@ -231,6 +242,11 @@ export function RubberBillApprovalModal({
               };
               return (
                 <article key={request.id} className="rounded-md border border-black/10 p-3 text-sm">
+                  {actionErrors[`${profile.id}:${request.locationId}:${request.approvalRequestId}`] && (
+                    <p role="alert" className="mb-2 text-pretty text-sm text-danger">
+                      {actionErrors[`${profile.id}:${request.locationId}:${request.approvalRequestId}`]}
+                    </p>
+                  )}
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
                     <div className="flex shrink-0 gap-1.5 whitespace-nowrap">
                       <button
@@ -239,7 +255,8 @@ export function RubberBillApprovalModal({
                         onClick={() => setConfirmation({ kind: "approve", bill: request })}
                         className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
                         title="อนุมัติ"
-                        aria-label="อนุมัติ"
+                        aria-label={busyIds.has(request.approvalRequestId ?? "") ? "รอผลคำสั่ง" : "อนุมัติ"}
+                        aria-busy={busyIds.has(request.approvalRequestId ?? "")}
                       >
                         {busyIds.has(request.approvalRequestId ?? "") ? <span className="text-xs">รอผล</span> : <Check size={17} />}
                       </button>
@@ -249,10 +266,11 @@ export function RubberBillApprovalModal({
                         onClick={() => setConfirmation({ kind: "delete", bill: request })}
                         className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
                         title="ลบคำขอถาวร"
-                        aria-label="ลบคำขอถาวร"
+                        aria-label={busyIds.has(request.approvalRequestId ?? "") ? "รอผลคำสั่ง" : "ลบคำขอถาวร"}
+                        aria-busy={busyIds.has(request.approvalRequestId ?? "")}
                       >
                         <Trash2 size={16} />
-                        ลบ
+                        {busyIds.has(request.approvalRequestId ?? "") ? "รอผล" : "ลบ"}
                       </button>
                     </div>
                     <div className="min-w-0 space-y-1">
