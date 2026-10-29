@@ -67,13 +67,14 @@ test("two devices see server processing while the origin leaves the branch; mana
     await expect.poll(() => posts).toBe(1);
     console.info('CQ browser: local accepted before POST');
     expect(sql(`select count(*) from private.rubber_queue_jobs where command_id='${commandId}'`)).toBe("0");
+    await expect.poll(() => downloads, { timeout: 15000 }).toBe(1);
     await selectAppLocation(page, other);
     release();
     await expect.poll(() => sql(`select state from private.rubber_queue_jobs where command_id='${commandId}'`), { timeout: 25_000 }).toBe("done");
     await expect(viewing.getByRole("row").filter({ hasText: marker }).filter({ hasNotText: "approval" }).first()).toBeVisible({ timeout: 25_000 });
     console.info('CQ browser: other device refreshed without sender');
     expect(await selectedAppLocationId(page)).toBe(other);
-    expect(downloads).toBe(0);
+    expect(downloads).toBe(1);
     await expect(page.getByRole("dialog", { name: "กำลังสร้าง PDF" })).not.toBeVisible();
     await expect(page.getByRole("alertdialog")).not.toBeVisible();
     await page.unroute("**/api/lanflow/rubber-bills/queue");
@@ -120,7 +121,7 @@ test("two devices see server processing while the origin leaves the branch; mana
     await expect(shared.getByText("อนุมัติคำขอ", { exact: false }).first()).toBeVisible();
     mkdirSync("output", { recursive: true });
     await page.screenshot({ path: "output/rubber-central-queue-shared.png", fullPage: true });
-    expect(downloads).toBe(0); // Returning did not resurrect the origin print intent.
+    expect(downloads).toBe(1); // Returning did not replay the already shared local receipt.
     await shared.getByRole("button", { name: "ปิด", exact: true }).click();
     // Two creations become ready together. The real PDF path must deliver both,
     // while the observer remains silent and never acquires origin intents.
@@ -145,10 +146,10 @@ test("two devices see server processing while the origin leaves the branch; mana
       await expect(create).not.toBeVisible();
     }
     release();
-    await expect.poll(() => downloads, { timeout: 60_000, intervals: [500, 1_000, 2_000] }).toBe(2);
-    expect(printPosts).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => downloads, { timeout: 60_000, intervals: [500, 1_000, 2_000] }).toBe(3);
+    await expect.poll(() => printPosts, { timeout: 45000 }).toBeGreaterThanOrEqual(2);
     expect(observerDownloads).toBe(0);
-    expect(sql(`select count(*) from public.rubber_bills where location_id='${branch}' and customer_name like '${marker}-print-%'`)).toBe("2");
+    await expect.poll(() => sql(`select count(*) from public.rubber_bills where location_id='${branch}' and customer_name like '${marker}-print-%'`), { timeout: 45000 }).toBe("2");
     console.info('CQ browser: both origin PDFs delivered serially');
   } finally {
     release();

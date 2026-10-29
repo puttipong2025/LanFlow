@@ -258,7 +258,7 @@ test.describe("immediate mutation state contract", () => {
   test("reports pending approval only after the server confirms the request", () => {
     const source = readSource("src/hooks/useRubberBills.ts");
     const queuedFallback = source.match(
-      /return \{\s+\.\.\.calculatedBill,\s+syncStatus: "pending"[\s\S]*?\n\s+\};/
+      /return \{\s+\.\.\.calculatedBill,\s+(?:immediatePdfBill,\s+)?syncStatus: "pending"[\s\S]*?\n\s+\};/
     )?.[0] ?? "";
 
     expect(source).toContain('approvalPending: data.status === "pending_approval"');

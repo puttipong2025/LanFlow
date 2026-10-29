@@ -26,7 +26,7 @@ import { buildRubberBillRpcPayload } from "@/lib/rubber-bills/submission";
 import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
 import { normalizeRubberBillQueueBeforeSync } from "@/lib/rubber-bills/normalize-sync-queue";
 import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
-import { rememberRubberQueuePrint } from "@/lib/rubber-bills/central-print";
+import { immediateRubberReceipt } from "@/lib/rubber-bills/immediate-receipt";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
@@ -184,9 +184,10 @@ export function useRubberBillMutations(
         operation === "create" ? mutationApprovalSettings?.effectivePriceCap : bill.configuredPriceSnapshot
       );
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
+      const immediatePdfBill = immediateRubberReceipt(calculatedBill, mutationApprovalSettings);
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
-      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true, expectedServerId: bill.id } : {}) }, ownerUserId);
+      const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true, expectedServerId: bill.id } : {}) }, ownerUserId, { deferContext: immediatePdfBill !== null });
       const centralQueue = "centralQueue" in payload && payload.centralQueue === true;
       if (clientEvents.some((event) => event.serverSubmissionAttempted === true)) {
         throw new Error(PENDING_SERVER_ACTION_MESSAGE);
@@ -210,10 +211,10 @@ export function useRubberBillMutations(
 
       if (keeper) {
         const commandPayload = correcting && keeper.payload.contractVersion === 2
-          ? await prepareRubberBillCommand({ ...builtPayload, expectedRevisionNo: keeper.payload.expectedRevisionNo, ...(operation === "update" ? { background: true } : {}) }, ownerUserId)
+          ? await prepareRubberBillCommand({ ...builtPayload, expectedRevisionNo: keeper.payload.expectedRevisionNo, ...(operation === "update" ? { background: true } : {}) }, ownerUserId, { deferContext: immediatePdfBill !== null })
           : keeper.payload.contractVersion === 2
             ? { ...builtPayload, ...(keeper.payload.centralQueue ? { centralQueue: true, actorUserId: ownerUserId, expectedQueueVersion: keeper.payload.expectedQueueVersion } : {}), ...(keeper.payload.background ? { background: true } : {}), contractVersion: 2, commandId: keeper.payload.commandId,
-              expectedCommandGeneration: keeper.payload.expectedCommandGeneration }
+              expectedCommandGeneration: keeper.payload.expectedCommandGeneration, ...(keeper.payload.localContextPending ? { localContextPending: true } : {}) }
             : payload;
         const originalRev = keeper.payload.expectedRevisionNo;
         const updatedKeeper = {
@@ -233,7 +234,6 @@ export function useRubberBillMutations(
         if (!await reconcileSyncEventsIfCurrent(clientEvents, updatedKeeper)) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
         }
-        if (correcting && "centralQueue" in updatedKeeper.payload && updatedKeeper.payload.centralQueue) rememberRubberQueuePrint(updatedKeeper, calculatedBill);
       } else {
         const directSubmissionScope = !centralQueue && isOnline && operation === "create" && clientEvents.length === 0
           ? `${ownerUserId}:${mutationLocationId}`
@@ -247,7 +247,7 @@ export function useRubberBillMutations(
           operation,
           serverId: operation === "update" ? bill.id : undefined,
           serverBillNo: operation === "update" ? bill.serverBillNo : undefined,
-          serverSubmissionAttempted: operation === "create" && (directSubmissionScope !== null || (centralQueue && isOnline)),
+          serverSubmissionAttempted: operation === "create" && directSubmissionScope !== null,
           payload,
           timestamp: Date.now(),
           status: "pending"
@@ -264,7 +264,6 @@ export function useRubberBillMutations(
           throw error;
         }
         newlyQueuedEvent = { ...event, queueId };
-        if (centralQueue) rememberRubberQueuePrint(newlyQueuedEvent, calculatedBill);
       }
 
       if (!centralQueue && isOnline && clientEvents.length === 0 && newlyQueuedEvent && operation === "create") {
@@ -304,6 +303,7 @@ export function useRubberBillMutations(
             approvalPending: data.status === "pending_approval",
             approvalRequestId: data.requestId,
             approvalOperation: data.operation,
+            immediatePdfBill: null as RubberBill | null,
           };
         } catch (error) {
           if (newlyQueuedEvent.status !== "pending") throw error;
@@ -315,6 +315,7 @@ export function useRubberBillMutations(
       
       return {
         ...calculatedBill,
+        immediatePdfBill,
         syncStatus: "pending" as const,
         serverSubmissionAttempted: operation === "update" || (isOnline && centralQueue) || newlyQueuedEvent?.serverSubmissionAttempted === true,
         configuredPriceSnapshot:

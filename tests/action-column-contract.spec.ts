@@ -64,8 +64,9 @@ test("rubber bill sync problems allow draft inspection while editing stays guard
   const source = readFileSync(resolve("src/components/rubber-bills/RubberBillsTable.tsx"), "utf8");
 
   expect(source).toMatch(
-    /const viewDisabled = deleting \|\| \(!hasSyncProblem && !bill\.sourceRubberExportId && Boolean\(actionBlockReason\)\);/,
+    /const viewDisabled = deleting;/,
   );
+  expect(source).toContain("(hasSyncProblem || bill.sourceRubberExportId) && <button");
   expect(source).toContain("(hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason) || deleting");
 });
 

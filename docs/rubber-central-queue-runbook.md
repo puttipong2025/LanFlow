@@ -6,7 +6,8 @@ Scope: Rubber create/update/delete and explicit manager approve/cancel decisions
 
 | Entry | Execution |
 | --- | --- |
-| Bill form, correction, delete confirmation | Validate current context; commit local v2 outbox; owner uploader admits centrally |
+| Bill form / correction | Eligible immediate local receipts commit an outbox proposal first; owner uploader finalizes context with the same UUID before first POST; prepared/submitted replay stays immutable |
+| Delete confirmation | Existing online context check and durable local command, then central admission; no PDF |
 | Manager approve / delete pending request | Explicit confirmation; commit local manager command; exact request UUID is immutable |
 | Automatic / manual retry | Same command UUID and payload; read central outcome after admission; no second browser business processor |
 | Old browser business POST | Existing legacy compatibility for untouched bills; known central identities return receipts; unknown commands cannot overtake a bill using central admission |
@@ -20,7 +21,7 @@ Scope: Rubber create/update/delete and explicit manager approve/cancel decisions
 4. Publish the compatible client only after Server admission/read/worker/report guards are installed. New client commands explicitly carry `centralQueue`, actor identity and queue version. No service credential belongs in the client.
 5. Run the two-device browser scenario and check no off-branch PDF/dialog/toast occurs. No automatic report is created when work drains.
 
-The existing IndexedDB version remains 6 (already required by the separate Income/Expense work). Rubber reuses the outbox and receipt/tombstone stores; it adds no destructive local migration.
+IndexedDB version 7 fences older uploaders from locally staged envelopes (ADR 0087). Rubber reuses the outbox and receipt/tombstone stores; all existing rows and Income/Expense outcomes are retained.
 
 ## Timing and recovery
 
@@ -66,3 +67,12 @@ For emergency admission freeze, revoke the new admission RPC from authenticated 
 Local rehearsal evidence uses rollback of an executed attempt, exact legacy receipt replay, revoked/restored actor rights, manager retirement, concurrent workers versus report creation, and a real cron-only completion test. Cloud migration/hosting checks require a separate deployment run against the authorized target. PDF delivery tests verify generated downloads; they cannot confirm physical paper output.
 
 Run the database suite and browser suite sequentially against a shared Local database. Some existing dashboard/retention fixtures deliberately cover all active branches; a browser concurrently creating a branch can invalidate their fixed branch-count expectations.
+# Local preparation protocol compatibility (ADR 0087)
+
+The current browser database version is 7. It preserves the existing queue,
+receipts, tombstones and Income/Expense outcomes; no store is cleared. Older
+version-6 uploaders must refresh before using it. If an old tab blocks the upgrade,
+close that tab and retry. Never clear browser storage to resolve this message.
+The Route rejects local preparation markers before admission. For rollback, keep
+the version-7 opener and preparation resolver until staged work has drained;
+shipping a version-6 opener cannot reopen this database.

@@ -65,7 +65,7 @@ export function isRubberQueueRow(value: unknown): value is RubberQueueRow {
 }
 
 export function isRubberQueueSubmission(value: unknown): value is Record<string, unknown> {
-  if (!isJsonObject(value) || value.contractVersion !== 2 || !isUuid(value.commandId)
+  if (!isJsonObject(value) || value.localContextPending !== undefined || value.contractVersion !== 2 || !isUuid(value.commandId)
     || value.idempotencyKey !== value.commandId || !isUuid(value.locationId) || !isUuid(value.actorUserId)
     || typeof value.clientTempId !== "string" || value.clientTempId.length < 1 || value.clientTempId.length > 512) return false;
   if (value.queueAction === "approve" || value.queueAction === "cancel") {

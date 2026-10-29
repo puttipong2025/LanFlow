@@ -33,6 +33,14 @@ for (const bad of [null, {}, { ...accepted, commandId: owner }, { ...accepted, l
     const response = await route(bad).POST(post(payload)); expect(response.status).toBe(503);
   });
 }
+test("local staging markers cannot reach admission RPC", async () => {
+  for (const localContextPending of [true, false, null]) {
+    const handlers = route(accepted);
+    expect((await handlers.POST(post({ ...payload, localContextPending }))).status).toBe(400);
+    expect(handlers.calls()).toBe(0);
+  }
+});
+
 test("account mismatch and oversized body are rejected before RPC", async () => {
   const handlers = route(accepted);
   expect((await handlers.POST(post({ ...payload, actorUserId: branch }))).status).toBe(403);

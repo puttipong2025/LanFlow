@@ -483,7 +483,7 @@ function BusinessLanFlowApp() {
     config: rubberWeightAlertConfig,
     onConfigChange: updateRubberWeightAlertConfig,
   });
-  const cashLocks = useCashCountLocks(isLoaded && profile.role !== "user", JSON.stringify([profile.id, profile.role, profile.locationIds, profile.canAccessSystemManager, selectedLocationId]), online, selectedLocationId);
+  const cashLocks = useCashCountLocks(isLoaded && profile.role !== "user", JSON.stringify([profile.id, profile.role, profile.locationIds, profile.canAccessSystemManager, selectedLocationId]), online, selectedLocationId, activeTab === "rubber" && profile.locationIds.includes(selectedLocationId));
   const [lockAlertOpen, setLockAlertOpen] = useState(false);
   const selectedLock = cashLocks.states.find((s) => s.locationId === selectedLocationId);
 

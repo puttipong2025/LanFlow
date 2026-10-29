@@ -55,9 +55,8 @@ import { AlertDialog } from "@/components/shared/AlertDialog";
 import { RubberBillDeleteDialog } from "./RubberBillDeleteDialog";
 import { RubberBillSyncDraftDialog } from "./RubberBillSyncDraftDialog";
 import { restartRubberDelete } from "@/lib/rubber-bills/restart-delete";
-import { registerRubberQueuePrinter } from "@/lib/rubber-bills/central-print";
+import { registerRubberQueuePrinter, printAcceptedRubberReceipt } from "@/lib/rubber-bills/central-print";
 import { RubberCentralQueueStatus } from "./RubberCentralQueueStatus";
-import { canSyncCurrentSession } from "@/lib/auth-fetch";
 
 export function RubberBillsModule({
   selectedLocation,
@@ -239,11 +238,11 @@ export function RubberBillsModule({
     }
   }
 
-  async function handlePrint(bill: RubberBill, current: () => boolean = () => true, automatic = false) {
-    const canHandoff = async () => current() && (!automatic || await canSyncCurrentSession(profile.id, selectedLocation.id, { background: true })) && current();
+  async function handlePrint(bill: RubberBill, current: () => boolean = () => true, acceptedLocal = false) {
+    const canHandoff = async () => current();
     if (!await canHandoff()) return;
     const blockReason = getPrintBlockReason(bill)
-      ?? await getPendingSubmissionBlockReason(bill);
+      ?? (acceptedLocal ? null : await getPendingSubmissionBlockReason(bill));
     if (blockReason) {
       toast.error(blockReason);
       return;
@@ -320,13 +319,12 @@ export function RubberBillsModule({
     setModalOpen(true);
   }
 
-  async function openView(bill: RubberBill) {
+  function openView(bill: RubberBill) {
     if (bill.syncStatus === "failed" || bill.syncStatus === "conflict") { setDraftCandidate(bill); return; }
     if (bill.sourceRubberExportId) {
       setViewingBranchReceipt(bill);
       return;
     }
-    await openEdit(bill);
   }
 
   async function confirmDelete(bill: RubberBill) {
@@ -733,7 +731,8 @@ export function RubberBillsModule({
               setOcrReviewItem(null);
               setModalOpen(false);
               if (isCreating) setPage(1);
-              if (savedBill.netTotal > 0 && !savedBill.approvalPending && !savedBill.serverSubmissionAttempted && (isCreating || savedBill.syncStatus === "synced")) {
+              if (savedBill.immediatePdfBill) printAcceptedRubberReceipt(profile.id, selectedLocation.id, savedBill.immediatePdfBill);
+              else if (savedBill.netTotal > 0 && !savedBill.approvalPending && !savedBill.serverSubmissionAttempted && (isCreating || savedBill.syncStatus === "synced")) {
                 void handlePrint(savedBill);
               }
               return true;

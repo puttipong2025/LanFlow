@@ -2,8 +2,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
 import { parseCashCountLocks, type CashCountLockState } from "@/lib/cash-count-lock";
+import { loadCashLockSnapshot, saveCashLockSnapshot } from "@/lib/cash-counts/lock-cache";
 
-export function useCashCountLocks(enabled: boolean, scope: string, online = true, locationId?: string) {
+export function useCashCountLocks(enabled: boolean, scope: string, online = true, locationId?: string, offlineRubber = false) {
   const [data, setData] = useState<{ scope: string; states: CashCountLockState[]; offset: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
@@ -14,11 +15,11 @@ export function useCashCountLocks(enabled: boolean, scope: string, online = true
   context.current = scope;
   const [clock, setClock] = useState(Date.now());
   const [checkedAt, setCheckedAt] = useState(0);
-  const current = data?.scope === scope ? data : null;
+  const current = data?.scope === scope ? data : !online ? loadCashLockSnapshot(scope) : null;
   const selected = current?.states.find((state) => state.locationId === locationId);
   const transition = selected?.enabled ? Math.max(Date.parse(selected.lockAt ?? ""), Date.parse(selected.unlockedUntil ?? "") || 0) : NaN;
   const needsCheck = !!selected?.enabled && !selected.locked && Number.isFinite(transition) && clock + current!.offset >= transition && checkedAt < transition;
-  const blocked = enabled && (!current || !!selected?.locked || needsCheck);
+  const blocked = enabled && (!!selected?.locked || needsCheck || (!current && (online || !offlineRubber)));
   useEffect(() => {
     if (!enabled || !blocked) return;
     const timer = setInterval(() => setClock(Date.now()), 1000);
@@ -48,7 +49,8 @@ export function useCashCountLocks(enabled: boolean, scope: string, online = true
           if (!next) throw new Error("ข้อมูลสถานะล็อกไม่ถูกต้อง");
           if (!active || dirty) return;
           const now = Date.parse(next.serverNow);
-          setData({ scope, states: next.states, offset: now - Date.now() }); setCheckedAt(now); setError(null);
+          const snapshot = { scope, states: next.states, offset: now - Date.now() };
+          saveCashLockSnapshot(snapshot); setData(snapshot); setCheckedAt(now); setError(null);
           if (timer) clearTimeout(timer);
           const transitions = next.states.filter((s) => s.enabled).flatMap((s) => [s.lockAt, s.unlockedUntil])
             .filter((v): v is string => !!v).map(Date.parse).filter((v) => v > now);

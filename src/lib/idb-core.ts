@@ -4,7 +4,8 @@ export const RUBBER_BILL_RECEIPT_TOMBSTONE_STORE = "rubber_bill_receipt_tombston
 export const INCOME_EXPENSE_OUTCOME_STORE = "income_expense_outcomes";
 
 const DB_NAME = "lanflow_sync_db";
-const DB_VERSION = 6;
+// Protocol fence: older uploaders must not read locally staged command envelopes.
+const DB_VERSION = 7;
 const LEGACY_QUEUE_ERROR = "รายการออฟไลน์นี้สร้างก่อนอัปเกรดและไม่มีข้อมูลผู้ใช้ จึงหยุดซิงก์เพื่อความปลอดภัย";
 
 type LegacyQueuedEvent = {

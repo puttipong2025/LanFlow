@@ -2,6 +2,12 @@
 
 Local successor (2026-10-29): [central queue contract](rubber-central-queue-contract.md) / [ADR-0086](adr/0086-server-processed-rubber-command-queue.md) applies to newly marked `centralQueue` commands, including creates and manager decisions. The selected-branch browser replay below remains the legacy compatibility path. See the [verification ledger](rubber-central-queue-verification.md) for Local evidence and deployment limits.
 
+PDF timing successor: [ADR 0087](adr/0087-immediate-local-rubber-receipt.md)
+allows eligible create offline/online and update online receipts immediately after
+durable local acceptance. The context wait and unconfirmed-edit print restriction
+described below belong to the legacy path. Central completion never starts another
+automatic PDF; approval and authoritative Server guards remain in effect.
+
 New online edits and deletions persist `background: true` in their immutable
 submission payload. The mutation returns after the context check and IndexedDB
 commit; POST and invalidation are not part of form acknowledgement. The existing

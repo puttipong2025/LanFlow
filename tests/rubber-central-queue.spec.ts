@@ -44,7 +44,6 @@ function runner(fetch: (url: string, init?: RequestInit) => Promise<Response>, s
     "./complete-command": completion,
     "@/lib/rubber-bills/complete-command": completion,
     "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => {} },
-    "@/lib/rubber-bills/central-print": { completeRubberQueuePrint: () => {} },
     "@/lib/rubber-bills/background-notifications": { notifyRubberBackgroundFailure: async () => {} },
   }, { navigator: { onLine: true } });
 }
@@ -204,14 +203,11 @@ test("origin printing is serial and a branch change permanently skips retrospect
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
   const calls: string[] = [];
   const stop = prints.registerRubberQueuePrinter(owner, branch, async current => { calls.push(current.clientTempId); await gate; });
-  prints.rememberRubberQueuePrint(event, bill);
-  prints.rememberRubberQueuePrint(next, { ...bill, clientTempId: next.id });
-  prints.completeRubberQueuePrint(event.payload.commandId, row(event, true).result!);
-  prints.completeRubberQueuePrint(next.payload.commandId, row(next, true).result!);
+  prints.printAcceptedRubberReceipt(owner, branch, bill);
+  prints.printAcceptedRubberReceipt(owner, branch, { ...bill, clientTempId: next.id });
   await Promise.resolve(); expect(calls).toEqual([event.id]);
   stop(); release(); await new Promise(resolve => setTimeout(resolve, 0));
   const stopAgain = prints.registerRubberQueuePrinter(owner, branch, async current => { calls.push(current.clientTempId); });
-  prints.completeRubberQueuePrint(next.payload.commandId, row(next, true).result!);
   await Promise.resolve(); expect(calls).toEqual([event.id]);
   stopAgain();
 });
@@ -222,8 +218,7 @@ test("origin printing waits for a busy PDF and starts when idle", async () => {
     { navigator: { onLine: true }, setTimeout });
   let busy = true, calls = 0;
   const stop = prints.registerRubberQueuePrinter(owner, branch, async () => { calls++; }, () => busy);
-  prints.rememberRubberQueuePrint(event, bill);
-  prints.completeRubberQueuePrint(event.payload.commandId, row(event, true).result!);
+  prints.printAcceptedRubberReceipt(owner, branch, bill);
   await new Promise(resolve => setTimeout(resolve, 60)); expect(calls).toBe(0);
   busy = false;
   await expect.poll(() => calls, { intervals: [60] }).toBe(1);
@@ -260,9 +255,7 @@ test("a failed PDF handoff cannot replay business or prevent the next ready rece
   const stop = prints.registerRubberQueuePrinter(owner, branch, async current => {
     calls.push(current.clientTempId); if (calls.length === 1) throw new Error("PDF cancelled");
   });
-  prints.rememberRubberQueuePrint(first, bill); prints.rememberRubberQueuePrint(second, { ...bill, clientTempId: second.id });
-  prints.completeRubberQueuePrint(first.payload.commandId, row(first, true).result!);
-  prints.completeRubberQueuePrint(second.payload.commandId, row(second, true).result!);
+  prints.printAcceptedRubberReceipt(owner, branch, bill); prints.printAcceptedRubberReceipt(owner, branch, { ...bill, clientTempId: second.id });
   await expect.poll(() => calls.length).toBe(2);
   expect(calls).toEqual([first.id, second.id]);
   expect(await queue.getPendingEvents(first)).toHaveLength(2); // Printing performs no queue/business mutation.

@@ -6,7 +6,7 @@ import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { acknowledgeRubberCommand } from "./complete-command";
 import { isConfirmedRubberSyncResult } from "./sync-result";
 import { isConfirmedRubberManagerResult, isRubberQueueRow, rubberQueueMessage, type RubberQueueRow } from "./central-queue-contract";
-import { completeRubberQueuePrint } from "./central-print";
+import { prepareRubberBillCommand } from "./command";
 import { notifyRubberBackgroundFailure } from "./background-notifications";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
@@ -72,7 +72,7 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
       .sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0));
     const changed = new Set<string>();
     const deferredBranches = new Set<string>();
-    for (const snapshot of fairRubberQueueRound(events)) {
+    for (let snapshot of fairRubberQueueRound(events)) {
       if (!navigator.onLine) break;
       if (deferredBranches.has(snapshot.locationId)) continue;
       if (!await canSyncCurrentSession(ownerUserId, snapshot.locationId, { background: true })) {
@@ -80,6 +80,20 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
         deferredBranches.add(snapshot.locationId);
         await reconcileSyncEventsIfCurrent([snapshot], { ...snapshot, nextAttemptAt: Date.now() + 30_000 } as CentralEvent);
         continue;
+      }
+      if (snapshot.payload.localContextPending === true) {
+        try {
+          if (snapshot.serverSubmissionAttempted || snapshot.centralAccepted) throw new Error("Command already submitted");
+          const payload = await prepareRubberBillCommand(snapshot.payload, ownerUserId,
+            { commandId: snapshot.payload.commandId, completingLocal: true });
+          const prepared = { ...snapshot, payload };
+          if (!await reconcileSyncEventsIfCurrent([snapshot], prepared)) continue;
+          snapshot = prepared;
+        } catch {
+          deferredBranches.add(snapshot.locationId);
+          await reconcileSyncEventsIfCurrent([snapshot], { ...snapshot, nextAttemptAt: Date.now() + 15000 } as CentralEvent);
+          continue;
+        }
       }
       // The marked immutable snapshot survives lost admission responses.
       const event: CentralEvent = { ...snapshot, serverSubmissionAttempted: true };
@@ -112,7 +126,6 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
                   await removeConfirmedRubberBillLocally(queryClient, scope, event.id);
                 }
               } catch (error) { console.warn("Unable to refresh completed Rubber command cache", error); }
-              completeRubberQueuePrint(event.payload.commandId, row.result);
               changed.add(event.locationId);
             } else if (!confirmed && !managerRetired) {
               deferredBranches.add(event.locationId);

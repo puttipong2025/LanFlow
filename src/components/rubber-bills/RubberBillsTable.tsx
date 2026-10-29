@@ -113,7 +113,7 @@ export function RubberBillsTable({
                 : hasSyncProblem && !bill.canCorrectSyncFailure
                   ? "ทิ้งรายการค้างในเครื่องก่อนแก้ไขหรือลบ"
                   : actionBlockReason;
-              const viewDisabled = deleting || (!hasSyncProblem && !bill.sourceRubberExportId && Boolean(actionBlockReason));
+              const viewDisabled = deleting;
               const viewTitle = deleting
                 ? "กำลังลบรายการ..."
                 : hasSyncProblem
@@ -141,7 +141,7 @@ export function RubberBillsTable({
               <tr key={bill.id} className="whitespace-nowrap border-b border-black/10 hover:bg-field/50">
                 <td className="py-3">
                   <div className="flex items-center gap-1.5 whitespace-nowrap">
-                    <button
+                    {(hasSyncProblem || bill.sourceRubberExportId) && <button
                       type="button"
                        title={viewTitle}
                        aria-label={viewTitle}
@@ -150,7 +150,7 @@ export function RubberBillsTable({
                         className={cn("focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white shadow-sm hover:bg-river/90", viewDisabled && "cursor-not-allowed opacity-45")}
                     >
                        <Eye size={17} />
-                    </button>
+                    </button>}
                     {!bill.id.startsWith("approval:") && <button
                       type="button"
                       title={evidenceDisabled ? evidenceDisabledLabel : evidenceButtonLabel}

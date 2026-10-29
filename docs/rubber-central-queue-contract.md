@@ -40,7 +40,7 @@ Branch-scoped read RPCs return bounded pages and counts to authorized users, wit
 
 Keep errors local to the action and durable minimal outcomes separate from runnable commands. An off-branch command cannot open a toast, service overlay, cash-lock screen or PDF, or change the selected branch. Minimal terminal notices remain visible through the branch queue without retaining rejected proposal payloads solely for notification.
 
-Auto-print remains a local origin-tab intent for creation only. Serialize PDF handoffs, recheck account/branch before handoff, and skip permanently if the user left that scope. Successful business processing does not guarantee physical printing. Cancelled/failed PDF never replays the business command. Reopening or another device seeing a completed command cannot start retrospective auto-print.
+Eligible new offline/online bills and online edits start a frozen local-reference PDF after durable local acceptance, before central completion. Local approval-required/unknown eligibility blocks that share; Server approval and authorization remain authoritative. Serialize origin-tab handoffs, recheck the current account/branch scope, and skip permanently after scope leave. Central completion has no PDF trigger. Cancelled/failed PDF never replays business or starts a retrospective share. Manual confirmed Server receipt printing remains. See [ADR 0087](adr/0087-immediate-local-rubber-receipt.md) and the [local verification ledger](rubber-immediate-pdf-verification.md).
 
 ## Verification and rollback
 
