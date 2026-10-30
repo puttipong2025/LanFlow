@@ -131,14 +131,18 @@ test.describe.serial("Cash branch transfer UI @cash-transfer-ui", () => {
     await createModal.getByLabel("เหรียญ 1", { exact: true }).fill("1");
     const marker = `cash-ui-${Date.now()}`;
     await createModal.locator('textarea[placeholder="หมายเหตุ (ไม่บังคับ)"]').fill(marker);
-    const [createResponse] = await Promise.all([
+    const [createResponse, receiptDownload] = await Promise.all([
       page.waitForResponse((response) => response.url().includes("/api/lanflow/cash-branch-transfers") && response.request().method() === "POST"),
+      page.waitForEvent("download", { timeout: 30_000 }),
       createModal.locator('button:has-text("บันทึก")').click(),
     ]);
     expect(createResponse.ok()).toBeTruthy();
     await expect(page.getByText("บันทึกรายการเงินสด รอปลายทางรับเงิน")).toBeVisible();
     const transfer = await createResponse.json() as { id: string };
     expect(transfer.id).toBeTruthy();
+    expect(receiptDownload.suggestedFilename()).toContain(`CASH-${transfer.id.slice(0, 8).toUpperCase()}`);
+    expect(receiptDownload.suggestedFilename()).toMatch(/\.pdf$/);
+    expect(await receiptDownload.failure()).toBeNull();
     const displayNo = `CASH-${transfer.id.slice(0, 8)}`;
     const sourceRow = page.locator("table tbody tr", { hasText: displayNo });
     await expect(sourceRow).toBeVisible();

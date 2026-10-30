@@ -965,6 +965,8 @@ export function IncomeExpenseModule({
           onSave={async (payload) => {
             const created = await cashTransfers.create.mutateAsync(payload);
             setPage(1);
+            setBranchTransferModalOpen(false);
+            void shareCashTransferById(created.id);
             return created;
           }}
           onClose={() => setBranchTransferModalOpen(false)}
