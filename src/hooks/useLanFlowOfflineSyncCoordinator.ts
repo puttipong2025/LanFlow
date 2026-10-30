@@ -2,6 +2,7 @@ import { registerRubberBackgroundNotifications } from "@/lib/rubber-bills/backgr
 import { toast } from "sonner";
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useBusinessCacheStatus } from "@/hooks/useBusinessCacheStatus";
 
 import { isDeviceOnline, subscribeConnectivity } from "@/lib/connectivity";
 import { syncPendingIncomeExpense } from "@/hooks/useIncomeExpense";
@@ -137,4 +138,5 @@ export function useLanFlowOfflineSyncCoordinator({
       window.removeEventListener("lanflow:cash-count-unlocked", handleCashCountUnlocked);
     };
   }, [locationId, ownerUserId, queryClient]);
+  return useBusinessCacheStatus(ownerUserId, locationId);
 }

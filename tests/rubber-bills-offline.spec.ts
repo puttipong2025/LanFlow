@@ -193,7 +193,7 @@ async function createBillOnline(page: Page, marker: string) {
   await page.fill('input[type="tel"]', phone);
   await page.fill('input[type="password"]', password);
   await page.click('button:has-text("เข้าสู่ระบบ")');
-  await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
 
   await page.click('button:has-text("บิลยาง")');
   await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
@@ -339,7 +339,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         void dialog.accept();
       });
 
-      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await waitForRubberApprovalSettings(page);
       await page.click('button:has-text("เพิ่มบิลยาง")');
@@ -382,7 +382,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       const transientMarker = `E2E-503-PENDING-${Date.now()}`;
       page.on('dialog', dialog => void dialog.accept());
 
-      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await waitForRubberApprovalSettings(page);
       await page.click('button:has-text("เพิ่มบิลยาง")');
@@ -673,13 +673,14 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
   test('should support create, edit, delete offline and sync when online', async ({ page, context }) => {
     test.setTimeout(90000);
 
+    await page.addLocatorHandler(page.getByRole('alertdialog', { name: 'แจ้งเตือน', exact: true }), async (alert) => { await alert.getByRole('button', { name: 'รับทราบ', exact: true }).click(); });
     // 1. Login
     page.on('dialog', dialog => dialog.accept());
     await page.goto('/login');
     await page.fill('input[type="tel"]', phone);
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     const meResponse = await page.request.get('/api/auth/me');
     expect(meResponse.ok()).toBeTruthy();
     const payerName = (await meResponse.json() as { profile: { name: string } }).profile.name;
@@ -807,7 +808,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // This proves IDB queue survives page reload
     await context.setOffline(false);
     await page.reload({ waitUntil: 'networkidle' });
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 15000 });
     // The sync may have fired during reload — that's OK
     // Go to Rubber Bills tab
     await page.click('button:has-text("บิลยาง")');
@@ -912,7 +913,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await page.fill('input[type="tel"]', phone);
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("บิลยาง")');
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
 
@@ -951,7 +952,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await page.fill('input[type="tel"]', phone);
       await page.fill('input[type="password"]', password);
       await page.click('button:has-text("เข้าสู่ระบบ")');
-      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await page.click('button:has-text("เพิ่มบิลยาง")');
       await confirmCurrentBranchIfRequired(page);
@@ -1007,7 +1008,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await page.fill('input[type="tel"]', '0800000000');
     await page.fill('input[type="password"]', 'password123');
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("บิลยาง")');
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
 
@@ -1129,7 +1130,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     await page.fill('input[type="tel"]', '0800000000');
     await page.fill('input[type="password"]', 'password123');
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
     await page.click('button:has-text("บิลยาง")');
     await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
 

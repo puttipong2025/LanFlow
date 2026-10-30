@@ -8,6 +8,38 @@ const locationId = "71000000-0000-4000-8000-000000000021";
 const recordId = "71000000-0000-4000-8000-000000000022";
 const requestId = "71000000-0000-4000-8000-000000000023";
 
+for (const target of ["feed", "detail", "approval"] as const) {
+  test(`${target} contains unexpected authentication failures`, async () => {
+    const file = target === "feed" ? "src/app/api/lanflow/income-expense/feed/route.ts"
+      : target === "detail" ? "src/app/api/lanflow/income-expense/[id]/route.ts"
+      : "src/app/api/lanflow/income-expense/approval-requests/route.ts";
+    const route = loadSourceModule<{ GET: (...args: unknown[]) => Promise<Response>; POST: (...args: unknown[]) => Promise<Response> }>(file, {
+      "@/lib/server/auth": { requireAuth: async () => { throw new Error("private diagnostic"); } },
+    });
+    const response = await (target === "approval" ? route.POST(new Request("http://local/approval", { method: "POST" }))
+      : route.GET(new Request("http://local/feed"), { params: Promise.resolve({ id: recordId }) }))
+      .catch(() => undefined);
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get("cache-control")).toContain("no-store");
+    expect(JSON.stringify(await response?.json())).not.toContain("private diagnostic");
+  });
+}
+
+test("feed contains a thrown database transport failure", async () => {
+  const dependencies = routeDependencies(null);
+  dependencies["@/lib/server/auth"].requireAuth = async () => ({
+    ok: true, auth: { sub: "user-1", role: "super_admin", locationIds: [locationId] },
+    supabase: { rpc: async () => { throw new Error("private diagnostic"); } },
+  });
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/feed/route")>(
+    "src/app/api/lanflow/income-expense/feed/route.ts", dependencies,
+  );
+  const response = await route.GET({ nextUrl: new URL(`http://local/feed?locationId=${locationId}`) } as never).catch(() => undefined);
+  expect(response?.status).toBe(503);
+  expect(response?.headers.get("cache-control")).toContain("no-store");
+  expect(JSON.stringify(await response?.json())).not.toContain("private diagnostic");
+});
+
 test("approval decision contains unexpected authentication failures", async () => {
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/income-expense/approval-requests/[id]/decide/route")>(
     "src/app/api/lanflow/income-expense/approval-requests/[id]/decide/route.ts",

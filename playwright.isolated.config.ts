@@ -3,6 +3,9 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/business-cache.spec.ts',
+    '**/business-cache-refresh.spec.ts',
+    '**/business-cache-settings.spec.ts',
     '**/rubber-sync-resume.spec.ts',
     '**/rubber-immediate-pdf.spec.ts',
     "**/rubber-background.spec.ts",

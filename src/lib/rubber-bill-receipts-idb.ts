@@ -158,7 +158,12 @@ export async function pruneRubberBillReceiptSnapshots(
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(RUBBER_BILL_RECEIPT_STORE, "readwrite");
     const store = transaction.objectStore(RUBBER_BILL_RECEIPT_STORE);
-    stale.forEach((snapshot) => store.delete(snapshot.billId));
+    stale.forEach((snapshot) => {
+      const request = store.get(snapshot.billId);
+      request.onsuccess = () => {
+        if (JSON.stringify(request.result) === JSON.stringify(snapshot)) store.delete(snapshot.billId);
+      };
+    });
     transaction.oncomplete = () => {
       db.close();
       resolve();

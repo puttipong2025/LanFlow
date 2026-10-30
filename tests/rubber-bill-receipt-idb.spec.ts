@@ -141,7 +141,7 @@ function makeSnapshot(
 test.describe.serial("Rubber Bill receipt IndexedDB", () => {
   test.beforeEach(() => resetIndexedDb());
 
-  test("version 7 fences old uploaders and retains every version 6 store", async () => {
+  test("version 8 fences old uploaders and retains every version 6 store", async () => {
     const stores = ["sync_queue", "rubber_bill_receipts", "rubber_bill_receipt_tombstones", "income_expense_outcomes"];
     const request = indexedDB.open(DB_NAME, 6);
     request.onupgradeneeded = () => {
@@ -160,7 +160,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     });
     previous.close();
     const upgraded = await getSyncDb();
-    expect(upgraded.version).toBe(7);
+    expect(upgraded.version).toBe(8);
     for (const name of stores) {
       const rows = await new Promise<unknown[]>((resolve, reject) => {
         const read = upgraded.transaction(name).objectStore(name).getAll();
@@ -172,7 +172,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     await expect(openDatabase(DB_NAME, 6)).rejects.toMatchObject({ name: "VersionError" });
   });
 
-  test("upgrades version 3 to 7 without changing sync_queue records", async () => {
+  test("upgrades version 3 to 8 without changing sync_queue records", async () => {
     const originalEvents: SyncEvent[] = [
       {
         queueId: 1,
@@ -227,7 +227,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     expect(await getRubberBillReceiptSnapshots("location-a")).toEqual([]);
 
     const dbV5 = await openDatabase(DB_NAME);
-    expect(dbV5.version).toBe(7);
+    expect(dbV5.version).toBe(8);
     expect(Array.from(dbV5.objectStoreNames)).toContain("rubber_bill_receipts");
     expect(Array.from(dbV5.objectStoreNames)).toContain("rubber_bill_receipt_tombstones");
     const actualEvents = await new Promise<SyncEvent[]>((resolve, reject) => {
@@ -241,7 +241,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     expect(actualEvents).toEqual(originalEvents);
   });
 
-  test("upgrades version 4 to 7 without changing cached receipts", async () => {
+  test("upgrades version 4 to 8 without changing cached receipts", async () => {
     const snapshot = makeSnapshot("v4-receipt", "location-a", "2026-07-25T00:00:01.000Z");
     const request = indexedDB.open(DB_NAME, 4);
     request.onupgradeneeded = () => {
@@ -273,7 +273,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
 
     expect(await getRubberBillReceiptSnapshots("location-a")).toEqual([snapshot]);
     const dbV5 = await openDatabase(DB_NAME);
-    expect(dbV5.version).toBe(7);
+    expect(dbV5.version).toBe(8);
     expect(Array.from(dbV5.objectStoreNames)).toContain("rubber_bill_receipt_tombstones");
     dbV5.close();
   });
@@ -390,7 +390,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     const current = makeSnapshot("legacy-1", "location-a", "2026-07-25T00:00:01.000Z");
     const { hasZeroPrice: _hasZeroPrice, ...legacyReceipt } = current.receipt;
     const db = await openDatabase(DB_NAME);
-    expect(db.version).toBe(7);
+    expect(db.version).toBe(8);
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction("rubber_bill_receipts", "readwrite");
       transaction.objectStore("rubber_bill_receipts").put({
@@ -408,7 +408,7 @@ test.describe.serial("Rubber Bill receipt IndexedDB", () => {
     expect((snapshot.receipt as { hasZeroPrice?: boolean }).hasZeroPrice).toBeUndefined();
     expect(renderRubberBillReceiptHtml(snapshot.receipt)).toContain("ลูกค้า legacy-1");
     const unchangedDb = await openDatabase(DB_NAME);
-    expect(unchangedDb.version).toBe(7);
+    expect(unchangedDb.version).toBe(8);
     unchangedDb.close();
   });
 

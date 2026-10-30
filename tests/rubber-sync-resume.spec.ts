@@ -247,6 +247,7 @@ for (const rejectResume of [false, true]) test(`resume ${rejectResume ? "contain
   const surface = { addEventListener: (key: string, listener: () => void) => listeners.set(key, listener),
     removeEventListener: (key: string) => listeners.delete(key) };
   const hook = loadSourceModule<typeof import("../src/hooks/useLanFlowOfflineSyncCoordinator")>("src/hooks/useLanFlowOfflineSyncCoordinator.ts", {
+    "@/hooks/useBusinessCacheStatus": { useBusinessCacheStatus: () => undefined },
     react: { useEffect: (effect: () => () => void) => { cleanup = effect(); } }, sonner: { toast: {} },
     "@tanstack/react-query": { useQueryClient: () => client },
     "@/lib/connectivity": { isDeviceOnline: () => true, subscribeConnectivity: () => () => {} },

@@ -49,12 +49,9 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
     }
     if (!wasOfflineRef.current) return;
     wasOfflineRef.current = false;
-    if (!navigator.serviceWorker?.controller) return;
-    void flushPendingFormDrafts()
-      .then(() => window.location.reload())
-      .catch((error) => {
-        console.error("Form drafts could not be saved before reconnect", error);
-      });
+    // Queries and the scoped cache coordinator refresh in place. Reconnect must
+    // not reload away a Rubber form, which intentionally has no persistent draft.
+    void flushPendingFormDrafts().catch(error => console.error("Form drafts could not be saved on reconnect", error));
   }), [queryClient]);
 
   return (

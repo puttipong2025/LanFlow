@@ -19,6 +19,13 @@ function normalizeSearch(value: string | null) {
 }
 
 export async function GET(request: NextRequest) {
+  try { return await getFeed(request); }
+  catch {
+    return NextResponse.json({ error: "โหลดรายการรับ-จ่ายไม่สำเร็จ" }, { status: 503, headers: { "Cache-Control": "private, no-store" } });
+  }
+}
+
+async function getFeed(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 

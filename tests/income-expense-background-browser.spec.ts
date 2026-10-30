@@ -18,7 +18,7 @@ test("revocation returns to login while the original browser retains its local o
       } };
     await page.evaluate(async (event) => {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open("lanflow_sync_db", 7); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+        const request = indexedDB.open("lanflow_sync_db", 8); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
       });
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction("sync_queue", "readwrite"); tx.objectStore("sync_queue").add(event);

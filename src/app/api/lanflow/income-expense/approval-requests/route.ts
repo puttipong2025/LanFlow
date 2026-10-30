@@ -12,6 +12,14 @@ type ApprovalRpcResponse = {
 };
 
 export async function POST(request: NextRequest) {
+  try { return await createApproval(request); }
+  catch {
+    return NextResponse.json({ status: "failed", errorMessage: "ตรวจสอบคำขออนุมัติไม่สำเร็จ" },
+      { status: 503, headers: { "Cache-Control": "private, no-store" } });
+  }
+}
+
+async function createApproval(request: NextRequest) {
   const authCheck = await requireAuth(request);
   if (!authCheck.ok) return authCheck.response;
 

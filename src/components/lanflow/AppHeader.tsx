@@ -12,6 +12,7 @@ import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
 import { cn } from "@/lib/cn";
 import { formatCurrency, formatNumber } from "@/lib/format";
 import type { DashboardBranchCashStatus } from "@/types/dashboard";
+import type { BusinessCacheStatus } from "@/hooks/useBusinessCacheStatus";
 
 const CASH_STATUS_LABELS: Record<DashboardBranchCashStatus, string> = {
   low: "ต่ำกว่าเกณฑ์",
@@ -73,6 +74,7 @@ export function AppHeader({
   online,
   serviceUnavailable,
   alertCheck,
+  businessCacheStatus,
 }: {
   profile: Profile;
   locations: Location[];
@@ -83,6 +85,7 @@ export function AppHeader({
   online: boolean;
   alertCheck?: { checking: boolean; error: string | null; checkNow: () => unknown };
   serviceUnavailable: boolean;
+  businessCacheStatus?: BusinessCacheStatus;
 }) {
   const [telegramConfigOpen, setTelegramConfigOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -197,7 +200,7 @@ export function AppHeader({
             {online ? <Wifi size={16} /> : <WifiOff size={16} />}
             {online ? "ออนไลน์" : "ไม่มีอินเทอร์เน็ต"}
           </span>
-          <OfflineReadinessStatus key={`${profile.id}:${selectedLocationId}:${online}`} userId={profile.id} locationId={selectedLocationId} online={online} />
+          <OfflineReadinessStatus key={`${profile.id}:${selectedLocationId}`} userId={profile.id} locationId={selectedLocationId} online={online} businessCacheStatus={businessCacheStatus} canEditCacheSettings={profile.role === "super_admin"} />
           <div ref={locationMenuRef} className="landscape-branch-selector relative min-w-0 sm:min-w-64">
             <button
               ref={locationButtonRef}

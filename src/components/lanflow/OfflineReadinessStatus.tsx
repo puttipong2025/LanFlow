@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { inspectOfflineReadiness, readOfflineManifest, type OfflineReadiness } from "@/lib/offline-readiness";
+import type { BusinessCacheStatus } from "@/hooks/useBusinessCacheStatus";
+import { BusinessCacheDetails, businessCacheSummary } from "./BusinessCacheDetails";
+import { BusinessCacheSettings } from "./BusinessCacheSettings";
 
 const INITIAL: OfflineReadiness = { percent: 0, ready: false, detail: "กำลังตรวจข้อมูลในเครื่อง" };
 
-export function OfflineReadinessStatus({ userId, locationId, online }: {
-  userId: string; locationId: string; online: boolean;
+export function OfflineReadinessStatus({ userId, locationId, online, businessCacheStatus, canEditCacheSettings = false }: {
+  userId: string; locationId: string; online: boolean; businessCacheStatus?: BusinessCacheStatus; canEditCacheSettings?: boolean;
 }) {
   const [state, setState] = useState(INITIAL);
   const [revision, setRevision] = useState(0);
@@ -78,11 +81,16 @@ export function OfflineReadinessStatus({ userId, locationId, online }: {
       <summary className="focus-ring cursor-pointer font-semibold">
         <span role="status">{state.ready ? "พร้อมใช้งานออฟไลน์" : online ? "เตรียมออฟไลน์" : "ยังไม่พร้อมออฟไลน์"} {state.percent}%</span>
       </summary>
+      {businessCacheStatus && <p role="status" className="mt-1 text-pretty">{businessCacheSummary(businessCacheStatus, online)}</p>}
       <progress aria-label="ความพร้อมใช้งานออฟไลน์" value={state.percent} max={100} className="mt-2 h-2 w-full accent-leaf" />
       <p className="mt-1 text-pretty">{state.detail}</p>
-      <button type="button" onClick={() => setRevision((value) => value + 1)} className="focus-ring mt-2 min-h-11 rounded-md border border-mint px-3 font-semibold">
+      {businessCacheStatus && <BusinessCacheDetails status={businessCacheStatus} online={online} />}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <button type="button" onClick={() => setRevision((value) => value + 1)} className="focus-ring min-h-11 rounded-md border border-mint px-3 font-semibold">
         ตรวจความพร้อมอีกครั้ง
       </button>
+      <BusinessCacheSettings owner={userId} canEdit={canEditCacheSettings} online={online} />
+      </div>
     </details>
   );
 }

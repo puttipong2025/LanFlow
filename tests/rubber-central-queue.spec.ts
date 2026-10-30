@@ -189,6 +189,7 @@ test(disposeDuringRead ? "active polling does not start a stale scope after its 
   let calls = 0;
   let activeTimers = 0;
   const hook = loadSourceModule<typeof import("../src/hooks/useLanFlowOfflineSyncCoordinator")>("src/hooks/useLanFlowOfflineSyncCoordinator.ts", {
+    "@/hooks/useBusinessCacheStatus": { useBusinessCacheStatus: () => undefined },
     react: { useEffect: (effect: () => () => void) => { cleanup = effect(); } },
     sonner: { toast: { error: () => {} } },
     "@tanstack/react-query": { useQueryClient: () => client },

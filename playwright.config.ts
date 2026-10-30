@@ -43,6 +43,7 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
       testMatch: [
+        '**/business-cache-browser.spec.ts',
         '**/rubber-immediate-pdf-browser.spec.ts',
         '**/rubber-bills-pwa.spec.ts',
         '**/income-expense-pwa.spec.ts',

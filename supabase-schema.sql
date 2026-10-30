@@ -21196,6 +21196,52 @@ $$;
 ALTER FUNCTION "public"."get_report_stock_balances"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_cache_rows"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare result jsonb;
+begin
+  if not private.can_access_business_modules() or not private.sms_access_allowed()
+     or p_location_id is null or not private.can_access_location(p_location_id) then
+    raise exception 'FORBIDDEN: location access denied' using errcode = '42501';
+  end if;
+  if p_bill_ids is null or cardinality(p_bill_ids) > 100
+     or array_position(p_bill_ids, null) is not null
+     or cardinality(p_bill_ids) <> (select count(distinct id) from unnest(p_bill_ids) id) then
+    raise exception 'Invalid receipt identity batch' using errcode = '22023';
+  end if;
+  select coalesce(jsonb_agg(
+    (to_jsonb(b) - 'ocr_source_id' - 'ocr_image_sha256') || jsonb_build_object(
+      'has_ocr_source_image', b.ocr_source_id is not null,
+      'items', coalesce((select jsonb_agg(to_jsonb(i) order by i.sequence_no, i.id)
+        from public.rubber_bill_items i where i.bill_id = b.id), '[]'::jsonb),
+      'report_lock_no', public.report_lock_no(b),
+      'transfer_lock_id', (select i.transfer_id from public.money_transfer_items i
+        join public.money_transfers t on t.id = i.transfer_id
+        where i.source_type = 'rubber_bill' and i.source_id = b.id and t.record_status <> 'deleted' limit 1),
+      'approval_pending', req.id is not null,
+      'approval_request_id', req.id, 'approval_operation', req.operation,
+      'approval_reasons', req.matched_reasons, 'approval_requested_by_name', req.requested_by_name,
+      'approval_proposed_summary', case when req.operation = 'update' then jsonb_build_object(
+        'customerName', req.proposed_payload->>'customerName', 'billDate', req.proposed_payload->>'billDate',
+        'billType', req.proposed_payload->>'billType', 'netWeight', req.proposed_payload->'netWeight',
+        'averagePrice', req.proposed_payload->'averagePrice', 'netRubberValue', req.proposed_payload->'netRubberValue',
+        'deductionTotal', req.proposed_payload->'deductionTotal', 'netTotal', req.proposed_payload->'netTotal'
+      ) else null end
+    ) order by b.id), '[]'::jsonb) into result
+  from public.rubber_bills b
+  left join lateral (select r.* from public.rubber_bill_approval_requests r
+    where r.location_id = p_location_id and r.bill_id = b.id and r.request_status = 'pending'
+    order by r.requested_at, r.id limit 1) req on true
+  where b.location_id = p_location_id and b.id = any(p_bill_ids);
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."get_rubber_bill_cache_rows"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_rubber_bill_command_context"("p_location_id" "uuid", "p_client_temp_id" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -38046,6 +38092,11 @@ GRANT ALL ON FUNCTION "public"."get_report_stock_balances"("p_location_id" "uuid
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_rubber_bill_cache_rows"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_rubber_bill_cache_rows"("p_location_id" "uuid", "p_bill_ids" "uuid"[]) TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_rubber_bill_command_context"("p_location_id" "uuid", "p_client_temp_id" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_rubber_bill_command_context"("p_location_id" "uuid", "p_client_temp_id" "text") TO "authenticated";
 
@@ -39499,6 +39550,87 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."user_locations" TO
 GRANT ALL ON TABLE "public"."user_locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_locations" TO "service_role";
 
+
+
+CREATE OR REPLACE FUNCTION "public"."get_business_cache_settings"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.can_access_business_modules() or not private.sms_access_allowed() then
+    raise exception 'FORBIDDEN' using errcode = '42501';
+  end if;
+  return (select jsonb_build_object('intervalMinutes', interval_minutes, 'revision', revision)
+    from public.business_cache_settings where id = true);
+end $$;
+
+
+ALTER FUNCTION "public"."get_business_cache_settings"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare current_settings public.business_cache_settings%rowtype;
+begin
+  if not private.is_active_user() or not private.sms_access_allowed() or not exists (
+    select 1 from public.profiles where id = auth.uid() and is_active and role = 'super_admin'
+  ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
+  if (p_interval_minutes is not null and p_interval_minutes not between 10 and 120)
+     or p_expected_revision is null or p_expected_revision < 1 then
+    raise exception 'Invalid cache settings' using errcode = '22023';
+  end if;
+  select * into strict current_settings from public.business_cache_settings where id = true for update;
+  if current_settings.revision <> p_expected_revision then
+    raise exception 'Cache settings changed' using errcode = '40001';
+  end if;
+  if current_settings.interval_minutes is distinct from p_interval_minutes then
+    update public.business_cache_settings set interval_minutes = p_interval_minutes,
+      revision = revision + 1, updated_at = clock_timestamp(), updated_by = auth.uid() where id = true;
+  end if;
+  return public.get_business_cache_settings();
+end $$;
+
+
+ALTER FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."business_cache_settings" (
+    "id" boolean DEFAULT true NOT NULL,
+    "interval_minutes" integer,
+    "revision" integer DEFAULT 1 NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_by" "uuid",
+    CONSTRAINT "business_cache_settings_id_check" CHECK ("id"),
+    CONSTRAINT "business_cache_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 120))),
+    CONSTRAINT "business_cache_settings_revision_check" CHECK (("revision" > 0))
+);
+
+
+ALTER TABLE "public"."business_cache_settings" OWNER TO "postgres";
+
+
+ALTER TABLE ONLY "public"."business_cache_settings"
+    ADD CONSTRAINT "business_cache_settings_pkey" PRIMARY KEY ("id");
+
+
+ALTER TABLE ONLY "public"."business_cache_settings"
+    ADD CONSTRAINT "business_cache_settings_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
+
+
+ALTER TABLE "public"."business_cache_settings" ENABLE ROW LEVEL SECURITY;
+
+
+REVOKE ALL ON FUNCTION "public"."get_business_cache_settings"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_business_cache_settings"() TO "authenticated";
+
+
+REVOKE ALL ON FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) TO "authenticated";
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."business_cache_settings" TO "service_role";
 
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";

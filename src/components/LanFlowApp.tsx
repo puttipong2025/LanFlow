@@ -448,7 +448,7 @@ function BusinessLanFlowApp() {
     }
   }, [selectedLocationId, locations, profile, authProfileId, isLoaded, online, confirmationMinutes, rubberWeightAlertConfig]);
 
-  useLanFlowOfflineSyncCoordinator({
+  const businessCacheStatus = useLanFlowOfflineSyncCoordinator({
     locationId: selectedLocationId,
     ownerUserId: queueOwnerUserId,
   });
@@ -667,7 +667,7 @@ function BusinessLanFlowApp() {
           locationBadgeTotals={locationBadgeTotals}
           onLocationChange={changeSelectedLocation}
           onLogout={auth.logout}
-          online={online}
+          online={online} businessCacheStatus={businessCacheStatus}
           serviceUnavailable={serviceUnavailable}
         />
         <NavigationTabs
