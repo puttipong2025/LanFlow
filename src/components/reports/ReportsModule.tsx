@@ -14,6 +14,7 @@ import { AlertDialog } from "@/components/shared/AlertDialog";
 import { DeletionAuditTable } from "@/components/shared/DeletionAuditTable";
 import { showPendingWorkBlockedToast } from "@/components/shared/PendingWorkBlockedToast";
 import { parsePendingWorkApiBody } from "@/lib/pending-work-blockers";
+import { getPendingEvents } from "@/lib/idb-queue";
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("th-TH", {
@@ -187,6 +188,16 @@ export function ReportsModule({
     createLockRef.current = true;
     setCreating(true);
     try {
+      // In-flight commands remain pending in the local queue until acknowledged.
+      const queues = await Promise.all([
+        getPendingEvents({ entity: "rubber_bills", ownerUserId: profile.id, locationId }),
+        getPendingEvents({ entity: "income_expense", ownerUserId: profile.id, locationId }),
+      ]);
+      if (locationIdRef.current !== locationId) return;
+      if (queues.some((events) => events.some((event) => event.status === "pending"))) {
+        toast.error("กรุณารอซิงค์ให้เสร็จก่อนสร้างรายงาน");
+        return;
+      }
       const response = await authFetch("/api/lanflow/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
