@@ -1,6 +1,14 @@
 import { calculateRubberBill } from "@/lib/rubber-bills/calculations";
 import type { SyncEvent } from "@/lib/idb-queue";
 import type { RubberBill } from "@/types";
+import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
+
+function pendingRubberMessage(event: SyncEvent & { centralAccepted?: boolean }) {
+  if (event.errorMessage) return event.errorMessage;
+  if (event.payload.centralQueue) return event.centralAccepted ? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล"
+    : event.serverSubmissionAttempted ? "รอยืนยันการรับงานจากเซิร์ฟเวอร์" : "รอส่งจากเครื่อง";
+  return event.operation === "delete" ? "กำลังส่งคำขอลบ" : event.operation === "create" ? "กำลังส่งบิลใหม่" : "กำลังส่งการแก้ไข";
+}
 
 export type RubberBillLocalMergeMode = "replace" | "suppress" | "server_authoritative";
 
@@ -80,11 +88,11 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
     serverSubmissionAttempted: (event.payload.background && event.status === "pending"
       && (event.operation !== "create" || !event.payload.centralQueue)) || event.serverSubmissionAttempted === true,
-    syncErrorMessage: event.status === "pending" && payload.background ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : event.operation === "create" ? "กำลังส่งบิลใหม่" : "กำลังส่งการแก้ไข") : event.errorMessage,
+    syncErrorMessage: event.status === "pending" && payload.background ? pendingRubberMessage(event) : event.errorMessage,
     canRestartDelete: event.operation === "delete" && (payload.contractVersion !== 2 || event.failureCode === "STALE_COMMAND_CONTEXT"),
     canCorrectSyncFailure: event.status === "failed" && event.failureHttpStatus === 400
       && event.operation !== "delete" && event.serverSubmissionAttempted !== true,
-    canDiscardSyncFailure: event.payload.centralQueue !== true,
+    canDiscardSyncFailure: event.payload.centralQueue !== true || isUnsubmittedRubberPreparationFailure(event),
     idempotencyKey: payload.idempotencyKey,
     locationId: payload.locationId,
     serverBillNo,
@@ -143,7 +151,7 @@ export function mergeRubberBillLocalEvents(
           netWeight: draft!.netWeight, averagePrice: draft!.price, netRubberValue: draft!.rubberValue,
           deductionTotal: draft!.deductionTotal, netTotal: draft!.netTotal,
         } : serverBill.approvalPending ? serverBill.approvalProposedSummary : undefined,
-        syncErrorMessage: event.status === "pending" ? (event.operation === "delete" ? "กำลังส่งคำขอลบ" : "กำลังส่งการแก้ไข") : event.errorMessage,
+        syncErrorMessage: event.status === "pending" ? pendingRubberMessage(event) : event.errorMessage,
         serverSubmissionAttempted: event.status === "pending" || event.serverSubmissionAttempted,
         canCorrectSyncFailure: draft!.canCorrectSyncFailure, canRestartDelete: draft!.canRestartDelete,
         canDiscardSyncFailure: draft!.canDiscardSyncFailure });

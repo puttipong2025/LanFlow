@@ -6,6 +6,7 @@ import { processRubberQueueImmediately } from "@/lib/server/rubber-queue-immedia
 
 const headers = { "Cache-Control": "private, no-store, max-age=0" };
 const failure = (status = 503) => NextResponse.json({ errorMessage: "ยังยืนยันสถานะคิวซิงก์ไม่ได้ กรุณาลองใหม่" }, { status, headers });
+const sameUuid = (left: unknown, right: unknown) => isUuid(left) && isUuid(right) && left.toLowerCase() === right.toLowerCase();
 
 async function boundedJson(request: Request) {
   if (!request.body) return null;
@@ -68,12 +69,12 @@ export async function POST(request: Request) {
     if (!auth.ok) return auth.response;
     const payload = await boundedJson(request);
     if (!isRubberQueueSubmission(payload)) return failure(400);
-    if (payload.actorUserId !== auth.auth.sub) return failure(403);
+    if (!sameUuid(payload.actorUserId, auth.auth.sub)) return failure(403);
     const { data, error } = await auth.supabase.rpc("submit_rubber_queue", { payload });
     if (error) return failure(error.message.startsWith("FORBIDDEN") ? 403
       : ["COMMAND_MISMATCH", "REQUEST_CHANGED", "INVALID_COMMAND"].includes(error.message) ? 409 : 503);
-    if (!isRubberQueueRow(data) || data.commandId !== payload.commandId || data.actorUserId !== auth.auth.sub
-      || data.locationId !== payload.locationId || data.clientTempId !== payload.clientTempId
+    if (!isRubberQueueRow(data) || !sameUuid(data.commandId, payload.commandId) || !sameUuid(data.actorUserId, auth.auth.sub)
+      || !sameUuid(data.locationId, payload.locationId) || data.clientTempId !== payload.clientTempId
       || data.action !== (payload.queueAction ?? payload.operation)) return failure();
     let receipt = data;
     try {
@@ -99,7 +100,7 @@ export async function PATCH(request: Request) {
       p_command_id: payload.commandId, p_version: payload.version, p_action: payload.action,
     });
     if (error) return failure(error.message.startsWith("FORBIDDEN") ? 403 : error.message === "QUEUE_CHANGED" ? 409 : 503);
-    if (!isRubberQueueRow(data) || data.commandId !== payload.commandId) return failure();
+    if (!isRubberQueueRow(data) || !sameUuid(data.commandId, payload.commandId)) return failure();
     return NextResponse.json(data, { headers });
   } catch { return failure(); }
 }

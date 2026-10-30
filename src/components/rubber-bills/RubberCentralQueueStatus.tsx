@@ -111,6 +111,7 @@ export function RubberCentralQueueStatus({ ownerUserId, locationId, locationName
     {open && <ModalShell nativeModal closeOnEscape title={`คิวซิงก์ — ${locationName}`} onClose={() => setOpen(false)} size="wide">
       <div className="space-y-4 text-pretty">
         <p className="text-sm text-muted">รายการที่ส่งถึงคิวกลางแล้ว ระบบทำต่อได้แม้ปิดหน้านี้ ทุกเครื่องที่มีสิทธิ์ในสาขาเห็นผลเดียวกัน</p>
+        {query.dataUpdatedAt > 0 && <p className="text-xs tabular-nums text-muted">ตรวจคิวสำเร็จล่าสุด {new Date(query.dataUpdatedAt).toLocaleString("th-TH")}</p>}
         <div className="flex flex-wrap gap-2">
           <button type="button" aria-pressed={!history} className={cn(button, !history && "border-leaf bg-leaf text-white")} onClick={() => { setHistory(false); setCursors([]); }}>รอดำเนินการ</button>
           <button type="button" aria-pressed={history} className={cn(button, history && "border-leaf bg-leaf text-white")} onClick={() => { setHistory(true); setCursors([]); }}>ผลดำเนินการ</button>

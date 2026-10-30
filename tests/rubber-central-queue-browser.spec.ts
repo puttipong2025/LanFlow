@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { selectAppLocation, selectedAppLocationId, confirmCurrentBranchIfRequired } from "./helpers/select-app-location";
 import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 import { assertSafeIntegrationTarget } from "./support/integration-target";
@@ -92,9 +92,12 @@ test("two devices see server processing while the origin leaves the branch; mana
     const pendingFeed = await observer.request.get(`/api/lanflow/rubber-bills/feed?locationId=${branch}&mode=pending_approval&documentStatus=any&limit=25`);
     expect(pendingFeed.ok(), await pendingFeed.text()).toBe(true);
     console.info('CQ browser: pending feed API validated');
-    await viewing.getByRole("button", { name: /^ตั้งค่าและอนุมัติบิลยาง/ }).click();
     const approvals = viewing.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง", exact: true });
-    await expect(approvals.getByText(`${marker}-approval`, { exact: false })).toBeVisible({ timeout: 25_000 });
+    // Global threshold acknowledgements can dismiss a newly opened dialog.
+    await expect(async () => {
+      if (!await approvals.isVisible()) await viewing.getByRole("button", { name: /^ตั้งค่าและอนุมัติบิลยาง/ }).click();
+      await expect(approvals.getByText(`${marker}-approval`, { exact: false })).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 25_000 });
     console.info('CQ browser: manager card visible');
     let managerCommand = ""; const approvalGate = new Promise<void>(resolve => { release = resolve; });
     await viewing.route("**/api/lanflow/rubber-bills/queue", async route => {
@@ -177,6 +180,77 @@ test("two devices see server processing while the origin leaves the branch; mana
       delete from public.locations where id in ('${branch}','${other}');commit;`);
   }
 });
+
+for (const stage of ["local", "lost-response"] as const) {
+  test(`full browser restart preserves ${stage} work and reconciles the same command once`, async ({ playwright }, testInfo) => {
+    test.setTimeout(120_000);
+    assertSafeIntegrationTarget(process.env.NEXT_PUBLIC_SUPABASE_URL!);
+    const branch = crypto.randomUUID(), marker = `REOPEN-${branch.slice(0, 8)}`;
+    const profile = testInfo.outputPath("persistent-profile");
+    const launch = () => playwright.chromium.launchPersistentContext(profile, { headless: true, acceptDownloads: true });
+    let context = await launch();
+    let release = () => {};
+    try {
+      const auth = JSON.parse(readFileSync("playwright/.auth/super_admin.json", "utf8"));
+      await context.addCookies(auth.cookies);
+      sql(`insert into public.locations(id,name,code,is_active) values('${branch}','${marker}','Z${branch.slice(0, 6)}',true);`);
+      const page = await context.newPage();
+      await openBills(page, branch);
+      await expect.poll(() => page.evaluate(location => Boolean(localStorage.getItem(`lanflow:rubber-bill-approval-settings:v4:${location}`)), branch)).toBe(true);
+      let admission!: () => void;
+      const admitted = new Promise<void>(resolve => { admission = resolve; });
+      const responseGate = new Promise<void>(resolve => { release = resolve; });
+      if (stage === "local") await context.setOffline(true);
+      else await page.route("**/api/lanflow/rubber-bills/queue", async route => {
+        if (route.request().method() !== "POST") { await route.continue(); return; }
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+        admission();
+        await responseGate;
+        await route.fulfill({ response }).catch(() => {});
+      });
+      await page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true }).click();
+      await confirmCurrentBranchIfRequired(page);
+      const modal = page.getByRole("dialog", { name: "บิลเครื่องชั่งเล็ก", exact: true });
+      await modal.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(marker);
+      await page.keyboard.press("Escape");
+      const weigh = modal.locator("table").first().locator("tbody tr").first();
+      await weigh.locator('input[type="number"]').nth(0).fill("100");
+      await weigh.locator('input[type="number"]').nth(1).fill("0");
+      await weigh.locator('input[type="number"]').nth(3).fill("0");
+      await modal.getByRole("button", { name: "บันทึกบิล", exact: true }).click();
+      await expect(modal).not.toBeVisible();
+      const identity = await page.evaluate(() => new Promise<{ id: string; command: string }>((resolve, reject) => {
+        const open = indexedDB.open("lanflow_sync_db"); open.onerror = () => reject(open.error);
+        open.onsuccess = () => { const db = open.result; const tx = db.transaction("sync_queue");
+          const read = tx.objectStore("sync_queue").getAll();
+          read.onsuccess = () => { const event = read.result.find(event => event.entity === "rubber_bills");
+            resolve({ id: event.id, command: event.payload.commandId }); };
+          tx.oncomplete = () => db.close(); };
+      }));
+      if (stage === "lost-response") await admitted;
+      else expect(sql(`select count(*) from private.rubber_queue_jobs where location_id='${branch}'`)).toBe("0");
+      await context.close(); release();
+      context = await launch();
+      const resumed = await context.newPage();
+      let downloads = 0; resumed.on("download", () => { downloads++; });
+      await openBills(resumed, branch);
+      await expect.poll(() => sql(`select count(*) from public.rubber_bills where location_id='${branch}' and client_temp_id='${identity.id}'`), { timeout: 45_000 }).toBe("1");
+      await expect(resumed.getByRole("row").filter({ hasText: marker }).getByText("ซิงก์แล้ว", { exact: true })).toBeVisible({ timeout: 45_000 });
+      expect(sql(`select command_id from private.rubber_queue_jobs where location_id='${branch}'`)).toBe(identity.command);
+      expect(downloads).toBe(0);
+    } finally {
+      release(); await context.close();
+      sql(`begin;set local app.history_retention_cleanup='on';
+        delete from public.rubber_bill_approval_requests where location_id='${branch}';
+        delete from public.rubber_bill_items where bill_id in(select id from public.rubber_bills where location_id='${branch}');
+        delete from public.rubber_bills where location_id='${branch}';set constraints all immediate;
+        delete from public.dashboard_money_events where location_id='${branch}';delete from public.dashboard_branch_snapshots where location_id='${branch}';
+        delete from public.document_deletion_audits where location_id='${branch}';delete from public.user_locations where location_id='${branch}';
+        delete from public.locations where id='${branch}';commit;`);
+    }
+  });
+}
 
 test("offline create stays local, can be edited, and reconnect admits its immutable latest draft once", async ({ browser }) => {
   test.setTimeout(120_000);

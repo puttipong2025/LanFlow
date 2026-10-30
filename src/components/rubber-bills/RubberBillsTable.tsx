@@ -223,7 +223,7 @@ export function RubberBillsTable({
                   {bill.approvalPending && bill.syncStatus === "synced" ? (
                     <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>
                   ) : (
-                    <SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} />
+                    <SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} pendingLabel={bill.syncErrorMessage} />
                   )}
                 </td>
                 <td>

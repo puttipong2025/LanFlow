@@ -32,6 +32,24 @@ test("GET accepts UUID case variations without losing a valid admitted receipt",
   expect(handlers.calls()).toBe(1);
 });
 
+test("POST accepts equivalent UUID casing without reporting an already committed admission as unavailable", async () => {
+  for (const changed of [{ commandId: commandId.toUpperCase(), idempotencyKey: commandId.toUpperCase() },
+    { actorUserId: owner.toUpperCase(), locationId: branch.toUpperCase() }]) {
+    const handlers = route(accepted);
+    const response = await handlers.POST(post({ ...payload, ...changed }));
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual(accepted);
+    expect(handlers.calls()).toBe(1);
+  }
+});
+
+test("PATCH accepts a canonical receipt for a differently cased UUID", async () => {
+  const response = await route(accepted).PATCH(new Request("https://example.test", {
+    method: "PATCH", body: JSON.stringify({ commandId: commandId.toUpperCase(), version: 1, action: "retry" }),
+  }));
+  expect(response.status).toBe(200);
+});
+
 test("POST returns 202 admission without claiming business success and disables caching", async () => {
   const response = await route(accepted).POST(post(payload));
   expect(response.status).toBe(202);

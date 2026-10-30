@@ -2,6 +2,7 @@ import { notifyRubberBackgroundFailure } from "@/lib/rubber-bills/background-not
 import { isIncomeExpenseBackgroundCommand } from "@/lib/income-expense/background-command";
 import { runIncomeExpenseBackground } from "@/lib/income-expense/background-sync";
 import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
+import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
 import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, acknowledgeRubberCommand } from "@/lib/rubber-bills/command";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -47,6 +48,11 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
         ));
       if (!event) throw new Error("ไม่พบรายการที่ซิงก์ไม่สำเร็จ");
       if (isCentralRubberEvent(event)) {
+        if (isUnsubmittedRubberPreparationFailure(event)) {
+          const retry = { ...event, status: "pending" as const, failureCode: undefined,
+            failureHttpStatus: undefined, errorMessage: undefined, nextAttemptAt: 0 };
+          if (!await reconcileSyncEventsIfCurrent([event], retry)) throw new Error("คิวเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่");
+        }
         await runRubberCentralQueue(queryClient, submissionOwnerUserId);
         return "silent";
       }

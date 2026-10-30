@@ -75,6 +75,18 @@ export function useLanFlowOfflineSyncCoordinator({
     };
 
     const unsubscribe = subscribeConnectivity(handleConnectivityChange);
+    let lastResumeAt = Date.now();
+    const handleResume = () => {
+      if (disposed || !isDeviceOnline()) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (Date.now() - lastResumeAt < 5_000) return;
+      lastResumeAt = Date.now();
+      void runRubberCentralQueue(queryClient, ownerUserId, true).catch(() => {
+        // The existing recovery interval retries temporary outbox read failures.
+      });
+    };
+    window.addEventListener("focus", handleResume);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleResume);
     const handleCashCountUnlocked = () => syncCurrentScope(true);
     window.addEventListener("lanflow:cash-count-unlocked", handleCashCountUnlocked);
     const retryInterval = setInterval(() => {
@@ -120,6 +132,8 @@ export function useLanFlowOfflineSyncCoordinator({
       if (activeTimer !== undefined) clearTimeout(activeTimer);
       clearRetryTimers();
       unsubscribe();
+      window.removeEventListener("focus", handleResume);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleResume);
       window.removeEventListener("lanflow:cash-count-unlocked", handleCashCountUnlocked);
     };
   }, [locationId, ownerUserId, queryClient]);

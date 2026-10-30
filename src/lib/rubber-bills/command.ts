@@ -1,4 +1,5 @@
 import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
+import { RubberPreparationError } from "@/lib/rubber-bills/preparation-failure";
 export { sendRubberBillCommand } from "@/lib/rubber-bills/sync-request";
 export { isConfirmedRubberSyncResult } from "@/lib/rubber-bills/sync-result";
 export { recordRubberSyncFailure } from "@/lib/rubber-bills/sync-failure";
@@ -20,7 +21,9 @@ export async function prepareRubberBillCommand(payload: Record<string, any>, act
     if (!options.completingLocal && context.recordStatus === "deleted") throw new Error("บิลนี้ถูกลบแล้ว");
     if (!options.completingLocal && payload.operation === "create" && context.revisionNo > 0) throw new Error("บิลนี้ถูกบันทึกแล้ว กรุณาเปิดบิลปัจจุบัน");
     if (payload.operation === "create" && payload.inputMethod === "ocr" && !payload.ocrUploadId) {
-      if (!context.ocrUploadId) throw new Error("ไม่พบรูป OCR ที่คุณมีสิทธิ์ใช้ กรุณาเลือกรูปใหม่");
+      if (!context.ocrUploadId) throw new RubberPreparationError(options.completingLocal
+        ? "ไม่พบรูป OCR ที่คุณมีสิทธิ์ใช้ กรุณาทิ้งร่างในเครื่องแล้วเลือกรูปใหม่"
+        : "ไม่พบรูป OCR ที่คุณมีสิทธิ์ใช้ กรุณาเลือกรูปใหม่");
       payload = { ...payload, ocrUploadId: context.ocrUploadId };
     }
     if (!options.completingLocal && payload.operation === "update" && context.revisionNo !== payload.expectedRevisionNo) {

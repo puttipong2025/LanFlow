@@ -24,6 +24,7 @@ export async function GET(request: Request) {
     if (error) return failure(error.code === "P0001" && error.message?.startsWith("FORBIDDEN:") ? 403 : 503);
     if (!isJsonObject(data) || !Number.isSafeInteger(data.generation) || Number(data.generation) < 0
         || !Number.isSafeInteger(data.revisionNo) || Number(data.revisionNo) < 0
+        || (data.queueVersion !== undefined && (!Number.isSafeInteger(data.queueVersion) || Number(data.queueVersion) < 0))
         || ![null, "active", "deleted"].includes(data.recordStatus as string | null)
         || !(data.serverId === null || isUuid(data.serverId))
         || !(data.ocrUploadId === null || isUuid(data.ocrUploadId))) return failure(503);

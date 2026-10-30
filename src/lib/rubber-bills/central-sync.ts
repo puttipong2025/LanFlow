@@ -7,6 +7,7 @@ import { acknowledgeRubberCommand } from "./complete-command";
 import { isConfirmedRubberSyncResult } from "./sync-result";
 import { isConfirmedRubberManagerResult, isRubberQueueRow, rubberQueueMessage, type RubberQueueRow } from "./central-queue-contract";
 import { prepareRubberBillCommand } from "./command";
+import { RubberPreparationError, isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
 import { notifyRubberBackgroundFailure, notifyRubberManagerOutcome } from "./background-notifications";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
@@ -90,10 +91,12 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
 
 async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId: string, forceReceiptCheck: boolean) {
     if (!ownerUserId || !navigator.onLine) return;
-    const events = (await rubberOwnerWork(ownerUserId)).filter(event => (event.nextAttemptAt ?? 0) <= Date.now()
-      || (forceReceiptCheck && event.centralAccepted && event.status === 'pending'))
+    const events = (await rubberOwnerWork(ownerUserId)).filter(event => !isUnsubmittedRubberPreparationFailure(event)
+      && ((event.nextAttemptAt ?? 0) <= Date.now()
+      || (forceReceiptCheck && event.centralAccepted && event.status === 'pending')))
       .sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0));
     const changed = new Set<string>();
+    const localStatusChanges = new Set<string>();
     const deferredBranches = new Set<string>();
     for (let snapshot of fairRubberQueueRound(events)) {
       if (!navigator.onLine) break;
@@ -109,12 +112,19 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
           if (snapshot.serverSubmissionAttempted || snapshot.centralAccepted) throw new Error("Command already submitted");
           const payload = await prepareRubberBillCommand(snapshot.payload, ownerUserId,
             { commandId: snapshot.payload.commandId, completingLocal: true });
-          const prepared = { ...snapshot, payload };
+          const prepared = { ...snapshot, payload, errorMessage: undefined, failureCode: undefined, failureHttpStatus: undefined };
           if (!await reconcileSyncEventsIfCurrent([snapshot], prepared)) continue;
+          if (snapshot.errorMessage) localStatusChanges.add(snapshot.locationId);
           snapshot = prepared;
-        } catch {
+        } catch (error) {
           deferredBranches.add(snapshot.locationId);
-          await reconcileSyncEventsIfCurrent([snapshot], { ...snapshot, nextAttemptAt: Date.now() + 15000 } as CentralEvent);
+          const permanent = error instanceof RubberPreparationError && !snapshot.serverSubmissionAttempted && !snapshot.centralAccepted;
+          const next: CentralEvent = { ...snapshot, nextAttemptAt: Date.now() + 15000,
+            status: permanent ? "failed" : "pending", serverSubmissionAttempted: snapshot.serverSubmissionAttempted ?? false,
+            failureCode: permanent ? error.code : undefined, failureHttpStatus: permanent ? 400 : undefined,
+            errorMessage: permanent ? error.message : "รอเตรียมข้อมูลบิล ระบบจะลองใหม่อัตโนมัติ" };
+          if (await reconcileSyncEventsIfCurrent([snapshot], next)
+            && (snapshot.status !== next.status || snapshot.errorMessage !== next.errorMessage)) changed.add(snapshot.locationId);
           continue;
         }
       }
@@ -165,10 +175,11 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
             ? Math.max(2_000, Math.min(30_000, Date.parse(row.nextAttemptAt) - now)) : 2_000;
           const next: CentralEvent = { ...event, centralAccepted: true, status: correction ? "failed" : "pending",
             serverSubmissionAttempted: !correction, failureHttpStatus: correction ? 400 : undefined,
-            errorMessage: correction ? rubberQueueMessage(row) : undefined,
+            errorMessage: row.state === "queued" ? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล" : rubberQueueMessage(row),
             nextAttemptAt: now + delay };
           if (await reconcileSyncEventsIfCurrent([event], next)) {
-            if (!event.centralAccepted || correction) changed.add(event.locationId);
+            if (!event.centralAccepted || snapshot.status !== next.status || snapshot.failureHttpStatus !== next.failureHttpStatus) changed.add(event.locationId);
+            else if ((event.errorMessage ?? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล") !== next.errorMessage) localStatusChanges.add(event.locationId);
             if (correction) await notifyRubberBackgroundFailure(next);
           }
         } else {
@@ -181,6 +192,9 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
         deferredBranches.add(event.locationId);
         await reconcileSyncEventsIfCurrent([event], { ...event, nextAttemptAt: Date.now() + 15_000 } as CentralEvent);
       }
+    }
+    for (const locationId of localStatusChanges) {
+      if (!changed.has(locationId)) await queryClient.invalidateQueries({ queryKey: ["rubberBillLocalState", ownerUserId, locationId] });
     }
     for (const locationId of changed) {
       await queryClient.invalidateQueries({ queryKey: ["rubberCentralQueue", ownerUserId, locationId] });

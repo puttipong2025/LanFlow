@@ -27,6 +27,7 @@ import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache"
 import { normalizeRubberBillQueueBeforeSync } from "@/lib/rubber-bills/normalize-sync-queue";
 import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
 import { immediateRubberReceipt } from "@/lib/rubber-bills/immediate-receipt";
+import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
 
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
@@ -222,6 +223,7 @@ export function useRubberBillMutations(
           status: "pending" as const,
           errorMessage: undefined,
           failureHttpStatus: undefined,
+          failureCode: undefined,
           serverSubmissionAttempted: correcting ? false : keeper.serverSubmissionAttempted,
           ...(correcting ? { centralAccepted: false, nextAttemptAt: 0 } : {}),
           payload: keeper.operation === "create"
@@ -447,7 +449,7 @@ export function useRubberBillMutations(
     if (!hasSyncProblem) {
       throw new Error("ไม่พบรายการซิงก์ที่มีปัญหาในเครื่องนี้");
     }
-    if (relatedEvents.some(isCentralRubberEvent)) {
+    if (relatedEvents.some(event => isCentralRubberEvent(event) && !isUnsubmittedRubberPreparationFailure(event))) {
       throw new Error("รายการนี้อยู่ในคิวซิงก์กลาง กรุณาแก้ไขร่างจากคิวซิงก์กลางก่อน");
     }
 

@@ -82,7 +82,7 @@ test("delete retains its row and disables actions before held context and feed r
       const started = Date.now();
       await dialog.getByRole("button", { name: "ยืนยันลบ", exact: true }).click();
       await expect(dialog).toBeHidden({ timeout: 1000 });
-      await expect(row.getByText("กำลังส่งคำขอลบ", { exact: true })).toBeVisible({ timeout: 1000 });
+      await expect(row.getByText("รอส่งจากเครื่อง", { exact: true })).toBeVisible({ timeout: 1000 });
       await expect(row.getByRole("button", { name: /กำลังยืนยันผล/ }).first()).toBeDisabled();
       durations.push(Date.now() - started);
       expect(sql(`select count(*) from public.rubber_bills where location_id='${branch}' and record_status='active'`)).toBe(String(samples - i));

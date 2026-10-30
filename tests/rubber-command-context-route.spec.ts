@@ -43,3 +43,14 @@ test("command context preserves forbidden errors and rejects invalid references 
   expect((await route.GET(new Request("http://localhost/?locationId=bad&clientTempId=bill"))).status).toBe(400);
   expect(calls).toBe(1);
 });
+
+test("command context contains invalid optional queue versions as retryable failures", async () => {
+  for (const queueVersion of [null, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+    const response = await load(async () => ({ data: { ...context, queueVersion }, error: null })).GET(request());
+    expect(response.status, `queueVersion=${String(queueVersion)}`).toBe(503);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+  }
+  for (const queueVersion of [0, 1]) {
+    expect((await load(async () => ({ data: { ...context, queueVersion }, error: null })).GET(request())).status).toBe(200);
+  }
+});
