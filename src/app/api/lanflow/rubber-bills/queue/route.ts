@@ -29,11 +29,11 @@ export async function GET(request: Request) {
     const auth = await requireAuth(request);
     if (!auth.ok) return auth.response;
     const params = new URL(request.url).searchParams;
-    const locationId = params.get("locationId");
-    const commandId = params.get("commandId");
+    const locationId = params.get("locationId")?.toLowerCase() ?? null;
+    const commandId = params.get("commandId")?.toLowerCase() ?? null;
     const before = params.get("before");
-    const draftCommandId = params.get("draftCommandId");
-    const beforeId = params.get("beforeId");
+    const draftCommandId = params.get("draftCommandId")?.toLowerCase() ?? null;
+    const beforeId = params.get("beforeId")?.toLowerCase() ?? null;
     if (!isUuid(locationId) || (commandId !== null && !isUuid(commandId))
       || (before !== null && !isIsoTimestamp(before)) || (draftCommandId !== null && !isUuid(draftCommandId))
       || (beforeId !== null && !isUuid(beforeId))) return failure(400);

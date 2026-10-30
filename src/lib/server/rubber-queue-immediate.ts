@@ -19,7 +19,8 @@ function queueConnection() {
       || (database.hostname.endsWith(".pooler.supabase.com") && decodeURIComponent(database.username).endsWith(`.${project}`)))) return undefined;
   }
   connection ??= postgres(raw, { max: 1, prepare: false, fetch_types: false, connect_timeout: 2, idle_timeout: 5,
-    ssl: local ? false : { rejectUnauthorized: true }, connection: { application_name: "lanflow-rubber-immediate" }, onnotice: () => {} });
+    ssl: local ? false : { rejectUnauthorized: true, ca: process.env.RUBBER_QUEUE_DATABASE_CA },
+    connection: { application_name: "lanflow-rubber-immediate" }, onnotice: () => {} });
   return connection;
 }
 

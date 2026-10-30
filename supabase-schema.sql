@@ -8885,8 +8885,9 @@ CREATE OR REPLACE FUNCTION "private"."rubber_actor_active"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select exists(select 1 from public.profiles where id=private.rubber_execution_actor()
-    and is_active and role in ('admin','super_admin'))
+  select exists(select 1 from public.profiles
+    where id=(select private.rubber_execution_actor())
+      and is_active and role in ('admin','super_admin'))
 $$;
 
 
@@ -8898,7 +8899,8 @@ CREATE OR REPLACE FUNCTION "private"."rubber_actor_location"("p_location" "uuid"
     SET "search_path" TO ''
     AS $$
   select private.rubber_actor_active() and (private.rubber_actor_manager() or exists(
-    select 1 from public.user_locations where user_id=private.rubber_execution_actor() and location_id=p_location))
+    select 1 from public.user_locations
+    where user_id=(select private.rubber_execution_actor()) and location_id=p_location))
 $$;
 
 
@@ -8909,8 +8911,9 @@ CREATE OR REPLACE FUNCTION "private"."rubber_actor_manager"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-  select exists(select 1 from public.profiles where id=private.rubber_execution_actor()
-    and is_active and (role='super_admin' or (role='admin' and can_access_super_admin_features)))
+  select exists(select 1 from public.profiles
+    where id=(select private.rubber_execution_actor())
+      and is_active and (role='super_admin' or (role='admin' and can_access_super_admin_features)))
 $$;
 
 
@@ -21442,38 +21445,7 @@ begin
         then coalesce(req.requested_at, coalesce(b.client_created_at, b.created_at))
         else coalesce(b.client_created_at, b.created_at)
       end feed_sort_at,
-      (to_jsonb(b) - 'ocr_source_id' - 'ocr_image_sha256') || jsonb_build_object(
-        'row_kind', 'bill',
-        'work_identity', 'bill:' || b.id::text,
-        'items', coalesce((
-          select jsonb_agg(to_jsonb(i) order by i.sequence_no, i.id)
-          from public.rubber_bill_items i where i.bill_id = b.id
-        ), '[]'::jsonb),
-        'report_lock_no', public.report_lock_no(b),
-        'transfer_lock_id', (
-          select i.transfer_id
-          from public.money_transfer_items i
-          join public.money_transfers t on t.id = i.transfer_id
-          where i.source_type = 'rubber_bill' and i.source_id = b.id
-            and t.record_status <> 'deleted'
-          limit 1
-        ),
-        'approval_pending', req.id is not null,
-        'approval_request_id', req.id,
-        'approval_operation', req.operation,
-        'approval_reasons', req.matched_reasons,
-        'approval_requested_by_name', case when p_mode = 'pending_approval' then req.requested_by_name else null end,
-        'approval_proposed_summary', case when req.id is null or (p_mode <> 'pending_approval' and req.operation <> 'update') then null else jsonb_build_object(
-          'customerName', case when req.operation='delete' then b.customer_name else req.proposed_payload->>'customerName' end,
-          'billDate', case when req.operation='delete' then b.bill_date::text else req.proposed_payload->>'billDate' end,
-          'billType', case when req.operation='delete' then b.bill_type else req.proposed_payload->>'billType' end,
-          'netWeight', case when req.operation='delete' then to_jsonb(b.net_weight) else req.proposed_payload->'netWeight' end,
-          'averagePrice', case when req.operation='delete' then to_jsonb(b.average_price) else req.proposed_payload->'averagePrice' end,
-          'netRubberValue', case when req.operation='delete' then to_jsonb(b.net_rubber_value) else req.proposed_payload->'netRubberValue' end,
-          'deductionTotal', case when req.operation='delete' then to_jsonb(b.deduction_total) else req.proposed_payload->'deductionTotal' end,
-          'netTotal', case when req.operation='delete' then to_jsonb(b.net_total) else req.proposed_payload->'netTotal' end
-        ) end
-      ) row_json
+      req.id approval_request_id
     from public.rubber_bills b
     left join lateral (
       select r.id, r.operation, r.matched_reasons, r.requested_at,
@@ -21519,7 +21491,75 @@ begin
       'approval:' || r.id::text work_identity,
       r.id,
       r.requested_at feed_sort_at,
-      jsonb_build_object(
+      r.id approval_request_id
+    from public.rubber_bill_approval_requests r
+    where r.location_id = p_location_id and r.request_status = 'pending'
+      and r.operation = 'create' and r.bill_id is null
+      and p_mode in ('latest', 'pending_approval')
+      and p_document_status = 'any'
+      and (v_search = '' or position(v_search in lower(concat_ws(' ',
+        r.proposed_payload->>'localBillNo', r.proposed_payload->>'billDate',
+        r.proposed_payload->>'customerName', r.proposed_payload->>'billType',
+        r.requested_by_name, r.requested_by_phone
+      ))) > 0)
+  ), candidates as (
+    select * from bill_candidates
+    union all
+    select * from create_candidates
+  ), scoped as (
+    select c.*
+    from candidates c
+    where p_cursor_sort_at is null
+      or (v_ascending and (c.feed_sort_at, c.work_identity) > (p_cursor_sort_at, p_cursor_work_identity))
+      or (not v_ascending and (c.feed_sort_at, c.work_identity) < (p_cursor_sort_at, p_cursor_work_identity))
+    order by
+      case when v_ascending then c.feed_sort_at end asc,
+      case when not v_ascending then c.feed_sort_at end desc,
+      case when v_ascending then c.work_identity end asc,
+      case when not v_ascending then c.work_identity end desc
+    limit p_page_size + 1
+  ), visible as (
+    select * from scoped
+    order by
+      case when v_ascending then feed_sort_at end asc,
+      case when not v_ascending then feed_sort_at end desc,
+      case when v_ascending then work_identity end asc,
+      case when not v_ascending then work_identity end desc
+    limit p_page_size
+  ), decorated as (
+    select v.*,case when v.row_kind='bill' then (to_jsonb(b) - 'ocr_source_id' - 'ocr_image_sha256') || jsonb_build_object(
+        'row_kind', 'bill',
+        'work_identity', 'bill:' || b.id::text,
+        'items', coalesce((
+          select jsonb_agg(to_jsonb(i) order by i.sequence_no, i.id)
+          from public.rubber_bill_items i where i.bill_id = b.id
+        ), '[]'::jsonb),
+        'report_lock_no', public.report_lock_no(b),
+        'transfer_lock_id', (
+          select i.transfer_id
+          from public.money_transfer_items i
+          join public.money_transfers t on t.id = i.transfer_id
+          where i.source_type = 'rubber_bill' and i.source_id = b.id
+            and t.record_status <> 'deleted'
+          limit 1
+        ),
+        'approval_pending', req.id is not null,
+        'approval_request_id', req.id,
+        'approval_operation', req.operation,
+        'approval_reasons', req.matched_reasons,
+        'approval_requested_by_name', case when p_mode = 'pending_approval' then req.requested_by_name else null end,
+        'approval_proposed_summary', case when req.id is null or (p_mode <> 'pending_approval' and req.operation <> 'update') then null else jsonb_build_object(
+          'customerName', case when req.operation='delete' then b.customer_name else req.proposed_payload->>'customerName' end,
+          'billDate', case when req.operation='delete' then b.bill_date::text else req.proposed_payload->>'billDate' end,
+          'billType', case when req.operation='delete' then b.bill_type else req.proposed_payload->>'billType' end,
+          'netWeight', case when req.operation='delete' then to_jsonb(b.net_weight) else req.proposed_payload->'netWeight' end,
+          'averagePrice', case when req.operation='delete' then to_jsonb(b.average_price) else req.proposed_payload->'averagePrice' end,
+          'netRubberValue', case when req.operation='delete' then to_jsonb(b.net_rubber_value) else req.proposed_payload->'netRubberValue' end,
+          'deductionTotal', case when req.operation='delete' then to_jsonb(b.deduction_total) else req.proposed_payload->'deductionTotal' end,
+          'netTotal', case when req.operation='delete' then to_jsonb(b.net_total) else req.proposed_payload->'netTotal' end
+        ) end
+      )
+      else jsonb_build_object(
         'row_kind', 'approval_create',
         'work_identity', 'approval:' || r.id::text,
         'id', r.id,
@@ -21574,41 +21614,11 @@ begin
           from jsonb_array_elements(coalesce(r.proposed_payload->'items', '[]'::jsonb))
             with ordinality as x(item, ordinal)
         ), '[]'::jsonb)
-      ) row_json
-    from public.rubber_bill_approval_requests r
-    where r.location_id = p_location_id and r.request_status = 'pending'
-      and r.operation = 'create' and r.bill_id is null
-      and p_mode in ('latest', 'pending_approval')
-      and p_document_status = 'any'
-      and (v_search = '' or position(v_search in lower(concat_ws(' ',
-        r.proposed_payload->>'localBillNo', r.proposed_payload->>'billDate',
-        r.proposed_payload->>'customerName', r.proposed_payload->>'billType',
-        r.requested_by_name, r.requested_by_phone
-      ))) > 0)
-  ), candidates as (
-    select * from bill_candidates
-    union all
-    select * from create_candidates
-  ), scoped as (
-    select c.*
-    from candidates c
-    where p_cursor_sort_at is null
-      or (v_ascending and (c.feed_sort_at, c.work_identity) > (p_cursor_sort_at, p_cursor_work_identity))
-      or (not v_ascending and (c.feed_sort_at, c.work_identity) < (p_cursor_sort_at, p_cursor_work_identity))
-    order by
-      case when v_ascending then c.feed_sort_at end asc,
-      case when not v_ascending then c.feed_sort_at end desc,
-      case when v_ascending then c.work_identity end asc,
-      case when not v_ascending then c.work_identity end desc
-    limit p_page_size + 1
-  ), visible as (
-    select * from scoped
-    order by
-      case when v_ascending then feed_sort_at end asc,
-      case when not v_ascending then feed_sort_at end desc,
-      case when v_ascending then work_identity end asc,
-      case when not v_ascending then work_identity end desc
-    limit p_page_size
+      ) end row_json
+    from visible v
+    left join public.rubber_bills b on v.row_kind='bill' and b.id=v.id
+    left join public.rubber_bill_approval_requests req on v.row_kind='bill' and req.id=v.approval_request_id
+    left join public.rubber_bill_approval_requests r on v.row_kind='approval_create' and r.id=v.id
   )
   select jsonb_build_object(
     'rows', coalesce((select jsonb_agg(
@@ -21618,7 +21628,7 @@ begin
         case when not v_ascending then feed_sort_at end desc,
         case when v_ascending then work_identity end asc,
         case when not v_ascending then work_identity end desc
-    ) from visible), '[]'::jsonb),
+    ) from decorated), '[]'::jsonb),
     'hasMore', (select count(*) > p_page_size from scoped),
     'nextSortAt', (select feed_sort_at from visible order by
       case when v_ascending then feed_sort_at end desc,

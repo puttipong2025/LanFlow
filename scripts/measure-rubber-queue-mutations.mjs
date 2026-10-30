@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 // Local Docker only. All fixtures/settings/business writes roll back together.
@@ -10,8 +10,11 @@ const revision = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
 const container = process.env.RUBBER_BENCHMARK_CONTAINER ?? 'supabase_db_webapp';
 if (!['supabase_db_webapp','lanflow-rubber-realdata-20261029'].includes(container)) throw new Error('Unsupported Local benchmark container');
 const role = container === 'supabase_db_webapp' ? 'postgres' : 'supabase_admin';
+const actorCandidate = process.env.RUBBER_BENCHMARK_ACTOR_CANDIDATE === '1';
+const actorSql = actorCandidate ? readFileSync('supabase/migrations/20261030020000_rubber_queue_actor_statement_lookup.sql','utf8') : '';
 const statement = `begin;
 set local statement_timeout='300s';
+${actorSql}
 create temp table measurements(scenario text,n integer,round integer,admission_ms numeric,execution_ms numeric);
 do $bench$
 declare actor uuid:=gen_random_uuid(); branch uuid:=gen_random_uuid(); command uuid; client text;
@@ -107,6 +110,6 @@ const summary = Object.entries(groups).map(([scenario, rows]) => ({ scenario, sa
   executionMaxMs: Math.max(...rows.map(r=>Number(r.execution_ms))) }));
 mkdirSync('output',{recursive:true});
 const path = container === 'supabase_db_webapp' ? 'output/rubber-queue-mutation-baseline.json' : 'output/rubber-realdata-mutation-baseline.json';
-writeFileSync(path, JSON.stringify({ environment:'Local Docker, one rollback transaction; no network/commit/cron timing', container, revision,
+writeFileSync(path, JSON.stringify({ environment:'Local Docker, one rollback transaction; no network/commit/cron timing', container, revision, actorCandidate,
   rounds, samples, summary },null,2));
 console.log(JSON.stringify({ path, samples: samples.length, summary },null,2));

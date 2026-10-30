@@ -37,6 +37,62 @@ function sequencedFeedRouteDependencies(dataByCall: unknown[]) {
   };
 }
 
+test("feed transport exceptions return private JSON instead of rejecting the route", async () => {
+  const row = {
+    row_kind: "bill", id: locationId, record_status: "active", approval_pending: false,
+    revision_no: 1, location_id: locationId, work_identity: `bill:${locationId}`,
+    operational_sort_at: "2026-10-30T00:00:00Z", items: [],
+  };
+  const feed = { rows: [row], hasMore: false, nextSortAt: null, nextWorkIdentity: null };
+  for (const failureAt of ["auth", "feed", "evidence"]) {
+    let calls = 0;
+    const handlers = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
+      "src/app/api/lanflow/rubber-bills/feed/route.ts", {
+        "@/lib/server/auth": {
+          hasSystemManagerAccess: () => true,
+          requireAuth: async () => {
+            if (failureAt === "auth") throw new Error("private upstream credential detail");
+            return { ok: true, auth: { sub: "user-1", locationIds: [locationId] },
+              supabase: { rpc: async () => {
+                calls++;
+                if (failureAt === "feed" || calls === 2) throw new Error("private upstream credential detail");
+                return { data: feed, error: null };
+              } } };
+          },
+        },
+      },
+    );
+    const response = await handlers.GET({ nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}`) } as never);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(await response.json()).toEqual({ error: "โหลดรายการบิลยางไม่สำเร็จ กรุณาลองใหม่" });
+    expect(calls).toBe(failureAt === "auth" ? 0 : failureAt === "feed" ? 1 : 2);
+  }
+});
+
+test("evidence status must be a string rather than an array that coerces to a valid status", async () => {
+  const row = {
+    row_kind: "bill", id: locationId, record_status: "active", approval_pending: false,
+    revision_no: 1, location_id: locationId, work_identity: `bill:${locationId}`,
+    operational_sort_at: "2026-10-30T00:00:00Z", items: [],
+  };
+  for (const status of ["outside", ["outside"]]) {
+    const dependencies = sequencedFeedRouteDependencies([
+      { rows: [row], hasMore: false, nextSortAt: null, nextWorkIdentity: null },
+      [{ location_id: locationId, bill_id: locationId, revision_no: 1, client_created_at: null,
+        review_period_id: null, review_status: status, missing_rubber: false, missing_display_in: false,
+        has_manual_correction: false, is_unpriced: false, has_any_evidence: false,
+        required_role_count: 0, present_required_role_count: 0, decision: null,
+        reviewed_by_name: null, reviewed_at: null }],
+    ]);
+    const handlers = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
+      "src/app/api/lanflow/rubber-bills/feed/route.ts", dependencies,
+    );
+    const response = await handlers.GET({ nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}`) } as never);
+    expect(response.status).toBe(typeof status === "string" ? 200 : 500);
+  }
+});
+
 test("pending-create rows keep approval identity separate from real bill ids", () => {
   const requestId = "71000000-0000-4000-8000-000000000022";
   const bill = mapRubberBillFeedRow({

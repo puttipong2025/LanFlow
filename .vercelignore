@@ -1,4 +1,11 @@
 # Vercel CLI does not inherit .gitignore. Never upload local evidence or backups.
+node_modules/
+.next/
+.git/
+.codex/
+.codex-tmp/
+.recovery/
+tmp/
 output/
 supabase/cloud-backups/
 supabase/backup_*.sql
@@ -9,6 +16,7 @@ backup_customers*.sql
 .env.*
 scratch/
 .codex-remote-attachments/
+.codex-attachments/
 .gemini/
 .agents/
 src/lib/server/*.json

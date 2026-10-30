@@ -270,7 +270,8 @@ function isEvidenceState(
       || !isNonNegativePostgresInteger(value.revision_no)
       || (value.client_created_at !== null && !isIsoTimestamp(value.client_created_at))
       || (value.review_period_id !== null && !isUuid(value.review_period_id))
-      || !["outside", "normal", "pending", "pass", "improve"].includes(String(value.review_status))
+      || typeof value.review_status !== "string"
+      || !["outside", "normal", "pending", "pass", "improve"].includes(value.review_status)
       || typeof value.missing_rubber !== "boolean"
       || typeof value.missing_display_in !== "boolean"
       || typeof value.has_manual_correction !== "boolean"
@@ -315,6 +316,16 @@ function encodeCursor(cursor: Cursor) {
 }
 
 export async function GET(request: NextRequest) {
+  try {
+    return await getFeed(request);
+  } catch {
+    return NextResponse.json({ error: "โหลดรายการบิลยางไม่สำเร็จ กรุณาลองใหม่" }, {
+      status: 503, headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
+  }
+}
+
+async function getFeed(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 

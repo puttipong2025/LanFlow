@@ -1,4 +1,4 @@
-import { Edit3, Eye, FileImage, Images, Share2, Trash2 } from "lucide-react";
+import { Eye, FileImage, Images, Trash2 } from "lucide-react";
 import { formatNumber } from "@/lib/format";
 import type { RubberBill } from "@/types";
 import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
@@ -84,6 +84,7 @@ export function RubberBillsTable({
           <thead>
             <tr className="whitespace-nowrap border-b border-black/20 text-left text-ink">
               <th className="py-2">จัดการ</th>
+              <th>Sync</th>
               <th>ชื่อลูกค้า</th>
               <th>เลขที่บิล</th>
               <th>วันที่ออกบิล</th>
@@ -96,7 +97,6 @@ export function RubberBillsTable({
               <th>ยอดหักเงิน</th>
               <th>ยอดที่ต้องจ่ายลูกค้า</th>
               <th>สถานะหลักฐาน</th>
-              <th>Sync</th>
             </tr>
           </thead>
           <tbody>
@@ -173,7 +173,7 @@ export function RubberBillsTable({
                     <button type="button" title={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"} aria-label={printBlockReason ?? "แชร์ PDF ใบรับซื้อยาง"}
                       disabled={Boolean(printBlockReason)} onClick={() => onPrint(bill)}
                       className={`inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-sm font-semibold text-white hover:bg-actionSecondary/90 ${printBlockReason ? "cursor-not-allowed opacity-45" : ""}`}>
-                      <Share2 size={16} /> แชร์ PDF
+                      PDF
                     </button>
                     {!bill.sourceRubberExportId && <button
                       type="button"
@@ -183,7 +183,6 @@ export function RubberBillsTable({
                       onClick={() => onEdit(bill)}
                        className={cn("focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-amber px-3 text-sm font-semibold text-white shadow-sm hover:bg-amber/90", actionsDisabled && "cursor-not-allowed opacity-45")}
                     >
-                      <Edit3 size={16} />
                        แก้
                     </button>}
                     {hasSyncProblem ? (
@@ -219,6 +218,13 @@ export function RubberBillsTable({
                         className="focus-ring rounded-md bg-danger px-3 py-2 text-sm font-semibold text-white disabled:opacity-45">ขอลบใหม่</button>
                     )}
                   </div>
+                </td>
+                <td>
+                  {bill.approvalPending && bill.syncStatus === "synced" ? (
+                    <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>
+                  ) : (
+                    <SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} />
+                  )}
                 </td>
                 <td>
                   <div className="flex flex-col items-start gap-1">
@@ -290,13 +296,6 @@ export function RubberBillsTable({
                     <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">
                       {bill.id.startsWith("approval:") ? "รออนุมัติ" : bill.syncStatus === "synced" ? "กำลังตรวจสถานะ" : "รอซิงก์"}
                     </span>
-                  )}
-                </td>
-                <td>
-                  {bill.approvalPending && bill.syncStatus === "synced" ? (
-                    <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">รออนุมัติ</span>
-                  ) : (
-                    <SyncStatusBadge status={bill.syncStatus} errorMessage={bill.syncErrorMessage} />
                   )}
                 </td>
               </tr>

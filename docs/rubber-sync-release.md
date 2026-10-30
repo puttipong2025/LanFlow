@@ -69,3 +69,49 @@ On2026-10-29, `supabase db push --linked --yes` applied exactly200,210,220 succe
 The first pushed CI web-gate passed; database-gate exposed a pre-existing seed-dependent test in `income_expense_background_test.sql`: `seed.sql` truncates profiles with CASCADE, removing the approval-settings singleton; the test updated zero rows and incorrectly expected approval. A rollback-only differential reproduced exactly3 failures when the singleton was removed and0 with it present. The fixture now inserts its singleton with ON CONFLICT DO NOTHING before setting policy. Both differential cases pass and all1556 SQL assertions pass again. No application behavior or Cloud migration changes are required.
 
 Vercel confirmed the9146946 production deployment Ready. Subsequent fixture-only commit is tracked in Git/CI; Cloud remains through20261029022000.
+
+## Current queue/feed rollout — 2026-10-30
+
+The earlier disabled-accelerator and migration-boundary statements above are
+historical. Production now uses trusted server-only RUBBER_QUEUE_DATABASE_CA
+with RUBBER_QUEUE_DATABASE_URL; TLS identity verification remains enabled.
+The existing Vercel production deployment is Ready. SQL-only optimizations do
+not require changing its UI or polling behavior.
+
+The user authorized the staged optimization plan. Cloud applied only
+20261030020000 for actor-helper statement lookups, observed real completion,
+then separately20261030021000 for page-first Rubber feed decoration. Exact
+function hashes match tested Local definitions; ownership/ACL/security flags
+are unchanged. Actor release:12read-only permission probes; feed release:
+12read-only mode/cursor probes on real branches. Cron remains active every2s.
+Strict-TLS schema backups and separate forward rollback scripts are verified.
+
+Final Local gates:SQL68files/1591assertions, concurrency14, browser5,
+fullverify875pass/2existing skips, build/SW/bundle282.3/320kB. Offline237complete
+JSON cases per ordering preserve the feed response; SQL sums reduce60–63%
+under those fixed test conditions, not a Cloud/UI speed promise. The offline
+clone retains93unchanged business-table fingerprints and zero FK violations.
+
+Short Cloud observation after feed:48feed RPC calls mean115.99ms SQL,6new
+creates synced, no unfinished queue work or error codes,243successful cron
+runs. No production peak-load test was run. See
+`docs/rubber-queue-actor-optimization-verification.md` and
+`docs/rubber-feed-page-optimization-verification.md` for limitations and the
+complete experiment ledger, including failed/superseded samples.
+
+## Main release preflight — 2026-10-30
+
+The user authorized pushing the accumulated queue/feed optimizations, Route
+boundary fixes and Rubber table changes to main. The table now uses text-only
+PDF/edit buttons and places Sync between actions and customer name. The
+previously deployed SQL migrations remain unchanged.
+
+Fresh linked `supabase db push --dry-run` reports the remote database is up to
+date; no additional Cloud migration is needed for this release. Fresh
+`npm run verify` passes with878tests and2existing skips, lint/type/source/import/
+auth-outage/build/offline/service-worker checks, and282.3/320kB first-load JS.
+The focused UI/queue/feed suite passes102tests; a direct component check covers
+10sync/approval combinations, action guards and empty-table column alignment.
+Private environment files, generated evidence, backups and local attachments
+are excluded from the commit. Hosting deployment status must be verified
+separately after pushing; these checks alone do not assert a new live release.

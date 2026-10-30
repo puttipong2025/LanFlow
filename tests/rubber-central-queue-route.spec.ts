@@ -24,6 +24,14 @@ const post = (value: unknown) => new Request("https://example.test/api/lanflow/r
   method: "POST", body: JSON.stringify(value), headers: { "Content-Type": "application/json" },
 });
 
+test("GET accepts UUID case variations without losing a valid admitted receipt", async () => {
+  const handlers = route(accepted);
+  const response = await handlers.GET(new Request(`https://example.test/api/lanflow/rubber-bills/queue?locationId=${branch.toUpperCase()}&commandId=${commandId.toUpperCase()}`));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(accepted);
+  expect(handlers.calls()).toBe(1);
+});
+
 test("POST returns 202 admission without claiming business success and disables caching", async () => {
   const response = await route(accepted).POST(post(payload));
   expect(response.status).toBe(202);
