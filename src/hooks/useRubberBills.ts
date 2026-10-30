@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import {
   OFFLINE_SYNCED_ACTION_MESSAGE,
   PENDING_SERVER_ACTION_MESSAGE,
+  isSyncedServerRecord,
 } from "@/lib/record-action-locks";
 import { canSyncCurrentSession } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
@@ -378,10 +379,14 @@ export function useRubberBillMutations(
       );
 
       if (pendingCreates.length > 0) {
+        if (bill.syncStatus !== "pending" || bill.serverBillNo || bill.id !== bill.clientTempId || clientEvents.some(event => event.serverId || event.serverBillNo
+          || event.serverSubmissionAttempted !== false || (event as SyncEvent & { centralAccepted?: boolean }).centralAccepted === true)) {
+          throw new Error(PENDING_SERVER_ACTION_MESSAGE);
+        }
         // Coalesce: remove the entire local-only history atomically, and don't
         // sync a delete for a record that never reached the Server.
         const coalescedEvents = [...pendingCreates, ...pendingUpdates];
-        if (!await reconcileSyncEventsIfCurrent(coalescedEvents)) {
+        if (!await reconcileSyncEventsIfCurrent(coalescedEvents, undefined, true)) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
         }
         await removeConfirmedRubberBillLocally(
@@ -389,6 +394,9 @@ export function useRubberBillMutations(
         return { approvalPending: false };
       }
 
+      if (!isSyncedServerRecord(bill)) {
+        throw new Error("สถานะบิลเปลี่ยนแล้ว กรุณาโหลดรายการล่าสุดก่อนลบ");
+      }
       // If we replaced a pending update, use its server revision. Else use current bill's server revision.
       const targetRev = pendingUpdates.length > 0 ? pendingUpdates[0].payload.expectedRevisionNo : bill.revisionNo;
       const { payload: calculatedPayload } = buildRubberBillRpcPayload(

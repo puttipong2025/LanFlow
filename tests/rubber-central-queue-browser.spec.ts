@@ -252,7 +252,7 @@ for (const stage of ["local", "lost-response"] as const) {
   });
 }
 
-test("offline create stays local, can be edited, and reconnect admits its immutable latest draft once", async ({ browser }) => {
+test("offline unsent create can be deleted while edit stays locked and reconnect sends no deleted bill", async ({ browser }) => {
   test.setTimeout(120_000);
   assertSafeIntegrationTarget(process.env.NEXT_PUBLIC_SUPABASE_URL!);
   const context = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
@@ -277,21 +277,26 @@ test("offline create stays local, can be edited, and reconnect admits its immuta
     expect(sql(`select count(*) from private.rubber_queue_jobs where location_id='${branch}'`)).toBe("0");
     const row = page.getByRole("row").filter({ hasText: marker }).first();
     await expect(row).toBeVisible();
-    await row.getByRole("button", { name: "แก้ไข", exact: true }).click();
-    const edit = page.getByRole("dialog", { name: "แก้ไขบิลเครื่องชั่งเล็ก", exact: true });
-    await edit.locator('input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]').fill(`${marker}-corrected`);
-    await page.keyboard.press("Escape");
-    await edit.getByRole("button", { name: "บันทึกบิล", exact: true }).click();
-    await expect(edit).not.toBeVisible();
+    await expect(row.getByRole("button", { name: "บิลนี้กำลังรอซิงก์ จึงยังแก้ไขไม่ได้", exact: true })).toBeDisabled();
+    await row.getByRole("button", { name: "ลบ", exact: true }).click();
+    const deletion = page.getByRole("alertdialog", { name: "ลบบิลยาง", exact: true });
+    await expect(deletion.getByText(/จะไม่ส่งเมื่อกลับมาออนไลน์/)).toBeVisible();
+    await deletion.getByRole("button", { name: "ยกเลิก", exact: true }).click();
+    await expect(row).toBeVisible();
+    await row.getByRole("button", { name: "ลบ", exact: true }).click();
+    await deletion.getByRole("button", { name: "ยืนยันลบ", exact: true }).click();
+    await expect(deletion).not.toBeVisible();
+    await expect(row).not.toBeVisible();
+    expect(await page.evaluate(() => new Promise<number>((resolve, reject) => {
+      const request = indexedDB.open("lanflow_sync_db"); request.onerror = () => reject(request.error);
+      request.onsuccess = () => { const db = request.result; const tx = db.transaction("sync_queue");
+        const count = tx.objectStore("sync_queue").count(); count.onsuccess = () => resolve(count.result); tx.oncomplete = () => db.close(); };
+    }))).toBe(0);
     await context.setOffline(false);
-    await expect.poll(() => sql(`select count(*) from public.rubber_bills where location_id='${branch}' and customer_name='${marker}-corrected'`), { timeout: 45_000 }).toBe("1");
-    expect(sql(`select count(*) from private.rubber_queue_jobs where location_id='${branch}'`)).toBe("1");
-    expect(sql(`select state from private.rubber_queue_jobs where location_id='${branch}'`)).toBe("done");
-    await expect(row.getByText("ซิงก์แล้ว", { exact: true })).toBeVisible({ timeout: 35_000 });
-    await context.setOffline(true);
-    const guarded = row.getByRole("button", { name: "รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ", exact: true });
-    await expect(guarded).toHaveCount(2);
-    await expect(guarded.nth(0)).toBeDisabled(); await expect(guarded.nth(1)).toBeDisabled();
+    await openBills(page, branch);
+    await expect(row).not.toBeVisible();
+    expect(sql(`select count(*) from public.rubber_bills where location_id='${branch}'`)).toBe("0");
+    expect(sql(`select count(*) from private.rubber_queue_jobs where location_id='${branch}'`)).toBe("0");
   } finally {
     await context.close().catch(() => {});
     sql(`begin;set local app.history_retention_cleanup='on';

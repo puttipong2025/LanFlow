@@ -36,6 +36,16 @@ Use installed `pg_cron` (Local 1.6.4) for a short, bounded private processing ti
 
 ## UI, reads and printing
 
+Unsent-new-bill deletion exception (2026-10-30): pending edits remain disabled.
+Only a new local bill with explicit proof that submission has not started may
+open the existing delete confirmation, including offline. Confirming cancels its
+local create history without enqueueing a server delete. The mutation rereads
+the owner/branch outbox, rejects attempted/accepted/unknown/server-backed work,
+and atomically checks the complete record snapshot before removal. Concurrent
+submission or dependent commands make cancellation fail without losing work.
+Approval/report/transfer, mutation-busy and other existing action guards remain.
+Printing eligibility and already-issued local PDFs are unchanged.
+
 Branch-scoped read RPCs return bounded pages and counts to authorized users, with conditional action APIs. Local-only and central rows deduplicate by command ID. A shared owner-level uploader/reconciler and bounded branch feed refresh keep other devices current; no timer per branch.
 
 Keep errors local to the action and durable minimal outcomes separate from runnable commands. An off-branch command cannot open a toast, service overlay, cash-lock screen or PDF, or change the selected branch. Minimal terminal notices remain visible through the branch queue without retaining rejected proposal payloads solely for notification.

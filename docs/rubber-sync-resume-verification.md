@@ -5,6 +5,11 @@ No database migration, Cloud mutation, commit, push or hosting deployment.
 
 ## Findings and the smaller change
 
+Successor action policy (2026-10-30): the user subsequently chose a delete-only
+exception for never-submitted new local bills. Edits remain locked. This replaces
+earlier blanket pending edit/delete statements only for this narrow local
+cancellation case; accepted/uncertain/server-backed work retains all guards.
+
 The central queue already owns accepted work. Read-only Local/Cloud diagnostics
 found the same latest migration (`20261030021000`), matching hashes for admission,
 receipt/list, worker/batch definitions and cron command, active two-second cron,
@@ -69,7 +74,7 @@ cache/validation cannot authorize a server write.
 
 | Outcome | Local tracking / UI | Management and reports |
 | --- | --- | --- |
-| Local staged pending | Retain proposal; explain context/network wait | Existing local edit policy; uncertain submitted work stays locked |
+| Local staged pending | Retain proposal; explain context/network wait | Edits stay locked; confirmed never-submitted new bills may be cancelled locally; uncertain submitted work stays locked |
 | Local missing OCR source, never submitted | Retain actionable failed draft; explicit retry or confirmed local discard | No central blocker exists for this unadmitted draft |
 | queued / retry_wait / paused | Retain tracking and confirmed server wait reason | Existing cash/rights/pending guards and central report blocker |
 | correction_required | Retain correctable draft | Existing central correction workflow; no automatic discard |
@@ -261,3 +266,95 @@ manifest, service worker and bundle budgets passed
 central-queue Route rerun after the UUID input-narrowing fix. No SQL change,
 Cloud write, deployment or repeated production load benchmark was performed in
 this follow-up; prior browser/PWA timings remain evidence of the earlier stage.
+
+## Delete-only offline cancellation — 2026-10-30
+
+The user confirmed deletion of unsent new bills and explicitly selected keeping
+edits disabled. The table and Module share an action-aware sync guard; existing
+busy, approval, report, transfer and offline-server-record guards remain. The
+existing confirmation explains that the local bill and pending upload will be
+cancelled, with no future upload after reconnect. This is not a server delete.
+
+At confirmation, the mutation rereads the owner/location partition, requires a
+pending local create with no server identity, and checks every related event has
+explicit `serverSubmissionAttempted: false` and is not centrally accepted. Removal
+uses the complete-record IndexedDB snapshot condition. If another tab marks the
+command submitted or adds dependent work, the delete fails and preserves the
+outbox. An uploader holding an earlier snapshot cannot mark a removed command
+current and therefore cannot submit it. No server request or migration is added.
+
+Verification:
+
+- Seven targeted cases passed: delete-only UI policy, offline removal, submitted,
+  accepted, unknown state, concurrent-submit and new-dependent-event protection.
+- Final focused action/queue/background suite: 78 passed
+  (`output/rubber-local-delete-final-focused.log`).
+- Real browser: two passed (auth setup plus offline-create/delete/cancel/reconnect
+  workflow), with edit disabled, no remaining local outbox command, no server
+  queue or bill after reconnect/reload (`output/rubber-local-delete-final-browser.log`).
+- Full isolated run: 904 passed / two existing skips. Lint/type/source/import and
+  auth-outage steps passed before the build. The first build overlapped a dev
+  browser runner using `.next`, causing an `_document` artifact error; it is not
+  counted as a passing build. A separate final build is recorded after completion.
+- An initial test passed a VM Promise into Playwright's native rejection matcher;
+  it now explicitly awaits the outcome. The dependent-event fixture initially
+  used an undefined inline IDB key; removing the key property created the intended
+  concurrent row. These test-harness corrections did not drive product fixes.
+
+Pending delivery: no new commit, push, Supabase migration or deployment for this
+delete-only follow-up. Receipt PDF behavior is unchanged; this does not revoke a
+PDF the user has already shared or downloaded.
+
+Final standalone production build exited 0 after the browser server stopped
+(`output/rubber-local-delete-build.log`). Service-worker and bundle checks passed;
+first load 283.3 kB / 320 kB. Final focused 78 passed includes the tightened
+pending-only mutation check. No product fix was needed for the shared-build
+artifact collision.
+
+## Delete-only scrutiny follow-up — 2026-10-30
+
+Two reproduced boundary defects were fixed without adding a Route or changing
+the existing save/PDF policy:
+
+1. A stale local-create confirmation could fall through to the server-delete
+   path if another tab had already removed the create (cancelled it or acknowledged
+   its server result) before confirmation. With no create in the outbox and the
+   old local row still in the dialog, online deletion queued a new delete with an
+   unverified target. The mutation now requires an existing Server-backed record
+   before entering that path; stale callers must reload. The control test confirms
+   a verified Server bill still queues its normal delete. Evidence:
+   `output/rubber-local-delete-scrutiny-red.log` (one failing repro, one passing
+   control before the fix).
+2. The local feed collapsed an absent submission flag to false and ignored
+   central acceptance when projecting a new create. The delete-only exception
+   therefore exposed a delete action without explicit never-submitted proof,
+   although confirmation would later reject it. The projection now preserves
+   unknown submission and treats acceptance as submitted; the status message also
+   distinguishes unknown from waiting to send. Normal explicit-false creates
+   remain deletable, edits remain blocked. Evidence:
+   `output/rubber-local-delete-projection-red.log`.
+
+The focused queue/action/Route/PDF regression set passed 129 tests after both
+fixes (`output/rubber-local-delete-scrutiny-green.log`). Strict unused checks and
+full verification results are recorded below after completion. No debug probes,
+schema changes, Cloud writes, commit, push or deployment were introduced here.
+
+Final `npm run verify` exited 0: **907 passed / two existing skips**, lint, types,
+source/import bounds, auth-outage, production build, offline assets, service worker
+and bundle budget passed (`output/rubber-local-delete-scrutiny-verify.log`). A
+strict-unused invocation during Next's generated-type rebuild encountered missing
+`.next/types` artifacts; it is rerun after build rather than treated as dead code
+or fixed by changing application types. The final strict-unused receipt is in
+`output/rubber-local-delete-scrutiny-final-unused.log` and the Daily record.
+
+## Delete-only release authorization — 2026-10-30
+
+The user requested pushing `main` and database push only if new migrations exist.
+Preflight found the source checkout on `main`, identical to `origin/main`, with
+only the reviewed delete-only code/docs/tests modified. Full verification passed
+907 tests with two existing skips; the final read-only rescan passed 184 tests
+and strict unused checking. Linked Supabase dry-run reported the remote database
+up to date; there are no new or changed migration files. Therefore this release
+does not execute a mutating database push. The final Git/CI receipt is recorded
+in codingDO Daily `10_Daily/2026-10-30 2.md`; earlier unpushed statements above
+describe the implementation stage before this authorization.

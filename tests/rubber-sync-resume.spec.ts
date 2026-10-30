@@ -4,6 +4,8 @@ import * as queue from "../src/lib/idb-queue";
 import * as idb from "../src/lib/idb-core";
 import * as preparation from "../src/lib/rubber-bills/preparation-failure";
 import { loadSourceModule } from "./helpers/load-source-module";
+import { rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
+import { getRubberBillSyncActionBlockReason } from "../src/lib/record-action-locks";
 
 const owner = "ad000000-0000-4000-8000-000000000001";
 const location = "ad000000-0000-4000-8000-000000000002";
@@ -24,6 +26,82 @@ async function fixture() {
   event.queueId = await queue.enqueueSyncEvent(event);
   return event;
 }
+
+test("delete-only exception requires an unsent new local bill; edit and unknown submission stay locked", async () => {
+  const event = await fixture();
+  const bill = rubberBillFromSyncEvent(event, owner)!;
+  expect(getRubberBillSyncActionBlockReason(bill, "delete")).toBeNull();
+  expect(getRubberBillSyncActionBlockReason(bill, "edit")).toBeTruthy();
+  for (const change of [{ serverSubmissionAttempted: true }, { serverSubmissionAttempted: undefined },
+    { serverBillNo: "SERVER" }, { id: "server-id" }, { syncStatus: "pending" as const, serverSubmissionAttempted: true }]) {
+    expect(getRubberBillSyncActionBlockReason({ ...bill, ...change }, "delete")).toBeTruthy();
+  }
+});
+
+test("local feed never turns unknown or centrally accepted creation into a deletable unsent bill", async () => {
+  const event = await fixture();
+  for (const change of [{ serverSubmissionAttempted: undefined }, { centralAccepted: true }]) {
+    const projected = rubberBillFromSyncEvent({ ...event, ...change }, owner)!;
+    expect(getRubberBillSyncActionBlockReason(projected, "delete")).toBeTruthy();
+    expect(projected.syncErrorMessage).not.toBe("รอส่งจากเครื่อง");
+  }
+  expect(getRubberBillSyncActionBlockReason(rubberBillFromSyncEvent(event, owner)!, "delete")).toBeNull();
+});
+
+for (const scenario of ["offline", "submitted", "accepted", "unknown", "concurrent-submit", "dependent-event"] as const) {
+  test(`local delete ${scenario} uses the current complete outbox snapshot and never queues a server delete`, async () => {
+    const event = await fixture();
+    if (scenario === "submitted") await queue.updateSyncEvent({ ...event, serverSubmissionAttempted: true });
+    if (scenario === "accepted") await queue.updateSyncEvent({ ...event, centralAccepted: true } as queue.SyncEvent);
+    if (scenario === "unknown") await queue.updateSyncEvent({ ...event, serverSubmissionAttempted: undefined });
+    let removed = 0;
+    const hook = loadSourceModule<typeof import("../src/hooks/useRubberBills")>("src/hooks/useRubberBills.ts", {
+      "@tanstack/react-query": { useQueryClient: () => client,
+        useMutation: (options: { mutationFn: unknown }) => ({ mutateAsync: options.mutationFn }) },
+      "@/lib/idb-queue": { ...queue, reconcileSyncEventsIfCurrent: async (...args: Parameters<typeof queue.reconcileSyncEventsIfCurrent>) => {
+        if (scenario === "concurrent-submit") await queue.updateSyncEvent({ ...event, serverSubmissionAttempted: true });
+        if (scenario === "dependent-event") {
+          const dependent = { ...event, operation: "update" as const }; delete dependent.queueId;
+          await queue.enqueueSyncEvent(dependent);
+        }
+        return queue.reconcileSyncEventsIfCurrent(...args);
+      } },
+      "@/lib/rubber-bills/feed-cache": { removeConfirmedRubberBillLocally: async () => { removed++; } },
+    }, { navigator: { onLine: false } });
+    const bill = rubberBillFromSyncEvent(event, owner)!;
+    const result = hook.useRubberBillMutations(location, owner).deleteBill({ bill, deletedByName: "Test", deletedByPhone: "" });
+    if (scenario === "offline") await result;
+    else expect(await result.then(() => false, () => true)).toBe(true);
+    const remaining = await queue.getPendingEvents(event);
+    expect(remaining.some(item => item.operation === "delete")).toBe(false);
+    expect(remaining.length).toBe(scenario === "offline" ? 0 : scenario === "dependent-event" ? 2 : 1);
+    expect(removed).toBe(scenario === "offline" ? 1 : 0);
+  });
+}
+
+for (const confirmedServerBill of [false, true]) test(`a create absent from the outbox ${confirmedServerBill ? "still permits deletion with a verified Server bill" : "cannot become a Server delete from a stale local dialog"}`, async () => {
+  const event = await fixture();
+  const localBill = rubberBillFromSyncEvent(event, owner)!;
+  const staleBill = confirmedServerBill ? { ...localBill, id: crypto.randomUUID(), serverBillNo: "SERVER", syncStatus: "synced" as const } : localBill;
+  // Both outcomes remove the local create. The second outcome also has a Server
+  // bill, but this caller still has no verified Server identity/revision.
+  await queue.removeSyncEvent(event.queueId!);
+  let removed = 0;
+  const hook = loadSourceModule<typeof import("../src/hooks/useRubberBills")>("src/hooks/useRubberBills.ts", {
+    "@tanstack/react-query": { useQueryClient: () => client,
+      useMutation: (options: { mutationFn: unknown }) => ({ mutateAsync: options.mutationFn }) },
+    "@/lib/idb-queue": queue,
+    "@/lib/rubber-bills/feed-cache": { removeConfirmedRubberBillLocally: async () => { removed++; } },
+  }, { navigator: { onLine: true } });
+  const error = await hook.useRubberBillMutations(location, owner)
+    .deleteBill({ bill: staleBill, deletedByName: "Test", deletedByPhone: "" }).then(() => null, (cause: Error) => cause.message);
+  if (confirmedServerBill) expect(error).toBeNull();
+  else expect(error).toBeTruthy();
+  const remaining = await queue.getPendingEvents(event);
+  expect(remaining).toHaveLength(confirmedServerBill ? 1 : 0);
+  if (confirmedServerBill) expect(remaining[0].serverId).toBe(staleBill.id);
+  expect(removed).toBe(0);
+});
 
 for (const permanent of [false, true]) test(`staged context ${permanent ? "missing OCR stops with a safe local exit" : "network failure remains retryable"}`, async () => {
   const event = await fixture();

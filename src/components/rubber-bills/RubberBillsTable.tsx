@@ -26,7 +26,7 @@ export type RubberBillsTableProps = {
   retryDisabled: boolean;
   discardDisabled: boolean;
   deletingBillId?: string | null;
-  getActionBlockReason?: (bill: RubberBill) => string | null;
+  getActionBlockReason?: (bill: RubberBill, action?: "edit" | "delete") => string | null;
   getPrintBlockReason?: (bill: RubberBill) => string | null;
   evidenceStatesByBillId: Map<string, EvidenceReviewState>;
   evidenceOnline: boolean;
@@ -110,6 +110,8 @@ export function RubberBillsTable({
               const discardTitle = bill.canDiscardSyncFailure === false ? "กรุณาแก้ไขร่างจากคิวซิงก์กลาง"
                 : discardDisabled ? "ทิ้งรายการค้างได้เมื่อออนไลน์เท่านั้น" : "ทิ้งรายการค้างในเครื่อง";
               const actionsDisabled = (hasSyncProblem && !bill.canCorrectSyncFailure) || Boolean(actionBlockReason) || deleting;
+              const deleteBlockReason = getRubberBillSyncActionBlockReason(bill, "delete") ?? getActionBlockReason?.(bill, "delete") ?? null;
+              const deleteDisabled = Boolean(deleteBlockReason) || deleting;
               const actionTitle = deleting
                 ? "กำลังดำเนินการ..."
                 : hasSyncProblem && !bill.canCorrectSyncFailure
@@ -198,9 +200,9 @@ export function RubberBillsTable({
                         <Trash2 size={16} /> {bill.canDiscardSyncFailure === false ? "อยู่ในคิวกลาง" : "ทิ้งรายการค้าง"}
                       </button>
                     ) : (
-                      <button type="button" title={actionTitle ?? "ลบ"} aria-label={actionTitle ?? "ลบ"}
-                        disabled={actionsDisabled} onClick={() => onDelete(bill)}
-                        className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${actionsDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
+                      <button type="button" title={deleting ? "กำลังดำเนินการ..." : deleteBlockReason ?? "ลบ"} aria-label={deleting ? "กำลังดำเนินการ..." : deleteBlockReason ?? "ลบ"}
+                        disabled={deleteDisabled} onClick={() => onDelete(bill)}
+                        className={`focus-ring inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-danger px-3 text-sm font-semibold text-white shadow-sm hover:bg-danger/90 ${deleteDisabled ? "cursor-not-allowed opacity-45" : ""}`}>
                         <Trash2 size={16} />
                       </button>
                     )}

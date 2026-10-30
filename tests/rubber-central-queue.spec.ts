@@ -33,7 +33,7 @@ async function fixture(locationId = branch): Promise<queue.SyncEvent> {
   return event;
 }
 
-test("create, edit and delete row buttons stay disabled throughout pending sync", async () => {
+test("pending rows keep edits locked and allow deletion only before a new bill starts sending", async () => {
   const event = await fixture();
   const { RubberBillsTable } = loadSourceModule<typeof import("../src/components/rubber-bills/RubberBillsTable")>(
     "src/components/rubber-bills/RubberBillsTable.tsx", {});
@@ -62,7 +62,7 @@ test("create, edit and delete row buttons stay disabled throughout pending sync"
       const pending = pendingNodes.filter(node => node.props.onClick && node.props.children === "แก้");
       expect(pending, `${operation}, submission attempted ${attempted}`).toHaveLength(1);
       expect(pending[0].props.disabled, `${operation}, submission attempted ${attempted}`).toBe(true);
-      expect(pendingNodes.find(node => node.props.onClick && node.props.className?.includes("bg-danger"))?.props.disabled).toBe(true);
+      expect(pendingNodes.find(node => node.props.onClick && node.props.className?.includes("bg-danger"))?.props.disabled).toBe(operation !== "create" || attempted);
       const synced = render(confirmed);
       expect(synced.find(node => node.props.children === "แก้")?.props.disabled).toBe(false);
       expect(synced.find(node => node.props.onClick && node.props.className?.includes("bg-danger"))?.props.disabled).toBe(false);

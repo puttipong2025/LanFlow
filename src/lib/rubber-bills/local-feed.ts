@@ -6,7 +6,7 @@ import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/prepar
 function pendingRubberMessage(event: SyncEvent & { centralAccepted?: boolean }) {
   if (event.errorMessage) return event.errorMessage;
   if (event.payload.centralQueue) return event.centralAccepted ? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล"
-    : event.serverSubmissionAttempted ? "รอยืนยันการรับงานจากเซิร์ฟเวอร์" : "รอส่งจากเครื่อง";
+    : event.serverSubmissionAttempted !== false ? "รอยืนยันการรับงานจากเซิร์ฟเวอร์" : "รอส่งจากเครื่อง";
   return event.operation === "delete" ? "กำลังส่งคำขอลบ" : event.operation === "create" ? "กำลังส่งบิลใหม่" : "กำลังส่งการแก้ไข";
 }
 
@@ -53,7 +53,7 @@ function hasAuthoritativeActionLock(bill: RubberBill | undefined) {
   );
 }
 
-export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): RubberBill | null {
+export function rubberBillFromSyncEvent(event: SyncEvent & { centralAccepted?: boolean }, ownerUserId: string): RubberBill | null {
   if (event.payload.queueAction) return null;
   if (event.operation === "delete" && event.status === "pending" && !event.payload.background) return null;
   const payload = event.payload;
@@ -86,8 +86,9 @@ export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): 
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
-    serverSubmissionAttempted: (event.payload.background && event.status === "pending"
-      && (event.operation !== "create" || !event.payload.centralQueue)) || event.serverSubmissionAttempted === true,
+    serverSubmissionAttempted: event.operation === "create" && payload.centralQueue === true
+      ? event.centralAccepted === true ? true : event.serverSubmissionAttempted
+      : (event.payload.background && event.status === "pending") || event.serverSubmissionAttempted === true,
     syncErrorMessage: event.status === "pending" && payload.background ? pendingRubberMessage(event) : event.errorMessage,
     canRestartDelete: event.operation === "delete" && (payload.contractVersion !== 2 || event.failureCode === "STALE_COMMAND_CONTEXT"),
     canCorrectSyncFailure: event.status === "failed" && event.failureHttpStatus === 400

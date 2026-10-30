@@ -194,11 +194,11 @@ export function RubberBillsModule({
   const displayedBills = list.bills;
 
   const filteredBills = displayedBills.filter(bill => matchesRubberBillSearch(bill, search));
-  function getActionBlockReason(bill: RubberBill) {
+  function getActionBlockReason(bill: RubberBill, action: "edit" | "delete" = "edit") {
     return (bill.clientTempId === pendingBillClientId ? "กำลังดำเนินการ..." : null) ?? (bill.approvalPending ? "รายการนี้รออนุมัติ จึงยังแก้ไขหรือลบไม่ได้" : null) ?? (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
       ?? getOfflineSyncedActionBlockReason(bill, isOnline)
       ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null)
-      ?? getRubberBillSyncActionBlockReason(bill);
+      ?? getRubberBillSyncActionBlockReason(bill, action);
   }
 
   function getPrintBlockReason(bill: RubberBill) {
@@ -320,7 +320,7 @@ export function RubberBillsModule({
   async function confirmDelete(bill: RubberBill) {
     if (deletingBillId) return;
     if (bill.id.startsWith("approval:")) { toast.error("บิลยังไม่ถูกสร้าง กรุณายกเลิกคำขอสร้างจากหน้าอนุมัติ"); return; }
-    const blockReason = getActionBlockReason(bill)
+    const blockReason = getActionBlockReason(bill, "delete")
       ?? await getPendingSubmissionBlockReason(bill);
     if (blockReason) {
       toast.error(blockReason);
