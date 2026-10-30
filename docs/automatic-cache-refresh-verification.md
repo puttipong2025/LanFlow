@@ -114,3 +114,11 @@ Reproduceและแก้เพิ่ม2จุด: guardedRPCคืน42501�
 - CLIเตือนoptionalpg-deltacatalogcacheเพราะไฟล์certificateในtempcontainerหายหลังรายงานpushสำเร็จ ไม่retrymigration/reset/ปิดSSL ตรวจauthoritativehistory/livecatalog/PostgRESTซ้ำแล้วผ่าน จึงไม่ถือwarningนี้เป็นmigrationfailure
 
 Release logs: output-cache-release-dry-run.log, db-push.log, migrations-after.log, cloud-before.log, cloud-after.log, rpc-smoke.log (ใช้prefix output-cache-release-) ผลappdeploymentแยกจากschema release และGitpush
+
+## CI fresh-seed follow-up
+
+หลังpushfeaturecommit a24af6f: Vercelและweb-gateผ่าน แต่database-gateล้มที่business_cache_settings_testเพราะsingletonหาย ไม่ใช่Cloudmigrationล้ม Seedเริ่มTRUNCATEprofilesCASCADE ซึ่งล้างbusiness_cache_settingsผ่านFKupdated_byแม้ค่าจะเป็นnull จึงต้องคืนsingletonเหมือนsettingsอื่นในseed
+
+เพิ่มINSERTid=true ONCONFLICTDONOTHINGในsupabase/seed.sqlหลังคืนrubberapprovalsettings พิสูจน์กับTRUNCATEprofilesCASCADEและblockที่ดึงจากseedจริงในlocaltransactionซึ่งROLLBACKทุกอย่าง:2assertionsผ่าน แล้วfullSQL70ไฟล์/1,619ข้อผ่าน ไม่รันseed/resetกับฐานข้อมูลผู้ใช้หรือCloud ไม่เพิ่ม/แก้migrationที่applyไปแล้ว แพตช์นี้เปลี่ยนเฉพาะbootstrapseedและเอกสาร
+
+Ledger: CIlogมีgetsettings=NULLและSELECTINTOSTRICTno-row; Cloudcatalog/localfocusedtestมีsingletonครบช่วยหักล้างว่าRPCผิดโดยตัวมันเอง การลองส่งSQLหลายstatementผ่านCLI dbqueryถูกปฏิเสธตั้งแต่prepare จึงเปลี่ยนใช้pgTAPrunnerเพื่อทำtransactionrollbackตามปกติ ไม่มีpartialTRUNCATEจากรอบที่prepareไม่ผ่าน Logs output-cache-release-ci-db-job.log, seed-rollback.log, db-final.log (prefix output-cache-release-)

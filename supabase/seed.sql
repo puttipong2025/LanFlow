@@ -2556,6 +2556,11 @@ INSERT INTO "public"."rubber_bill_approval_settings" ("id", "edit_window_minutes
 VALUES (true, 30, 0)
 ON CONFLICT ("id") DO NOTHING;
 
+-- TRUNCATE profiles CASCADE also removes the cache singleton through updated_by.
+INSERT INTO "public"."business_cache_settings" ("id")
+VALUES (true)
+ON CONFLICT ("id") DO NOTHING;
+
 INSERT INTO "public"."telegram_badge_settings" ("id")
 VALUES (true)
 ON CONFLICT ("id") DO NOTHING;
