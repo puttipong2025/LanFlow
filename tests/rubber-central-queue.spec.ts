@@ -3,9 +3,12 @@ import { IDBFactory } from "fake-indexeddb";
 import * as idb from "../src/lib/idb-core";
 import * as queue from "../src/lib/idb-queue";
 import * as completion from "../src/lib/rubber-bills/complete-command";
-import { rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
+import { mergeRubberBillLocalEvents, rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
 import { loadSourceModule } from "./helpers/load-source-module";
 import type { RubberQueueRow } from "../src/lib/rubber-bills/central-queue-contract";
+import { getPendingServerActionBlockReason } from "../src/lib/record-action-locks";
+import { QueryClient } from "@tanstack/react-query";
+import type { RubberBill } from "../src/types";
 
 const owner = "ad000000-0000-4000-8000-000000000001";
 const branch = "ad000000-0000-4000-8000-000000000002";
@@ -29,6 +32,134 @@ async function fixture(locationId = branch): Promise<queue.SyncEvent> {
   event.queueId = await queue.enqueueSyncEvent(event);
   return event;
 }
+
+test("create, edit and delete row buttons stay disabled throughout pending sync", async () => {
+  const event = await fixture();
+  const { RubberBillsTable } = loadSourceModule<typeof import("../src/components/rubber-bills/RubberBillsTable")>(
+    "src/components/rubber-bills/RubberBillsTable.tsx", {});
+  type Element = { props: { children?: unknown; disabled?: boolean; onClick?: unknown; className?: string } };
+  function nodes(value: unknown): Element[] {
+    if (Array.isArray(value)) return value.flatMap(nodes);
+    if (!value || typeof value !== "object" || !("props" in value)) return [];
+    const element = value as Element;
+    return [element, ...nodes(element.props.children)];
+  }
+  const noop = () => {};
+  const edit = () => {}, remove = () => {};
+  for (const operation of ["create", "update", "delete"] as const) {
+    for (const attempted of [false, true, false]) {
+      const pendingEvent = { ...event, operation, serverSubmissionAttempted: attempted,
+        serverId: operation === "create" ? undefined : server, serverBillNo: operation === "create" ? undefined : "S-1" };
+      const draft = rubberBillFromSyncEvent(pendingEvent, owner)!;
+      const confirmed = { ...draft, id: server, serverBillNo: "S-1", syncStatus: "synced" as const, serverSubmissionAttempted: false };
+      const [projected] = mergeRubberBillLocalEvents(operation === "create" ? [] : [confirmed], [pendingEvent], owner);
+      const render = (bill: typeof draft) => nodes(RubberBillsTable({ bills: [bill], page: 1, pageSize: 50,
+        onPageChange: noop, onView: noop, onEvidence: noop, onEdit: edit, onDelete: remove,
+        onPrint: noop, onRetry: noop, onDiscardLocal: noop, onOpenOcrSourceImage: noop,
+        retryDisabled: false, discardDisabled: false, evidenceStatesByBillId: new Map(), evidenceOnline: true,
+        getActionBlockReason: getPendingServerActionBlockReason }));
+      const pendingNodes = render(projected);
+      const pending = pendingNodes.filter(node => node.props.onClick && node.props.children === "แก้");
+      expect(pending, `${operation}, submission attempted ${attempted}`).toHaveLength(1);
+      expect(pending[0].props.disabled, `${operation}, submission attempted ${attempted}`).toBe(true);
+      expect(pendingNodes.find(node => node.props.onClick && node.props.className?.includes("bg-danger"))?.props.disabled).toBe(true);
+      const synced = render(confirmed);
+      expect(synced.find(node => node.props.children === "แก้")?.props.disabled).toBe(false);
+      expect(synced.find(node => node.props.onClick && node.props.className?.includes("bg-danger"))?.props.disabled).toBe(false);
+    }
+  }
+});
+
+test("save and delete publish the local queue before releasing the mutation lock without waiting for network refresh", async () => {
+  const event = await fixture();
+  const client = new QueryClient();
+  type Mutation = { onSuccess: (data: { approvalPending: boolean }, variables: { bill: RubberBill }) => unknown };
+  const mutations: Mutation[] = [];
+  let release!: () => void;
+  let gate: Promise<void>;
+  const hook = loadSourceModule<typeof import("../src/hooks/useRubberBills")>("src/hooks/useRubberBills.ts", {
+    "@tanstack/react-query": { useQueryClient: () => client, useMutation: (options: Mutation) => {
+      mutations.push(options); return {};
+    } },
+    "@/lib/idb-queue": { ...queue, getPendingEvents: async () => { await gate; return [event]; } },
+    "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: () => new Promise(() => {}) },
+  }, { navigator: { onLine: false } });
+  hook.useRubberBillMutations(branch, owner, null);
+  for (const mutation of mutations) {
+    client.setQueryData(["rubberBillLocalState", owner, branch], { events: [] });
+    gate = new Promise<void>(resolve => { release = resolve; });
+    let released = false;
+    const completion = Promise.resolve(mutation.onSuccess({ approvalPending: false }, {
+      bill: rubberBillFromSyncEvent(event, owner)!,
+    })).then(() => { released = true; });
+    await Promise.resolve();
+    expect(released).toBe(false);
+    release();
+    await completion;
+    expect(client.getQueryData(["rubberBillLocalState", owner, branch])).toEqual({ events: [event] });
+  }
+  client.clear();
+});
+
+test("a post-commit queue read failure preserves success and keeps the committed bill locked", async () => {
+  const event = await fixture();
+  const client = new QueryClient();
+  type Mutation = { onSuccess: (data: { approvalPending: boolean; committedLocalEvent: queue.SyncEvent }, variables: { bill: RubberBill }) => unknown };
+  const mutations: Mutation[] = [];
+  const hook = loadSourceModule<typeof import("../src/hooks/useRubberBills")>("src/hooks/useRubberBills.ts", {
+    "@tanstack/react-query": { useQueryClient: () => client, useMutation: (options: Mutation) => { mutations.push(options); return {}; } },
+    "@/lib/idb-queue": { ...queue, getPendingEvents: async () => { throw new Error("storage unavailable after commit"); } },
+    "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => {} },
+  }, { navigator: { onLine: false } });
+  hook.useRubberBillMutations(branch, owner, null);
+  for (const mutation of mutations) {
+    client.setQueryData(["rubberBillLocalState", owner, branch], { events: [] });
+    await expect(Promise.resolve(mutation.onSuccess({ approvalPending: false, committedLocalEvent: event }, {
+      bill: rubberBillFromSyncEvent(event, owner)!,
+    }))).resolves.toBeUndefined();
+    expect(client.getQueryData(["rubberBillLocalState", owner, branch])).toEqual({ events: [event] });
+    const progressed = { ...event, status: "failed" as const, failureHttpStatus: 400, errorMessage: "กรุณาแก้ไขข้อมูล" };
+    client.setQueryData(["rubberBillLocalState", owner, branch], { events: [progressed] });
+    await mutation.onSuccess({ approvalPending: false, committedLocalEvent: event }, {
+      bill: rubberBillFromSyncEvent(event, owner)!,
+    });
+    expect(client.getQueryData(["rubberBillLocalState", owner, branch])).toEqual({ events: [progressed] });
+  }
+  client.clear();
+});
+
+test("failed local publication preserves concurrent progress but replaces a stale proposal", async () => {
+  const event = await fixture();
+  const unrelated = await fixture();
+  const client = new QueryClient();
+  const key = ["rubberBillLocalState", owner, branch];
+  let rejectRead!: (reason: Error) => void;
+  const cache = loadSourceModule<typeof import("../src/lib/rubber-bills/feed-cache")>("src/lib/rubber-bills/feed-cache.ts", {
+    "@/lib/idb-queue": { ...queue, getPendingEvents: () => new Promise((_resolve, reject) => { rejectRead = reject; }) },
+  });
+  client.setQueryData(key, { events: [event, unrelated] });
+  const publishing = cache.publishRubberBillLocalQueue(client, { ownerUserId: owner, locationId: branch }, event.id, event);
+  const progressed = { ...event, status: "failed" as const, failureHttpStatus: 400 };
+  client.setQueryData(key, { events: [progressed, unrelated] });
+  rejectRead(new Error("read failed"));
+  await publishing;
+  expect(client.getQueryData(key)).toEqual({ events: [progressed, unrelated] });
+
+  const stale = { ...event, payload: { ...event.payload, customerName: "old proposal" } };
+  client.setQueryData(key, { events: [stale, unrelated] });
+  const replacement = cache.publishRubberBillLocalQueue(client, { ownerUserId: owner, locationId: branch }, event.id, event);
+  rejectRead(new Error("read failed"));
+  await replacement;
+  expect(client.getQueryData(key)).toEqual({ events: [unrelated, event] });
+
+  client.setQueryData(key, { events: [] });
+  const concurrentOtherBill = cache.publishRubberBillLocalQueue(client, { ownerUserId: owner, locationId: branch }, event.id, event);
+  client.setQueryData(key, { events: [unrelated] });
+  rejectRead(new Error("read failed"));
+  await concurrentOtherBill;
+  expect(client.getQueryData(key)).toEqual({ events: [unrelated, event] });
+  client.clear();
+});
 function row(event: queue.SyncEvent, done = false): RubberQueueRow {
   return { commandId: event.payload.commandId, actorUserId: owner, locationId: event.locationId,
     clientTempId: event.id, action: event.operation, state: done ? "done" : "queued", acceptedAt: "2026-10-28T00:00:00Z",
@@ -343,6 +474,7 @@ test("new create returns after durable local commit without submitting business 
   expect(saved.serverSubmissionAttempted).toBe(true);
   expect(posts).toBe(0);
   const [accepted] = await queue.getPendingEvents(event);
+  expect("committedLocalEvent" in saved ? saved.committedLocalEvent : undefined).toEqual(accepted);
   expect(accepted.payload.centralQueue).toBe(true);
   expect(accepted.payload.actorUserId).toBe(owner);
   expect(accepted.payload.expectedQueueVersion).toBe(0);

@@ -23,7 +23,7 @@ import type { EffectiveRubberApprovalSettings } from "@/types";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { buildRubberBillRpcPayload } from "@/lib/rubber-bills/submission";
-import { removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
+import { publishRubberBillLocalQueue, removeConfirmedRubberBillLocally } from "@/lib/rubber-bills/feed-cache";
 import { normalizeRubberBillQueueBeforeSync } from "@/lib/rubber-bills/normalize-sync-queue";
 import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
 import { immediateRubberReceipt } from "@/lib/rubber-bills/immediate-receipt";
@@ -209,6 +209,7 @@ export function useRubberBillMutations(
 
       const keeper = pendingCreates[0] ?? pendingUpdates[0];
       let newlyQueuedEvent: SyncEvent | undefined;
+      let committedLocalEvent: SyncEvent | undefined;
 
       if (keeper) {
         const commandPayload = correcting && keeper.payload.contractVersion === 2
@@ -236,6 +237,7 @@ export function useRubberBillMutations(
         if (!await reconcileSyncEventsIfCurrent(clientEvents, updatedKeeper)) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
         }
+        committedLocalEvent = updatedKeeper;
       } else {
         const directSubmissionScope = !centralQueue && isOnline && operation === "create" && clientEvents.length === 0
           ? `${ownerUserId}:${mutationLocationId}`
@@ -266,6 +268,7 @@ export function useRubberBillMutations(
           throw error;
         }
         newlyQueuedEvent = { ...event, queueId };
+        committedLocalEvent = newlyQueuedEvent;
       }
 
       if (!centralQueue && isOnline && clientEvents.length === 0 && newlyQueuedEvent && operation === "create") {
@@ -314,11 +317,11 @@ export function useRubberBillMutations(
           endDirectSubmission(`${ownerUserId}:${mutationLocationId}`);
         }
       }
-      
       return {
         ...calculatedBill,
         immediatePdfBill,
         syncStatus: "pending" as const,
+        committedLocalEvent,
         serverSubmissionAttempted: operation === "update" || (isOnline && centralQueue) || newlyQueuedEvent?.serverSubmissionAttempted === true,
         configuredPriceSnapshot:
           operation === "create"
@@ -327,11 +330,14 @@ export function useRubberBillMutations(
         approvalPending: false,
       };
     },
-    onSuccess: (savedBill, variables) => {
+    onSuccess: async (savedBill, variables) => {
       if (savedBill.approvalPending) {
         toast.success("ส่งคำขออนุมัติบิลยางแล้ว");
       }
       const mutationLocationId = variables?.bill.locationId || locationId;
+      // Hand the mutation lock to the pending row before the form can close.
+      await publishRubberBillLocalQueue(queryClient, { ownerUserId, locationId: mutationLocationId }, variables.bill.clientTempId,
+        "committedLocalEvent" in savedBill ? savedBill.committedLocalEvent : undefined);
       void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId: mutationLocationId });
       void syncPendingRubberBills(queryClient, ownerUserId, mutationLocationId);
     }
@@ -358,8 +364,9 @@ export function useRubberBillMutations(
       if (clientEvents.some(e => e.status === "conflict" || e.status === "failed")) {
         throw new Error("ไม่สามารถลบได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       }
-      if (clientEvents.some(e => e.operation === "delete")) {
-        return { approvalPending: false }; // Already deleting
+      const existingDelete = clientEvents.find(e => e.operation === "delete");
+      if (existingDelete) {
+        return { approvalPending: false, committedLocalEvent: existingDelete };
       }
 
       const pendingCreates = clientEvents.filter(e => e.operation === "create");
@@ -410,6 +417,7 @@ export function useRubberBillMutations(
         timestamp: Date.now(),
         status: "pending"
       };
+      let committedLocalEvent: SyncEvent;
       if (pendingUpdates.length > 0) {
         const [keeper] = pendingUpdates;
         const queueId = keeper.queueId;
@@ -420,21 +428,22 @@ export function useRubberBillMutations(
         if (!await reconcileSyncEventsIfCurrent(pendingUpdates, queuedEvent)) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
         }
+        committedLocalEvent = queuedEvent;
       } else {
         const queueId = await enqueueSyncEvent(event, clientEvents);
         if (queueId === null) {
           throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองลบอีกครั้ง");
         }
+        committedLocalEvent = { ...event, queueId };
       }
-
-
-      return { approvalPending: false };
+      return { approvalPending: false, committedLocalEvent };
       } finally {
         if (directSubmissionScope) endDirectSubmission(directSubmissionScope);
       }
     },
     onSuccess: async (_data, variables) => {
       const mutationLocationId = variables?.bill.locationId || locationId;
+      await publishRubberBillLocalQueue(queryClient, { ownerUserId, locationId: mutationLocationId }, variables.bill.clientTempId, _data.committedLocalEvent);
       void invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId: mutationLocationId });
       void syncPendingRubberBills(queryClient, ownerUserId, mutationLocationId);
     }

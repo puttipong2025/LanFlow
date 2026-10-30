@@ -5,6 +5,7 @@ import { formatBillTimestamp, getDisplayBillNo } from "./bill-display";
 import { SyncStatusBadge } from "@/components/shared/SyncStatusBadge";
 import { TablePagination } from "@/components/shared/TablePagination";
 import { cn } from "@/lib/cn";
+import { getRubberBillSyncActionBlockReason } from "@/lib/record-action-locks";
 import { formatRubberAge } from "@/lib/rubber-exports/rubber-export-presentation";
 import type { EvidenceReviewState } from "@/hooks/useRubberBillEvidenceReview";
 
@@ -102,7 +103,7 @@ export function RubberBillsTable({
           <tbody>
             {visibleBills.map((bill) => {
               const proposal = bill.approvalProposedSummary;
-              const actionBlockReason = getActionBlockReason?.(bill) ?? null;
+              const actionBlockReason = getRubberBillSyncActionBlockReason(bill) ?? getActionBlockReason?.(bill) ?? null;
               const deleting = deletingBillId === bill.id;
               const hasSyncProblem = bill.syncStatus === "failed" || bill.syncStatus === "conflict";
               const discardBlocked = discardDisabled || deleting || bill.canDiscardSyncFailure === false;

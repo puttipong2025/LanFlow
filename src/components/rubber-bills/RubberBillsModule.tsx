@@ -21,6 +21,7 @@ import { canManageSystemFeatures } from "@/lib/permissions";
 import {
   getOfflineSyncedActionBlockReason,
   getPendingServerActionBlockReason,
+  getRubberBillSyncActionBlockReason,
   PENDING_SERVER_ACTION_MESSAGE,
   RUBBER_BILL_TRANSFER_LOCK_MESSAGE
 } from "@/lib/record-action-locks";
@@ -197,7 +198,7 @@ export function RubberBillsModule({
     return (bill.clientTempId === pendingBillClientId ? "กำลังดำเนินการ..." : null) ?? (bill.approvalPending ? "รายการนี้รออนุมัติ จึงยังแก้ไขหรือลบไม่ได้" : null) ?? (bill.reportLockNo ? `ล็อกโดยรายงาน ${bill.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน` : null)
       ?? getOfflineSyncedActionBlockReason(bill, isOnline)
       ?? (bill.transferLockId ? RUBBER_BILL_TRANSFER_LOCK_MESSAGE : null)
-      ?? getPendingServerActionBlockReason(bill);
+      ?? getRubberBillSyncActionBlockReason(bill);
   }
 
   function getPrintBlockReason(bill: RubberBill) {

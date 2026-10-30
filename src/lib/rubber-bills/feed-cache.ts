@@ -2,12 +2,40 @@ import { type InfiniteData, type QueryClient } from "@tanstack/react-query";
 
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import {
+  getPendingEvents,
   removeSyncEvent,
   tombstoneRubberBillReceiptSnapshotsByClientTempId,
 } from "@/lib/idb-queue";
 import type { RubberBill } from "@/types";
 import type { SyncEvent } from "@/lib/idb-queue";
 import { mergeRubberBillLocalEvents } from "./local-feed";
+import { isSameSyncCommand } from "@/lib/sync-event-comparison";
+
+export async function publishRubberBillLocalQueue(
+  queryClient: QueryClient,
+  scope: { ownerUserId: string; locationId: string },
+  clientTempId: string,
+  committedLocalEvent?: SyncEvent,
+) {
+  const key = ["rubberBillLocalState", scope.ownerUserId, scope.locationId];
+  const beforeRead = queryClient.getQueryData<{ events: SyncEvent[] }>(key);
+  try {
+    const events = await getPendingEvents({ entity: "rubber_bills", ...scope });
+    queryClient.setQueryData(key, { events });
+  } catch {
+    // A failed presentation read cannot undo a commit or newer queue progress.
+    queryClient.setQueryData<{ events: SyncEvent[] }>(key, previous => {
+      const cached = previous?.events ?? [];
+      const currentTarget = cached.find(event => event.id === clientTempId);
+      const beforeTarget = beforeRead?.events.find(event => event.id === clientTempId);
+      if (previous && currentTarget !== beforeTarget) return previous;
+      const retained = committedLocalEvent && (currentTarget && isSameSyncCommand(currentTarget, committedLocalEvent)
+        ? currentTarget : committedLocalEvent);
+      return { events: [...cached.filter(event => event.id !== clientTempId), ...(retained ? [retained] : [])] };
+    });
+    console.warn("Unable to reread Rubber queue after commit; retaining committed local state");
+  }
+}
 
 export async function preserveRubberApprovalInCache(queryClient: QueryClient, event: SyncEvent, requestId: string) {
   const queryKey = [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), event.ownerUserId, event.locationId];

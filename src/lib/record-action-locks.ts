@@ -26,3 +26,9 @@ export function getPendingServerActionBlockReason(record: SyncableRecord) {
     ? PENDING_SERVER_ACTION_MESSAGE
     : null;
 }
+
+export function getRubberBillSyncActionBlockReason(record: SyncableRecord) {
+  return record.syncStatus === "pending"
+    ? "บิลนี้กำลังรอซิงก์ กรุณารอจนซิงก์แล้วก่อนแก้ไขหรือลบ"
+    : getPendingServerActionBlockReason(record);
+}

@@ -10,6 +10,7 @@ export type RubberBillReceiptModel = {
   receiptKind: "offline" | "synced";
   referenceLabel: "เลขอ้างอิงบนเครื่อง" | "เลขบิล";
   referenceNo: string;
+  localReferenceNo?: string;
   billDate: string;
   customerName: string;
   approvalLabel: string;
@@ -112,6 +113,7 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
 
   return {
     receiptKind,
+    localReferenceNo: receiptKind === "synced" ? bill.localBillNo : undefined,
     referenceLabel: receiptKind === "synced" ? "เลขบิล" : "เลขอ้างอิงบนเครื่อง",
     referenceNo: receiptKind === "synced"
       ? bill.serverBillNo!
@@ -147,7 +149,9 @@ export function resolveRubberBillReceiptForPrint(
     return buildRubberBillReceiptModel(bill);
   }
   if (snapshot?.revisionNo === bill.revisionNo) {
-    return snapshot.receipt;
+    return snapshot.receipt.localReferenceNo === bill.localBillNo
+      ? snapshot.receipt
+      : { ...snapshot.receipt, localReferenceNo: bill.localBillNo };
   }
   if (!isOnline) {
     throw new Error("ไม่พบสำเนาใบพิมพ์ของบิลนี้ในเครื่อง กรุณาออนไลน์เพื่อโหลดใหม่");
@@ -201,13 +205,11 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
         <td class="num">${n(item.netWeight)}</td><td class="num">${formatReceiptWeighPrice(item.price)}</td><td class="num">${n(item.lineTotal)}</td>
       </tr>`).join("");
   const deductionRows = model.deductions.length === 0
-    ? '<div class="row muted"><span>ไม่มีรายการหัก</span><span>0</span></div>'
+    ? ""
     : model.deductions.map((item) => `<div class="row"><span>${h(item.label)}</span><span>${n(item.amount)}</span></div>`).join("");
   const isBranchReceipt = Boolean(model.sourceExportNo);
   const title = isBranchReceipt
     ? "ใบรับยางจากสาขา"
-    : model.receiptKind === "offline"
-    ? "ใบรับซื้อยางออฟไลน์"
     : "ใบรับซื้อยาง";
   const branchReceiptMeta = isBranchReceipt
     ? `<div class="meta"><div class="row"><span>รายการส่งออกต้นทาง</span><strong>${h(model.sourceExportNo)}</strong></div><div class="row"><span>เวลารับเข้า</span><span>${h(model.receivedAt ? formatBangkokDateTime(new Date(model.receivedAt)) : "-")}</span></div><div class="row"><span>อายุตอนรับ</span><span>${h(model.receivedAgeHours == null ? "-" : `${Math.floor(model.receivedAgeHours / 24)} วัน ${Math.round(model.receivedAgeHours % 24)} ชั่วโมง${model.receivedAgeIsEstimated ? " (ประมาณการ)" : ""}`)}</span></div></div>`
@@ -222,19 +224,20 @@ export function renderRubberBillReceiptHtml(model: RubberBillReceiptModel) {
 @page { size: 78mm auto; margin: 3mm; }
 * { box-sizing: border-box; } body { margin: 0; width: 72mm; color: #000; font: 11px/1.35 Arial, "Noto Sans Thai", sans-serif; }
 h1 { margin: 0 0 4px; text-align: center; font-size: 18px; } .warning { margin: 6px 0; border: 3px double #000; padding: 6px 3px; text-align: center; font-size: 14px; font-weight: 800; }
-.meta { margin: 6px 0; } .row { display: flex; justify-content: space-between; gap: 8px; } .row span:first-child { overflow-wrap: anywhere; }
+.meta { margin: 6px 0; } .row { display: flex; justify-content: space-between; gap: 8px; } .row > * { min-width: 0; overflow-wrap: anywhere; } .row > :last-child { text-align: right; } body { font-variant-numeric: tabular-nums; }
+.meta .row > :first-child { flex-shrink: 0; white-space: nowrap; }
 table { width: 100%; border-collapse: collapse; margin: 6px 0; } th, td { border-bottom: 1px solid #777; padding: 2px 1px; text-align: left; } th { font-size: 9px; } .num { text-align: right; } .muted { color: #555; text-align: center; }
 .totals { border-top: 1px solid #000; padding-top: 4px; }
-.payable { margin-top: 5px; border: 2px solid #000; padding: 5px 3px; font-size: 15px; font-weight: 800; }
+.payable { margin-top: 7px; border: 2px solid #000; padding: 7px 4px; font-size: 18px; font-weight: 800; }
 .words { margin-top: 5px; text-align: center; font-weight: 700; overflow-wrap: anywhere; } .signature { margin-top: 14px; display: flex; justify-content: space-between; gap: 12px; text-align: center; }
 .stamp-space { height: 40mm; }
 .thank-you { margin: 0 0 3mm; text-align: center; font-weight: 700; }
 </style></head><body>
 <h1>${h(title)}</h1>
 ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนดราคา — ห้ามจ่าย</div>' : ""}
-<div class="meta"><div class="row"><span>${h(model.referenceLabel)}</span><strong>${h(model.referenceNo)}</strong></div><div class="row"><span>วันที่</span><span>${h(model.billDate)}</span></div></div>
+<div class="meta"><div class="row"><span>${h(model.referenceLabel)}</span><strong>${h(model.referenceNo)}</strong></div>${model.receiptKind === "synced" && model.localReferenceNo ? `<div class="row"><span>เลขอ้างอิงบนเครื่อง</span><strong>${h(model.localReferenceNo)}</strong></div>` : ""}<div class="row"><span>วันที่</span><span>${h(model.billDate)}</span></div></div>
 <div><strong>ลูกค้า:</strong> ${h(model.customerName)}</div>
-<div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>
+${isBranchReceipt ? `<div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>` : ""}
 ${branchReceiptMeta}
 <table><thead><tr><th>รายการ</th><th class="num">เข้า</th><th class="num">ออก</th><th class="num">ชั่งสุทธิ</th><th class="num">ราคา</th><th class="num">รวม</th></tr></thead><tbody>${weighRows}</tbody></table>
 ${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรวมก่อนหัก</span><span>${weight(model.totalWeight)} กก.</span></div><div class="row"><span>น้ำหนักหัก</span><span>${weight(model.deductWeight)} กก.</span></div>` : ""}
@@ -242,8 +245,8 @@ ${model.deductWeight > 0 ? `<div class="row"><span>น้ำหนักรว�
 ${isBranchReceipt ? `<div class="row"><span>ราคาเฉลี่ย</span><span>${n(model.averagePrice)}</span></div>` : ""}
 <div class="row"><span>${isBranchReceipt ? "มูลค่ารวมค่าทำงาน" : "มูลค่ายาง"}</span><span>${n(model.rubberValue)}</span></div>
 ${priceAdjustmentRow}
-<div class="totals"><strong>รายการหักเงิน</strong>${deductionRows}<div class="row"><strong>ยอดหักเงิน</strong><strong>${n(model.deductionTotal)}</strong></div></div>
-<div class="row payable"><span>ยอดที่ต้องจ่ายลูกค้า</span><span>${n(model.netTotal)} บาท</span></div>
+${model.deductions.length > 0 ? `<div class="totals"><strong>รายการหักเงิน</strong>${deductionRows}<div class="row"><strong>ยอดหักเงิน</strong><strong>${n(model.deductionTotal)}</strong></div></div>` : ""}
+<div class="row payable"><span>${isBranchReceipt ? "ยอดที่ต้องจ่ายลูกค้า" : "ยอดรับสุทธิ"}</span><span>${n(model.netTotal)} บาท</span></div>
 <div class="words">(${h(model.netTotalText)})</div>
 <div class="signature"><div>________________<br>ผู้ขาย</div><div>________________<br>ผู้รับซื้อ</div></div>
 <div class="stamp-space" aria-hidden="true"></div>

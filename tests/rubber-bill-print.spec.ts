@@ -95,9 +95,11 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(html).toContain(">10.00 กก.<");
     expect(html).toContain(">2.00 กก.<");
     expect(html).toContain(">8.00 กก.<");
-    expect(html).toContain("ยอดที่ต้องจ่ายลูกค้า");
+    expect(html).toContain("ยอดรับสุทธิ");
     expect(html).not.toContain(">ยอดสุทธิ<");
-    expect(html).toContain("สถานะอนุมัติ");
+    expect(html).not.toContain("สถานะอนุมัติ");
+    expect(html).not.toContain(model.approvalLabel);
+    expect(html).not.toContain("ออฟไลน์");
     expect(html).not.toContain("ผู้รับผิดชอบการจ่าย");
     expect(html).not.toContain("ผู้ใช้");
     expect(html).not.toContain("ที่อยู่:");
@@ -127,7 +129,7 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     }
   });
 
-  test("keeps online and offline receipt content identical except identity and approval labels", () => {
+  test("keeps online and offline receipt content identical except reference identity", () => {
     const synced = buildRubberBillReceiptModel(makeBill());
     const offline = buildRubberBillReceiptModel(makeBill({
       serverBillNo: undefined,
@@ -158,25 +160,30 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     });
 
     const sharedFields = ({
+      // Synced PDFs retain the local reference for matching offline copies.
       receiptKind: _receiptKind,
       referenceLabel: _referenceLabel,
       referenceNo: _referenceNo,
+      localReferenceNo: _localReferenceNo,
       approvalLabel: _approvalLabel,
       ...shared
     }: typeof synced) => shared;
     expect(sharedFields(offline)).toEqual(sharedFields(synced));
+    expect(synced.localReferenceNo).toBe("LOCAL-1");
+    expect(offline.localReferenceNo).toBeUndefined();
+    expect(renderRubberBillReceiptHtml(synced)).toContain("เลขอ้างอิงบนเครื่อง</span><strong>LOCAL-1");
+    const { localReferenceNo: _legacyReference, ...legacyReceipt } = synced;
+    expect(resolveRubberBillReceiptForPrint(makeBill(), {
+      revisionNo: makeBill().revisionNo, receipt: legacyReceipt,
+    }, false).localReferenceNo).toBe("LOCAL-1");
 
     const normalizeAllowedRendererDifferences = (
       html: string,
       model: typeof synced,
     ) => html
-      .replaceAll(
-        model.receiptKind === "offline" ? "ใบรับซื้อยางออฟไลน์" : "ใบรับซื้อยาง",
-        "__TITLE__",
-      )
+      .replace(/<div class="row"><span>เลขอ้างอิงบนเครื่อง<\/span><strong>LOCAL-1<\/strong><\/div>(?=<div class="row"><span>วันที่)/, model.receiptKind === "synced" ? "" : "$&")
       .replaceAll(model.referenceLabel, "__REFERENCE_LABEL__")
-      .replaceAll(model.referenceNo, "__REFERENCE_NO__")
-      .replaceAll(model.approvalLabel, "__APPROVAL_LABEL__");
+      .replaceAll(model.referenceNo, "__REFERENCE_NO__");
     expect(normalizeAllowedRendererDifferences(
       renderRubberBillReceiptHtml(offline),
       offline,
@@ -239,6 +246,16 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(html).toContain("น้ำหนักสุทธิ");
   });
 
+  test("hides the deduction section when there are no deductions", () => {
+    const html = renderRubberBillReceiptHtml(buildRubberBillReceiptModel(makeBill({
+      acidItems: [], debtItems: [], deductionTotal: 0, netTotal: 160,
+    })));
+    expect(html).not.toContain("รายการหักเงิน");
+    expect(html).not.toContain("ยอดหักเงิน");
+    expect(html).not.toContain("ไม่มีรายการหัก");
+    expect(html).toContain("160 บาท");
+  });
+
   test("uses local reference and blocks payment warning when any row price is zero", () => {
     const model = buildRubberBillReceiptModel(makeBill({
       serverBillNo: undefined,
@@ -263,7 +280,10 @@ test.describe("Rubber Bill receipt contract @rubber-bill-print", () => {
     expect(model.referenceLabel).toBe("เลขอ้างอิงบนเครื่อง");
     expect(model.referenceNo).toBe("LOCAL-1");
     expect(model.approvalLabel).toBe("ผ่านการตรวจราคาบนเครื่อง — ไม่ต้องอนุมัติ");
-    expect(html).toContain("ใบรับซื้อยางออฟไลน์");
+    expect(html).toContain("ใบรับซื้อยาง");
+    expect(html).not.toContain("ออฟไลน์");
+    expect(html).toContain("เลขอ้างอิงบนเครื่อง");
+    expect(html).toContain("LOCAL-1");
     expect(html).toContain("ยังไม่กำหนดราคา — ห้ามจ่าย");
     expect(html).toContain("น้ำหนักรวมก่อนหัก");
     expect(html).toContain("น้ำหนักหัก");
