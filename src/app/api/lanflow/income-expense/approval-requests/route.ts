@@ -55,16 +55,10 @@ async function createApproval(request: NextRequest) {
       return NextResponse.json(result, { status: 200 });
     }
 
-    if (result.status === "failed") {
-      return NextResponse.json({
-        ...result,
-        errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ตรวจสอบคำขออนุมัติไม่สำเร็จ"),
-      }, { status: 400 });
-    }
-    return NextResponse.json(
-      { status: "failed", errorMessage: "ระบบไม่ตอบกลับผลคำขออนุมัติตามรูปแบบที่กำหนด" },
-      { status: 500 },
-    );
+    return NextResponse.json({
+      ...result,
+      errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ตรวจสอบคำขออนุมัติไม่สำเร็จ"),
+    }, { status: 400 });
   } catch (error: unknown) {
     console.error("Create income-expense approval request API error:", error);
     return NextResponse.json({ status: "failed", errorMessage: "ตรวจสอบคำขออนุมัติไม่สำเร็จ" }, { status: 503 });

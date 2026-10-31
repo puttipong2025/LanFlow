@@ -7,6 +7,10 @@ import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { authFetch } from "@/lib/auth-fetch";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { getConnectivitySnapshot } from "@/lib/connectivity";
+import { readApprovalDecisionResponse } from "@/lib/income-expense/approval-decision-response";
+import { isApprovalRequestResult } from "@/lib/income-expense/contracts";
+import { addApprovalKeyword, disableApprovalKeyword, saveApprovalSettings, readApprovalSettings, readApprovalKeyword, assertApprovalSettingsOnline, APPROVAL_SETTINGS_COLUMNS, APPROVAL_KEYWORD_COLUMNS, type ApprovalSettingsInput, type ApprovalKeywordInput } from "@/lib/income-expense/approval-settings-mutations";
 import { invalidateBranchTransferDeletionViews } from "@/lib/money-flow/invalidation";
 import {
   decideBranchTransferDeleteRequest,
@@ -23,7 +27,6 @@ import type {
   IncomeExpense,
   IncomeExpenseApprovalAppliesTo,
   IncomeExpenseApprovalKeyword,
-  IncomeExpenseApprovalMatchMode,
   IncomeExpenseApprovalRequest,
   IncomeExpenseApprovalSettings,
   QueueOperation,
@@ -33,20 +36,6 @@ const KEYWORDS_KEY = "incomeExpenseApprovalKeywords";
 const SETTINGS_KEY = "incomeExpenseApprovalSettings";
 const REQUESTS_KEY = "incomeExpenseApprovalRequests";
 const APPROVAL_HISTORY_LIMIT = 80;
-
-type AddKeywordInput = {
-  keyword: string;
-  appliesTo: IncomeExpenseApprovalAppliesTo;
-  matchMode: IncomeExpenseApprovalMatchMode;
-  approvalMinAmount?: number | null;
-};
-
-type SettingsInput = {
-  appliesTo: IncomeExpenseApprovalAppliesTo;
-  approvalMinAmount?: number | null;
-  cashTransferDeleteRequiresApproval: boolean;
-  nonCurrentDateRequiresApproval: boolean;
-};
 
 type ApprovalSubmitResult = {
   requiresApproval: boolean;
@@ -100,45 +89,37 @@ export function useIncomeExpenseApprovals(options: {
   const pendingLocationId = options.pendingLocationId;
 
   const keywordsQuery = useQuery({
+    networkMode: "always",
+    retry: false,
     queryKey: [KEYWORDS_KEY],
     queryFn: async () => {
+      assertApprovalSettingsOnline();
       const { data, error } = await supabase
         .from("income_expense_approval_keywords")
-        .select("id, keyword, match_mode, applies_to, is_active, approval_min_amount")
+        .select(APPROVAL_KEYWORD_COLUMNS)
         .order("created_at", { ascending: false });
 
       if (error) throw new Error(error.message || JSON.stringify(error));
 
-      return (data || []).map((row: any): IncomeExpenseApprovalKeyword => ({
-        id: row.id,
-        keyword: row.keyword,
-        matchMode: row.match_mode,
-        appliesTo: row.applies_to,
-        isActive: row.is_active,
-        approvalMinAmount: row.approval_min_amount != null ? Number(row.approval_min_amount) : null,
-      }));
+      return (data || []).map(readApprovalKeyword);
     },
   });
 
   const settingsQuery = useQuery({
+    networkMode: "always",
+    retry: false,
     queryKey: [SETTINGS_KEY],
     queryFn: async () => {
+      assertApprovalSettingsOnline();
       const { data, error } = await supabase
         .from("income_expense_approval_settings")
-        .select("applies_to, approval_min_amount, cash_transfer_delete_requires_approval, non_current_date_requires_approval, updated_by_name, updated_by_phone")
+        .select(APPROVAL_SETTINGS_COLUMNS)
         .eq("id", true)
         .maybeSingle();
 
       if (error) throw new Error(error.message || JSON.stringify(error));
 
-      return {
-        appliesTo: data?.applies_to ?? "both",
-        approvalMinAmount: data?.approval_min_amount != null ? Number(data.approval_min_amount) : null,
-        cashTransferDeleteRequiresApproval: data?.cash_transfer_delete_requires_approval ?? true,
-        nonCurrentDateRequiresApproval: data?.non_current_date_requires_approval ?? false,
-        updatedByName: data?.updated_by_name,
-        updatedByPhone: data?.updated_by_phone,
-      } satisfies IncomeExpenseApprovalSettings;
+      return readApprovalSettings(data);
     },
   });
 
@@ -266,87 +247,38 @@ export function useIncomeExpenseApprovals(options: {
     queryFn: () => loadPendingApprovalCount(supabase, pendingLocationId),
   });
 
+  // Refetch while online; invalidate without a paused read after an offline write failure.
+  async function refreshConfiguration(key: string) {
+    if (!getConnectivitySnapshot()) {
+      await queryClient.invalidateQueries({ queryKey: [key], refetchType: "none" });
+      return false;
+    }
+    try {
+      await queryClient.refetchQueries({ queryKey: [key], type: "active" }, { throwOnError: true });
+      return true;
+    } catch { return false; }
+  }
+
   const addKeywordMutation = useMutation({
-    mutationFn: async (input: AddKeywordInput) => {
-      const { data: { session } } = await supabase.auth.getSession();
-      let createdByName = "";
-      let createdByPhone = "";
-
-      if (session?.user) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("name, phone")
-          .eq("id", session.user.id)
-          .single();
-
-        createdByName = profile?.name ?? "";
-        createdByPhone = profile?.phone ?? "";
-      }
-
-      const { error } = await supabase.from("income_expense_approval_keywords").insert({
-        keyword: input.keyword.trim(),
-        applies_to: input.appliesTo,
-        match_mode: input.matchMode,
-        approval_min_amount: input.approvalMinAmount ?? null,
-        created_by_user_id: session?.user?.id,
-        created_by_name: createdByName,
-        created_by_phone: createdByPhone,
-      });
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY] }),
+    networkMode: "always",
+    mutationFn: (input: ApprovalKeywordInput) => addApprovalKeyword(supabase, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY], refetchType: getConnectivitySnapshot() ? "active" : "none" }),
   });
-
   const disableKeywordMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const { data: { session } } = await supabase.auth.getSession();
-      const { error } = await supabase
-        .from("income_expense_approval_keywords")
-        .update({
-          is_active: false,
-          deleted_at: new Date().toISOString(),
-          deleted_by_user_id: session?.user?.id,
-        })
-        .eq("id", id);
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY] }),
+    networkMode: "always",
+    mutationFn: (id: string) => disableApprovalKeyword(supabase, id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEYWORDS_KEY], refetchType: getConnectivitySnapshot() ? "active" : "none" }),
   });
-
   const saveSettingsMutation = useMutation({
-    mutationFn: async (input: SettingsInput) => {
-      const { data: { session } } = await supabase.auth.getSession();
-      let updatedByName = "";
-      let updatedByPhone = "";
-
-      if (session?.user) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("name, phone")
-          .eq("id", session.user.id)
-          .single();
-
-        updatedByName = profile?.name ?? "";
-        updatedByPhone = profile?.phone ?? "";
-      }
-
-      const { error } = await supabase.from("income_expense_approval_settings").upsert({
-        id: true,
-        applies_to: input.appliesTo,
-        approval_min_amount: input.approvalMinAmount ?? null,
-        cash_transfer_delete_requires_approval: input.cashTransferDeleteRequiresApproval,
-        non_current_date_requires_approval: input.nonCurrentDateRequiresApproval,
-        updated_by_user_id: session?.user?.id,
-        updated_by_name: updatedByName,
-        updated_by_phone: updatedByPhone,
-        updated_at: new Date().toISOString(),
-      });
-
-      if (error) throw new Error(error.message || JSON.stringify(error));
+    networkMode: "always",
+    mutationFn: (input: ApprovalSettingsInput) => saveApprovalSettings(supabase, input),
+    onSuccess: async (patch) => {
+      // Stop an older read before applying this section's authoritative acknowledgement.
+      await queryClient.cancelQueries({ queryKey: [SETTINGS_KEY] });
+      queryClient.setQueryData<IncomeExpenseApprovalSettings>([SETTINGS_KEY], (current) => current ? { ...current, ...patch } : current);
+      if (patch.nonCurrentDateRequiresApproval !== undefined) saveIncomeExpenseApprovalSettingsCache(patch.nonCurrentDateRequiresApproval);
+      await queryClient.invalidateQueries({ queryKey: [SETTINGS_KEY], refetchType: getConnectivitySnapshot() ? "active" : "none" });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [SETTINGS_KEY] }),
   });
 
   const decideRequestMutation = useMutation({
@@ -357,12 +289,7 @@ export function useIncomeExpenseApprovals(options: {
         body: JSON.stringify({ decision, comment }),
       });
 
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.errorMessage || data.error || "ดำเนินการคำขอไม่สำเร็จ");
-      }
-
-      return data;
+      return readApprovalDecisionResponse(response, id, decision, true);
     },
     onSuccess: async () => {
       await Promise.all([
@@ -382,12 +309,7 @@ export function useIncomeExpenseApprovals(options: {
         body: JSON.stringify({ decision, comment }),
       });
 
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.errorMessage || data.error || "ดำเนินการคำขอลบไม่สำเร็จ");
-      }
-
-      return data;
+      return readApprovalDecisionResponse(response, id, decision);
     },
     onSuccess: async () => {
       await Promise.all([
@@ -448,6 +370,9 @@ export function useIncomeExpenseApprovals(options: {
     if (!response.ok) {
       throw new Error(data.errorMessage || data.error || "ตรวจสอบคำขออนุมัติไม่สำเร็จ");
     }
+    if (!isApprovalRequestResult(data) || data.status === "failed") {
+      throw new Error("ยังยืนยันผลคำขออนุมัติไม่ได้ กรุณาโหลดรายการล่าสุดก่อนบันทึกอีกครั้ง");
+    }
 
     if (data.status === "pending") {
       await Promise.all([
@@ -485,6 +410,13 @@ export function useIncomeExpenseApprovals(options: {
     isRefetchingRequests:
       (includeRequests && (requestsQuery.isFetching || cashDeleteRequestsQuery.isFetching || branchDeleteRequestsQuery.isFetching))
       || (includePendingCount && pendingCountQuery.isFetching),
+    settingsLoading: settingsQuery.isLoading,
+    keywordsLoading: keywordsQuery.isLoading,
+    settingsError: settingsQuery.isError,
+    keywordsError: keywordsQuery.isError,
+    retrySettings: async () => await refreshConfiguration(SETTINGS_KEY) ? queryClient.getQueryData<IncomeExpenseApprovalSettings>([SETTINGS_KEY]) : undefined,
+    retryKeywords: async () => await refreshConfiguration(KEYWORDS_KEY) ? queryClient.getQueryData<IncomeExpenseApprovalKeyword[]>([KEYWORDS_KEY]) : undefined,
+    requestsLoading: Boolean((includeRequests && (requestsQuery.isLoading || cashDeleteRequestsQuery.isLoading || branchDeleteRequestsQuery.isLoading)) || (includePendingCount && pendingCountQuery.isLoading)),
     isLoading:
       keywordsQuery.isLoading ||
       settingsQuery.isLoading ||

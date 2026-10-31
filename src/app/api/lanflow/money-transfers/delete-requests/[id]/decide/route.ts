@@ -2,18 +2,18 @@ import { NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
 import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
-
-function isDeleteDecisionResult(
-  value: unknown,
-  expectedId: string,
-  expectedDecision: "approved" | "rejected",
-) {
-  return isJsonObject(value)
-    && value.requestId === expectedId
-    && value.status === expectedDecision;
-}
+import { isMatchingApprovalDecision } from "@/lib/income-expense/approval-decision-response";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try { return await decide(request, params); }
+  catch {
+    return NextResponse.json({ error: "ดำเนินการคำขอลบไม่สำเร็จ" }, {
+      status: 503, headers: { "Cache-Control": "private, no-store" },
+    });
+  }
+}
+
+async function decide(request: Request, params: Promise<{ id: string }>) {
   const auth = await requireSystemManager(request);
   if (!auth.ok) return auth.response;
   const { id } = await params;
@@ -54,7 +54,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     console.error("Branch transfer delete decision failed", { code: error.code });
     return NextResponse.json({ error: "ดำเนินการคำขอลบไม่สำเร็จ" }, { status: 500 });
   }
-  if (!isDeleteDecisionResult(data, requestId, payload.decision)) {
+  if (!isMatchingApprovalDecision(data, requestId, payload.decision)) {
     console.error("Branch transfer delete decision contract mismatch", { id: requestId });
     return NextResponse.json(
       { error: "ระบบไม่ตอบกลับผลการตัดสินคำขอลบตามรูปแบบที่กำหนด" },

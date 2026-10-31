@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { installThresholdAlertHandler } from "../helpers/dismiss-threshold-alert";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
 test("approval queue reports a failed request load and can retry", async ({ page }) => {
+  await installThresholdAlertHandler(page);
   let failApprovalReads = true;
   await page.route("**/rest/v1/income_expense_approval_requests?*", async (route) => {
     if (!failApprovalReads) {

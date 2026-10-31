@@ -7087,6 +7087,23 @@ $$;
 ALTER FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."prepare_payroll_slip_source_snapshot"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  new.slip_data := coalesce(new.slip_data, '{}'::jsonb) || jsonb_build_object(
+    'outstandingSources',
+    private.time_payroll_slip_source_snapshot(new.profile_id, new.month, new.created_at)
+  );
+  return new;
+end
+$$;
+
+
+ALTER FUNCTION "private"."prepare_payroll_slip_source_snapshot"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."preserve_rubber_bill_number"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     SET "search_path" TO ''
@@ -10014,6 +10031,21 @@ end $$;
 ALTER FUNCTION "private"."sms_session_status"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."stamp_income_expense_keyword_disable"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+begin
+  new.updated_at := clock_timestamp();
+  if old.is_active and not new.is_active then new.deleted_at := clock_timestamp(); end if;
+  return new;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."stamp_income_expense_keyword_disable"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."stamp_rubber_command_resolution"() RETURNS "trigger"
     LANGUAGE "plpgsql"
     SET "search_path" TO ''
@@ -11181,6 +11213,67 @@ $$;
 
 
 ALTER FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."time_payroll_slip_source_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with sources as (
+    select source.id, source.type, source.effective_date, source.description,
+      source.created_at,
+      coalesce((
+        select adjustment.amount
+        from public.financial_transactions adjustment
+        where adjustment.type = 'ADJUSTMENT'
+          and adjustment.parent_debt_id = source.id
+          and adjustment.status = 'APPROVED'
+          and coalesce(adjustment.approved_at, adjustment.created_at) <= p_as_of
+          and (adjustment.cancelled_at is null or adjustment.cancelled_at > p_as_of)
+        order by adjustment.approved_at desc nulls last, adjustment.created_at desc, adjustment.id desc
+        limit 1
+      ), source.amount) as target_amount
+    from public.financial_transactions source
+    where source.profile_id = p_profile_id
+      and source.type in ('DEBT', 'WITHDRAWAL')
+      and source.status = 'APPROVED'
+      and coalesce(source.approved_at, source.created_at) <= p_as_of
+      and (source.cancelled_at is null or source.cancelled_at > p_as_of)
+      and source.effective_date < ((p_month || '-01')::date + interval '1 month')::date
+  ), deductions as (
+    select child.parent_debt_id,
+      sum(child.amount) as through_slip,
+      sum(child.amount) filter (where child.applied_month = (p_month || '-01')::date) as this_slip
+    from public.financial_transactions child
+    join sources source on source.id = child.parent_debt_id
+    where child.type in ('DEBT_DEDUCTION', 'WITHDRAWAL_DEDUCTION')
+      and child.status = 'APPROVED'
+      and child.applied_month <= (p_month || '-01')::date
+      and coalesce(child.approved_at, child.created_at) <= p_as_of
+      and (child.cancelled_at is null or child.cancelled_at > p_as_of)
+    group by child.parent_debt_id
+  ), balances as (
+    select source.*,
+      trunc(greatest(source.target_amount - coalesce(deduction.through_slip, 0), 0)
+        + coalesce(deduction.this_slip, 0), 2) as before_deductions
+    from sources source
+    left join deductions deduction on deduction.parent_debt_id = source.id
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'id', id,
+    'type', type,
+    'status', 'APPROVED',
+    'effective_date', effective_date,
+    'description', description,
+    'amount', before_deductions,
+    'carried_forward', effective_date < (p_month || '-01')::date
+  ) order by effective_date, created_at, id), '[]'::jsonb)
+  from balances
+  where before_deductions > 0
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_slip_source_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."try_rubber_bill_submission_fingerprint"("p_payload" "jsonb") RETURNS "text"
@@ -35029,6 +35122,14 @@ CREATE OR REPLACE TRIGGER "income_background_approval_outcome" AFTER UPDATE OF "
 
 
 
+CREATE OR REPLACE TRIGGER "income_expense_approval_keywords_updated_at" BEFORE UPDATE ON "public"."income_expense_approval_keywords" FOR EACH ROW EXECUTE FUNCTION "private"."stamp_income_expense_keyword_disable"();
+
+
+
+CREATE OR REPLACE TRIGGER "income_expense_approval_settings_updated_at" BEFORE UPDATE ON "public"."income_expense_approval_settings" FOR EACH ROW EXECUTE FUNCTION "extensions"."moddatetime"('updated_at');
+
+
+
 CREATE OR REPLACE TRIGGER "income_expense_lock_location" BEFORE UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_location_change"();
 
 
@@ -35062,6 +35163,10 @@ CREATE OR REPLACE TRIGGER "prepare_payroll_slip_adjustment_snapshot" BEFORE INSE
 
 
 CREATE OR REPLACE TRIGGER "prepare_payroll_slip_outstanding_snapshot" BEFORE INSERT ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"();
+
+
+
+CREATE OR REPLACE TRIGGER "prepare_payroll_slip_source_snapshot" BEFORE INSERT ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."prepare_payroll_slip_source_snapshot"();
 
 
 
@@ -36430,11 +36535,19 @@ ALTER TABLE "public"."income_expense" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."income_expense_approval_keywords" ENABLE ROW LEVEL SECURITY;
 
 
+CREATE POLICY "income_expense_approval_keywords_manager_read" ON "public"."income_expense_approval_keywords" FOR SELECT TO "authenticated" USING ("public"."can_access_super_admin_features"());
+
+
+
 CREATE POLICY "income_expense_approval_keywords_read" ON "public"."income_expense_approval_keywords" FOR SELECT TO "authenticated" USING ((("is_active" = true) AND "private"."can_access_business_modules"()));
 
 
 
-CREATE POLICY "income_expense_approval_keywords_system_manager_write" ON "public"."income_expense_approval_keywords" TO "authenticated" USING ("public"."can_access_super_admin_features"()) WITH CHECK ("public"."can_access_super_admin_features"());
+CREATE POLICY "income_expense_approval_keywords_super_admin_insert" ON "public"."income_expense_approval_keywords" FOR INSERT TO "authenticated" WITH CHECK ("public"."is_super_admin"());
+
+
+
+CREATE POLICY "income_expense_approval_keywords_super_admin_update" ON "public"."income_expense_approval_keywords" FOR UPDATE TO "authenticated" USING ("public"."is_super_admin"()) WITH CHECK ("public"."is_super_admin"());
 
 
 
@@ -36452,7 +36565,11 @@ CREATE POLICY "income_expense_approval_settings_read" ON "public"."income_expens
 
 
 
-CREATE POLICY "income_expense_approval_settings_system_manager_write" ON "public"."income_expense_approval_settings" TO "authenticated" USING ("public"."can_access_super_admin_features"()) WITH CHECK ("public"."can_access_super_admin_features"());
+CREATE POLICY "income_expense_approval_settings_super_admin_insert" ON "public"."income_expense_approval_settings" FOR INSERT TO "authenticated" WITH CHECK ("public"."is_super_admin"());
+
+
+
+CREATE POLICY "income_expense_approval_settings_super_admin_update" ON "public"."income_expense_approval_settings" FOR UPDATE TO "authenticated" USING ("public"."is_super_admin"()) WITH CHECK ("public"."is_super_admin"());
 
 
 
@@ -37668,6 +37785,10 @@ REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() F
 
 
 
+REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_source_snapshot"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."preserve_rubber_bill_number"() FROM PUBLIC;
 
 
@@ -37892,6 +38013,10 @@ GRANT ALL ON FUNCTION "private"."sms_access_allowed"() TO "authenticated";
 
 
 
+REVOKE ALL ON FUNCTION "private"."stamp_income_expense_keyword_disable"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."stamp_rubber_command_resolution"() FROM PUBLIC;
 
 
@@ -37933,6 +38058,10 @@ REVOKE ALL ON FUNCTION "private"."time_payroll_missing_slip_months"("p_now" time
 
 
 REVOKE ALL ON FUNCTION "private"."time_payroll_slip_outstanding_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone, "p_deducted_this_slip" numeric) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."time_payroll_slip_source_snapshot"("p_profile_id" "uuid", "p_month" "text", "p_as_of" timestamp with time zone) FROM PUBLIC;
 
 
 

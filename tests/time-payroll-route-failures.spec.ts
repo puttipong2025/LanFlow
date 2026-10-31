@@ -3,11 +3,121 @@ import { NextRequest } from "next/server";
 import { loadSourceModule } from "./helpers/load-source-module";
 
 const id = "a7310000-0000-4000-8000-000000000004";
+
+for (const sourceType of ["payroll", "withdrawal"]) for (const [message, status] of [
+  ["Authentication required", 401], ["Forbidden", 403], ["private document database transport failure", 500],
+] as const) test(`document ${sourceType} preserves post-authentication ${status} failures`, async () => {
+  const query = {
+    select: () => query, eq: () => query,
+    maybeSingle: async () => ({ data: null, error: { message } }),
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route")>(
+    "src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route.ts",
+    { "@/lib/server/auth": { requireAuth: async () => ({ ok: true, supabase: { from: () => query } }) } },
+  );
+  const response = await route.GET(new NextRequest(`http://localhost/api/lanflow/time-tracking/documents/${sourceType}/${id}`), {
+    params: Promise.resolve({ sourceType, id }),
+  });
+  expect(response.status).toBe(status);
+  const body = await response.json();
+  expect(body.error).not.toContain("private document");
+  if (status === 401) expect(body.error).toContain("เข้าสู่ระบบ");
+  if (status === 403) expect(body.error).toContain("สิทธิ์");
+});
+
 const dependencies = (rpc: () => Promise<unknown>) => ({
   "@/lib/server/auth": {
     requireAuth: async () => ({ ok: true, auth: { sub: id, canManageTimePayroll: true }, supabase: { rpc } }),
   },
 });
+
+test("document Route renders saved details when optional source metadata is malformed", async () => {
+  const source = {
+    id, profile_id: id, month: "2026-10", status: "APPROVED", cancelled_at: null,
+    created_at: "2026-11-01T00:00:00Z", total_days: 10, daily_wage: 500,
+    gross_pay: 5000, total_deductions: 1000, net_pay: 4000, approved_by: null,
+    slip_data: { outstandingSources: {}, transactions: [
+      { id: "legacy", type: "DEBT", status: "APPROVED", amount: 1000,
+        effective_date: "2026-10-05", description: "ค่าซ่อมรถ" },
+    ] },
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route")>(
+    "src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route.ts",
+    { "@/lib/server/auth": { requireAuth: async () => ({ ok: true, supabase: { from: (table: string) => {
+      const query = { select: () => query, eq: () => query, maybeSingle: async () => ({
+        data: table === "payroll_slips" ? source : { name: "พนักงาน", daily_wage: 500 }, error: null,
+      }) };
+      return query;
+    } } }) } },
+  );
+  const response = await route.GET(new NextRequest(`http://localhost/api/lanflow/time-tracking/documents/payroll/${id}`), {
+    params: Promise.resolve({ sourceType: "payroll", id }),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.sourceRows).toEqual([{
+    id: "legacy", label: "หนี้", dateLabel: "5 ต.ค. 2569", description: "ค่าซ่อมรถ", amount: 1000,
+  }]);
+  expect(body).not.toHaveProperty("deductionRows");
+});
+
+test("document Route keeps cancelled legacy debt out of an otherwise normal slip", async () => {
+  const source = {
+    id, profile_id: id, month: "2026-10", status: "APPROVED", cancelled_at: null,
+    created_at: "2026-11-01T00:00:00Z", total_days: 20, daily_wage: 500,
+    gross_pay: 10_000, total_deductions: 0, net_pay: 10_000, approved_by: null,
+    slip_data: { transactions: [
+      { id: "cancelled-debt", type: "DEBT", status: "APPROVED", amount: 1000,
+        effective_date: "2026-10-05", cancelled_at: "2026-10-10T00:00:00Z" },
+    ], outstandingAdjustments: { beforeDeductions: 0, deductedThisSlip: 0, remainingAfterDeductions: 0 } },
+  };
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route")>(
+    "src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route.ts",
+    { "@/lib/server/auth": { requireAuth: async () => ({ ok: true, supabase: { from: (table: string) => {
+      const query = { select: () => query, eq: () => query, maybeSingle: async () => ({
+        data: table === "payroll_slips" ? source : { name: "พนักงาน", daily_wage: 500 }, error: null,
+      }) };
+      return query;
+    } } }) } },
+  );
+  const response = await route.GET(new NextRequest(`http://localhost/api/lanflow/time-tracking/documents/payroll/${id}`), {
+    params: Promise.resolve({ sourceType: "payroll", id }),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.sourceRows).toEqual([]);
+  expect(body.summary).toEqual([
+    { label: "ค่าแรงรวม", value: "10,000.00 บาท" },
+    { label: "หักรวมเดือนนี้", value: "0.00 บาท" },
+    { label: "เงินเดือนสุทธิที่ต้องจ่าย", value: "10,000.00 บาท" },
+  ]);
+});
+
+for (const rpcName of ["get_time_payroll_user_totals", "get_time_payroll_attendance_month"]) {
+  test(`withdrawal document preserves authentication failures in ${rpcName}`, async () => {
+    const source = { id, profile_id: id, type: "WITHDRAWAL", status: "APPROVED", cancelled_at: null,
+      effective_date: "2026-10-05", created_at: "2026-10-05T00:00:00Z", approved_by: null,
+      amount: 1000, remaining_amount: 0 };
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route")>(
+      "src/app/api/lanflow/time-tracking/documents/[sourceType]/[id]/route.ts",
+      { "@/lib/server/auth": { requireAuth: async () => ({ ok: true, supabase: {
+        from: (table: string) => {
+          const query = { select: () => query, eq: () => query, maybeSingle: async () => ({
+            data: table === "financial_transactions" ? source : { name: "พนักงาน", daily_wage: 500 }, error: null,
+          }) };
+          return query;
+        },
+        rpc: async (name: string) => ({ data: { mode: "EXCEPTIONS" },
+          error: name === rpcName ? { message: "Authentication required" } : null }),
+      } }) } },
+    );
+    const response = await route.GET(new NextRequest(`http://localhost/api/lanflow/time-tracking/documents/withdrawal/${id}`), {
+      params: Promise.resolve({ sourceType: "withdrawal", id }),
+    });
+    expect(response.status).toBe(401);
+    expect((await response.json()).error).toContain("เข้าสู่ระบบ");
+  });
+}
 
 for (const [action, payload] of [
   ["REQUEST_WITHDRAWAL", { amount: 1200 }],

@@ -1,28 +1,22 @@
-import { Check, Plus, Power, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-
-import { formatCurrency } from "@/lib/format";
 import { useIncomeExpenseApprovals } from "@/hooks/useIncomeExpenseApprovals";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { useLocations } from "@/hooks/useLocations";
-import { ApprovalOperationBadge } from "@/components/income-expense/ApprovalOperationBadge";
-import { BranchTransferDeleteApprovalRow } from "@/components/income-expense/BranchTransferDeleteApprovalRow";
-import { appliesToLabels, formatDateTime, formatPerson, matchModeLabels, parseOptionalAmount, reasonLabels, statusLabels } from "@/components/income-expense/approval-display";
 import { ModalShell } from "@/components/shared/ModalShell";
-
-import type {
-  IncomeExpenseApprovalAppliesTo,
-  IncomeExpenseApprovalMatchMode,
-} from "@/types";
+import { AlertDialog } from "@/components/shared/AlertDialog";
+import { IncomeExpenseApprovalTable } from "./IncomeExpenseApprovalTable";
+import { IncomeExpenseApprovalSettings } from "./IncomeExpenseApprovalSettings";
 
 export function IncomeExpenseApprovalModal({
   initialLocationId,
   initialRequestId,
+  canEditSettings,
   onClose,
 }: {
   initialLocationId: string;
   initialRequestId?: string;
+  canEditSettings: boolean;
   onClose: () => void;
 }) {
   const { requestInput, inputDialog } = useInputDialog();
@@ -36,7 +30,8 @@ export function IncomeExpenseApprovalModal({
     pendingCount,
     hasRequestLoadError,
     isRefetchingRequests,
-    isLoading,
+    requestsLoading,
+    settingsLoading, keywordsLoading, settingsError, keywordsError, retrySettings, retryKeywords,
     addKeyword,
     disableKeyword,
     saveSettings,
@@ -55,26 +50,18 @@ export function IncomeExpenseApprovalModal({
   });
   const { locations } = useLocations();
 
-  const [keyword, setKeyword] = useState("");
-  const [keywordAppliesTo, setKeywordAppliesTo] = useState<IncomeExpenseApprovalAppliesTo>("expense");
-  const [matchMode, setMatchMode] = useState<IncomeExpenseApprovalMatchMode>("contains");
-  const [keywordMinAmount, setKeywordMinAmount] = useState("");
-  const [settingsAppliesTo, setSettingsAppliesTo] = useState<IncomeExpenseApprovalAppliesTo>("both");
-  const [settingsMinAmount, setSettingsMinAmount] = useState("");
-  const [cashDeleteRequiresApproval, setCashDeleteRequiresApproval] = useState(true);
-  const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
-  const [isAdding, setIsAdding] = useState(false);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [configBusy, setConfigBusy] = useState(false);
   const [decidingIds, setDecidingIds] = useState<Set<string>>(new Set());
   const decidingRef = useRef(new Set<string>());
-
-  useEffect(() => {
-    if (!settings) return;
-    setSettingsAppliesTo(settings.appliesTo);
-    setSettingsMinAmount(settings.approvalMinAmount != null ? String(settings.approvalMinAmount) : "");
-    setCashDeleteRequiresApproval(settings.cashTransferDeleteRequiresApproval);
-    setNonCurrentDateRequiresApproval(settings.nonCurrentDateRequiresApproval);
-  }, [settings]);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  const confirmationResolver = useRef<((value: boolean) => void) | null>(null);
+  function requestConfirmation(message: string) {
+    if (confirmationResolver.current) return Promise.resolve(false);
+    return new Promise<boolean>(resolve => { confirmationResolver.current = resolve; setConfirmation(message); });
+  }
+  function finishConfirmation(value: boolean) {
+    setConfirmation(null); confirmationResolver.current?.(value); confirmationResolver.current = null;
+  }
 
   useEffect(() => {
     setRequestLocationFilter(initialLocationId);
@@ -110,81 +97,7 @@ export function IncomeExpenseApprovalModal({
     const row = document.getElementById(`income-expense-approval-request-${initialRequestId}`);
     row?.scrollIntoView({ block: "center" });
     row?.focus();
-  }, [filteredBranchDeleteRequests, filteredCashDeleteRequests, filteredRequests, initialRequestId]);
-
-  async function handleSaveSettings(event: React.FormEvent) {
-    event.preventDefault();
-    const approvalMinAmount = parseOptionalAmount(settingsMinAmount);
-
-    if (Number.isNaN(approvalMinAmount)) {
-      toast.error("กรุณากรอกยอดขั้นต่ำเป็นตัวเลข");
-      return;
-    }
-
-    try {
-      setIsSavingSettings(true);
-      await saveSettings({
-        appliesTo: settingsAppliesTo,
-        approvalMinAmount,
-        cashTransferDeleteRequiresApproval: cashDeleteRequiresApproval,
-        nonCurrentDateRequiresApproval,
-      });
-      toast.success("บันทึกการตั้งค่าอนุมัติแล้ว");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "บันทึกการตั้งค่าไม่สำเร็จ");
-    } finally {
-      setIsSavingSettings(false);
-    }
-  }
-
-  async function handleAddKeyword(event: React.FormEvent) {
-    event.preventDefault();
-    const normalizedKeyword = keyword.trim();
-    const approvalMinAmount = parseOptionalAmount(keywordMinAmount);
-
-    if (!normalizedKeyword) {
-      toast.error("กรุณากรอกข้อความที่ต้องตรวจสอบ");
-      return;
-    }
-
-    if (Number.isNaN(approvalMinAmount)) {
-      toast.error("กรุณากรอกยอดขั้นต่ำเป็นตัวเลข");
-      return;
-    }
-
-    if (keywords.some((item) => item.isActive && item.keyword.trim().toLowerCase() === normalizedKeyword.toLowerCase())) {
-      toast.error("มีข้อความนี้ในรายการตรวจสอบแล้ว");
-      return;
-    }
-
-    try {
-      setIsAdding(true);
-      await addKeyword({
-        keyword: normalizedKeyword,
-        appliesTo: keywordAppliesTo,
-        matchMode,
-        approvalMinAmount,
-      });
-      setKeyword("");
-      setKeywordMinAmount("");
-      toast.success("เพิ่มข้อความตรวจสอบแล้ว");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "เพิ่มข้อความตรวจสอบไม่สำเร็จ");
-    } finally {
-      setIsAdding(false);
-    }
-  }
-
-  async function handleDisableKeyword(id: string, label: string) {
-    if (!window.confirm(`ปิดใช้งาน "${label}" ใช่ไหม?`)) return;
-
-    try {
-      await disableKeyword(id);
-      toast.success("ปิดใช้งานข้อความตรวจสอบแล้ว");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ปิดใช้งานไม่สำเร็จ");
-    }
-  }
+  }, [filteredBranchDeleteRequests, filteredCashDeleteRequests, filteredRequests, initialRequestId, requestsLoading]);
 
   async function runDecision(id: string, mutate: () => Promise<unknown>, successMessage: string, fallbackMessage: string) {
     if (decidingRef.current.has(id)) return;
@@ -202,7 +115,7 @@ export function IncomeExpenseApprovalModal({
   }
 
   async function handleApprove(id: string) {
-    if (!window.confirm("อนุมัติรายการนี้และย้ายเข้า รับ-จ่าย ใช่ไหม?")) return;
+    if (!await requestConfirmation("อนุมัติรายการนี้และย้ายเข้า รับ-จ่าย ใช่ไหม?")) return;
     await runDecision(id, () => decideRequest({ id, decision: "approved" }), "อนุมัติรายการแล้ว", "อนุมัติรายการไม่สำเร็จ");
   }
 
@@ -218,7 +131,7 @@ export function IncomeExpenseApprovalModal({
 
   async function handleCashDeleteDecision(id: string, decision: "approved" | "rejected") {
     const comment = decision === "approved"
-      ? (window.confirm("อนุมัติให้ลบรายการโยกเงินนี้ถาวรใช่ไหม?") ? "" : null)
+      ? (await requestConfirmation("อนุมัติให้ลบรายการโยกเงินนี้ถาวรใช่ไหม?") ? "" : null)
       : await requestInput({
           title: "ปฏิเสธคำขอลบ",
           label: "เหตุผลที่ปฏิเสธ (ไม่บังคับ)",
@@ -235,7 +148,7 @@ export function IncomeExpenseApprovalModal({
 
   async function handleBranchDeleteDecision(id: string, decision: "approved" | "rejected") {
     const comment = decision === "approved"
-      ? (window.confirm("อนุมัติให้ลบรายการโอนเข้าบัญชีสาขานี้ใช่ไหม?") ? "" : null)
+      ? (await requestConfirmation("อนุมัติให้ลบรายการโอนเข้าบัญชีสาขานี้ใช่ไหม?") ? "" : null)
       : await requestInput({ title: "ปฏิเสธคำขอลบ", label: "เหตุผลที่ปฏิเสธ (ไม่บังคับ)", multiline: true });
     if (comment === null) return;
     await runDecision(
@@ -247,391 +160,36 @@ export function IncomeExpenseApprovalModal({
   }
 
   return (
-    <ModalShell
-      title="ตั้งค่าและอนุมัติรับ-จ่าย"
-      subtitle={`คำขอรออนุมัติ ${pendingCount} รายการ`}
-      onClose={onClose}
-      closeDisabled={decidingIds.size > 0}
-      size="wide"
-    >
-      <div className="space-y-5">
-        <section className="rounded-md border border-black/10 p-4">
-          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <h3 className="font-bold text-ink">คำขออนุมัติรับ-จ่าย</h3>
-            <label className="grid gap-1 text-sm font-semibold text-ink sm:w-64">
-              สาขา
-              <select
-                value={requestLocationFilter}
-                onChange={(event) => setRequestLocationFilter(event.target.value)}
-                className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
-              >
-                <option value="all">ทุกสาขา</option>
-                {locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
-                  </option>
-                ))}
+    <ModalShell title="ตั้งค่าและอนุมัติรับ-จ่าย" subtitle={`คำขอรออนุมัติ ${pendingCount} รายการ`}
+      onClose={onClose} closeDisabled={configBusy || decidingIds.size > 0} size="wide" mobileFullScreen nativeModal>
+      <div className="grid min-w-0 gap-5">
+        <section aria-label="คำขออนุมัติรับ-จ่าย" className="min-w-0 rounded-xl border border-black/10 bg-field/20 p-2 sm:p-5">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div><h3 className="text-balance font-bold text-ink">คำขออนุมัติรับ-จ่าย</h3><p className="mt-1 text-pretty text-sm text-ink/60">ตรวจสอบรายละเอียดก่อนอนุมัติหรือปฏิเสธ</p></div>
+            <label className="grid w-full gap-1.5 text-sm font-semibold text-ink sm:w-64">สาขา
+              <select value={requestLocationFilter} onChange={event => setRequestLocationFilter(event.target.value)} className="focus-ring h-11 min-w-0 rounded-lg border border-black/15 bg-white px-3">
+                <option value="all">ทุกสาขา</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}
               </select>
             </label>
           </div>
-          {hasRequestLoadError && (
-            <div
-              role="alert"
-              className="mb-3 flex flex-col gap-3 rounded-md border border-clay/25 bg-clay/5 p-3 text-sm text-clay sm:flex-row sm:items-center sm:justify-between"
-            >
-              <span>โหลดคำขออนุมัติไม่สำเร็จ รายการที่แสดงอาจไม่ครบ</span>
-              <button
-                type="button"
-                disabled={isRefetchingRequests}
-                onClick={() => void retryRequestLoads()}
-                className="focus-ring h-9 rounded-md border border-clay/30 bg-white px-3 font-semibold disabled:opacity-50"
-              >
-                ลองใหม่
-              </button>
-            </div>
-          )}
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1320px] border-collapse text-sm tabular-nums">
-              <thead>
-                <tr className="border-b border-black/10 text-left text-ink/60">
-                  <th className="py-2">จัดการ</th>
-                  <th>รายการ</th>
-                  <th>จำนวนเงิน</th>
-                  <th>วันที่</th>
-                  <th className="py-2">สถานะ</th>
-                  <th>ผู้ขอ</th>
-                  <th>ผู้พิจารณา</th>
-                  <th>ประเภท</th>
-                  <th>สาขา</th>
-                  <th>เหตุผล</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={10} className="py-5 text-center text-ink/50">
-                      กำลังโหลด...
-                    </td>
-                  </tr>
-                ) : filteredRequests.length === 0 && filteredCashDeleteRequests.length === 0 && filteredBranchDeleteRequests.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="py-5 text-center text-ink/50">
-                      {hasRequestLoadError ? "ไม่สามารถแสดงคำขออนุมัติได้" : "ยังไม่มีคำขออนุมัติ"}
-                    </td>
-                  </tr>
-                ) : (
-                  <>
-                  {filteredBranchDeleteRequests.map((request) => (
-                    <BranchTransferDeleteApprovalRow
-                      key={`branch-delete:${request.id}`}
-                      request={request}
-                      isDeciding={decidingIds.has(request.id)}
-                      onDecision={(id, decision) => void handleBranchDeleteDecision(id, decision)}
-                    />
-                  ))}
-                  {filteredCashDeleteRequests.map((request) => (
-                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={`cash-delete:${request.id}`} className="border-b border-black/5">
-                      <td className="py-3 pr-3">
-                        {request.requestStatus === "pending" && (
-                          <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingIds.has(request.id)}
-                              onClick={() => void handleCashDeleteDecision(request.id, "approved")}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
-                              title="อนุมัติการลบ" aria-label="อนุมัติการลบ">
-                              <Check size={17} />
-                            </button>
-                            <button type="button" disabled={decidingIds.has(request.id)}
-                              onClick={() => void handleCashDeleteDecision(request.id, "rejected")}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
-                              title="ปฏิเสธการลบ" aria-label="ปฏิเสธการลบ">
-                              <X size={17} />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <div className="flex flex-col gap-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <ApprovalOperationBadge operation="delete" />
-                            <span className="font-semibold text-ink">{request.transferDisplayNo} → {request.targetLocationName}</span>
-                          </div>
-                          <span className="text-xs text-ink/55">รับจริง {formatCurrency(request.receivedTotal)} · ผลต่าง {formatCurrency(request.differenceTotal)}</span>
-                        </div>
-                      </td>
-                      <td className="font-semibold text-clay">{formatCurrency(request.sentTotal)}</td>
-                      <td>{formatDateTime(request.createdAt)}</td>
-                      <td className="py-3">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
-                          request.requestStatus === "pending"
-                            ? "bg-amber-100 text-amber-700"
-                            : request.requestStatus === "approved"
-                              ? "bg-leaf/10 text-leaf"
-                              : "bg-clay/10 text-clay"
-                        }`}>
-                          {decidingIds.has(request.id) ? "รอผล" : statusLabels[request.requestStatus]}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
-                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
-                      <td>ลบถาวรรายการโยกเงิน</td>
-                      <td>{request.sourceLocationName}</td>
-                      <td>ลบหลังปลายทางตรวจรับ</td>
-                    </tr>
-                  ))}
-                  {filteredRequests.map((request) => (
-                    <tr id={`income-expense-approval-request-${request.id}`} tabIndex={-1} key={request.id} className="border-b border-black/5">
-                      <td className="py-3 pr-3">
-                        {request.requestStatus === "pending" && (
-                          <div className="flex gap-1.5 whitespace-nowrap">
-                            <button type="button" disabled={decidingIds.has(request.id)} onClick={() => void handleApprove(request.id)}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
-                              title="อนุมัติ" aria-label="อนุมัติ">
-                              <Check size={17} />
-                            </button>
-                            <button type="button" disabled={decidingIds.has(request.id)} onClick={() => void handleReject(request.id)}
-                              className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md bg-clay text-white disabled:opacity-50"
-                              title="ปฏิเสธ" aria-label="ปฏิเสธ">
-                              <X size={17} />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <div className="flex flex-col gap-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <ApprovalOperationBadge operation={request.requestedOperation} />
-                            <span className="font-semibold text-ink">{request.title}</span>
-                          </div>
-                           {request.matchedKeyword && (
-                             <span className="text-xs text-ink/55">พบ: {request.matchedKeyword}</span>
-                           )}
-                           {request.saleLines && request.saleLines.length > 0 && (
-                             <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-xs text-ink/65">
-                               {request.saleLines.map((line) => (
-                                 <li key={`${request.id}:${line.sequenceNo}`}>
-                                   {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
-                                 </li>
-                               ))}
-                             </ol>
-                           )}
-                         </div>
-                      </td>
-                      <td className={request.txType === "income" ? "font-semibold text-leaf" : "font-semibold text-clay"}>
-                        {formatCurrency(request.cost)}
-                      </td>
-                      <td>{formatDateTime(request.createdAt)}</td>
-                      <td className="py-3">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${
-                          request.requestStatus === "pending"
-                            ? "bg-amber-100 text-amber-700"
-                            : request.requestStatus === "approved"
-                              ? "bg-leaf/10 text-leaf"
-                              : "bg-clay/10 text-clay"
-                        }`}>
-                          {decidingIds.has(request.id) ? "รอผล" : statusLabels[request.requestStatus]}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap">{formatPerson(request.requestedByName, request.requestedByPhone)}</td>
-                      <td className="whitespace-nowrap">{formatPerson(request.decidedByName, request.decidedByPhone)}</td>
-                      <td>{request.txType === "income" ? "รายรับ" : "รายจ่าย"}</td>
-                      <td>{locationNameById.get(request.locationId) ?? "ไม่ทราบสาขา"}</td>
-                      <td>{request.matchedReasons.map((reason) => reasonLabels[reason]).join(" · ")}</td>
-                    </tr>
-                  ))}
-                  </>
-                )}
-              </tbody>
-            </table>
-          </div>
+          {hasRequestLoadError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-clay/25 bg-clay/5 p-3 text-sm text-clay">
+            <span>โหลดคำขออนุมัติไม่สำเร็จ รายการที่แสดงอาจไม่ครบ</span>
+            <button type="button" disabled={isRefetchingRequests} onClick={() => void retryRequestLoads()} className="focus-ring min-h-11 rounded-lg border border-clay/30 bg-white px-3 font-semibold disabled:opacity-50">ลองใหม่</button>
+          </div>}
+          {requestsLoading ? <p role="status" className="py-6 text-center text-sm text-ink/55">กำลังโหลดคำขอ…</p>
+            : filteredRequests.length + filteredCashDeleteRequests.length + filteredBranchDeleteRequests.length === 0
+              ? <p className="py-6 text-center text-sm text-ink/55">{hasRequestLoadError ? "ไม่สามารถแสดงคำขออนุมัติได้" : "ยังไม่มีคำขออนุมัติ"}</p>
+              : <IncomeExpenseApprovalTable requests={filteredRequests} cashRequests={filteredCashDeleteRequests} branchRequests={filteredBranchDeleteRequests}
+                locationNames={locationNameById} decidingIds={decidingIds}
+                onDecision={(id, decision) => void (decision === "approved" ? handleApprove(id) : handleReject(id))}
+                onCashDecision={(id, decision) => void handleCashDeleteDecision(id, decision)} onBranchDecision={(id, decision) => void handleBranchDeleteDecision(id, decision)} />}
         </section>
-
-        <form onSubmit={handleSaveSettings} className="rounded-md border border-black/10 p-4">
-          <div className="mb-3 flex flex-col gap-1">
-            <h3 className="font-bold text-ink">เกณฑ์ยอดเงินที่ต้องอนุมัติ</h3>
-            <p className="text-sm text-ink/60">เว้นยอดขั้นต่ำว่างไว้เพื่อปิดกฎนี้</p>
-          </div>
-          <div className="grid gap-3 md:grid-cols-[180px_1fr_auto] md:items-end">
-            <label className="grid gap-1 text-sm font-semibold text-ink">
-              ใช้กับ
-              <select
-                value={settingsAppliesTo}
-                onChange={(event) => setSettingsAppliesTo(event.target.value as IncomeExpenseApprovalAppliesTo)}
-                className="focus-ring h-11 rounded-md border border-black/10 bg-white px-3"
-              >
-                <option value="both">รับ-จ่าย</option>
-                <option value="income">รายรับ</option>
-                <option value="expense">รายจ่าย</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-sm font-semibold text-ink">
-              ยอดขั้นต่ำ
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={settingsMinAmount}
-                onChange={(event) => setSettingsMinAmount(event.target.value)}
-                placeholder="เช่น 5000"
-                className="focus-ring h-11 rounded-md border border-black/10 px-3"
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={isSavingSettings}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-commit px-4 font-bold text-white hover:bg-commit/90 disabled:opacity-50"
-            >
-              <Check size={18} />
-              บันทึก
-            </button>
-          </div>
-          <label className="mt-4 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink">
-            <input
-              type="checkbox"
-              checked={nonCurrentDateRequiresApproval}
-              onChange={(event) => setNonCurrentDateRequiresApproval(event.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-river"
-            />
-            <span>
-              <strong className="block">ขออนุมัติเมื่อวันที่รับ–จ่ายไม่ใช่วันปัจจุบัน</strong>
-              <span className="text-ink/60">ตรวจทั้งวันย้อนหลังและวันล่วงหน้าตามเวลาไทย</span>
-            </span>
-          </label>
-          <label className="mt-3 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink">
-            <input
-              type="checkbox"
-              checked={cashDeleteRequiresApproval}
-              onChange={(event) => setCashDeleteRequiresApproval(event.target.checked)}
-              className="mt-0.5 h-4 w-4 accent-river"
-            />
-            <span>
-              <strong className="block">ขออนุมัติก่อนลบรายการโยกเงินที่ปลายทางรับแล้ว</strong>
-              <span className="text-ink/60">ปิดเพื่อให้ผู้ดูแลสาขาต้นทางลบได้ทันที แม้ปลายทางยืนยันยอดแล้ว</span>
-            </span>
-          </label>
-          {(settings?.updatedByName || settings?.updatedByPhone) && (
-            <p className="mt-2 text-xs text-ink/55">
-              แก้ไขล่าสุดโดย {settings.updatedByName || "ไม่ทราบชื่อ"}
-              {settings.updatedByPhone ? ` · ${settings.updatedByPhone}` : ""}
-            </p>
-          )}
-        </form>
-
-        <form onSubmit={handleAddKeyword} className="rounded-md border border-black/10 p-4">
-          <div className="mb-3 flex flex-col gap-1">
-            <h3 className="font-bold text-ink">ข้อความที่ต้องขออนุมัติ</h3>
-            <p className="text-sm text-ink/60">ตัวอย่าง: เบิก, ค่าแรง, กับข้าว</p>
-          </div>
-          <div className="grid gap-3 xl:grid-cols-[1.5fr_150px_170px_1fr_auto] xl:items-end">
-            <label className="grid gap-1 text-sm font-semibold text-ink">
-              ข้อความ
-              <input
-                value={keyword}
-                onChange={(event) => setKeyword(event.target.value)}
-                placeholder="ข้อความที่ต้องตรวจ"
-                className="focus-ring h-11 rounded-md border border-black/10 px-3"
-              />
-            </label>
-            <label className="grid gap-1 text-sm font-semibold text-ink">
-              ใช้กับ
-              <select
-                value={keywordAppliesTo}
-                onChange={(event) => setKeywordAppliesTo(event.target.value as IncomeExpenseApprovalAppliesTo)}
-                className="focus-ring h-11 rounded-md border border-black/10 bg-white px-3"
-              >
-                <option value="expense">รายจ่าย</option>
-                <option value="income">รายรับ</option>
-                <option value="both">รับ-จ่าย</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-sm font-semibold text-ink">
-              วิธีตรวจ
-              <select
-                value={matchMode}
-                onChange={(event) => setMatchMode(event.target.value as IncomeExpenseApprovalMatchMode)}
-                className="focus-ring h-11 rounded-md border border-black/10 bg-white px-3"
-              >
-                <option value="contains">พบข้อความ</option>
-                <option value="exact">ตรงทั้งรายการ</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-sm font-semibold text-ink">
-              ยอดขั้นต่ำเฉพาะข้อความ
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={keywordMinAmount}
-                onChange={(event) => setKeywordMinAmount(event.target.value)}
-                placeholder="เว้นว่าง = ทุกยอด"
-                className="focus-ring h-11 rounded-md border border-black/10 px-3"
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={isAdding}
-              className="focus-ring flex h-11 items-center justify-center gap-2 rounded-md bg-leaf px-4 font-bold text-white disabled:opacity-50"
-            >
-              <Plus size={18} />
-              เพิ่ม
-            </button>
-          </div>
-        </form>
-
-        <section className="rounded-md border border-black/10 p-4">
-          <h3 className="mb-3 font-bold text-ink">รายการข้อความตรวจสอบ</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-black/10 text-left text-ink/60">
-                  <th className="py-2">ข้อความ</th>
-                  <th>ใช้กับ</th>
-                  <th>วิธีตรวจ</th>
-                  <th>ยอดขั้นต่ำ</th>
-                  <th>สถานะ</th>
-                  <th className="text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {keywords.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-5 text-center text-ink/50">
-                      ยังไม่มีข้อความตรวจสอบ
-                    </td>
-                  </tr>
-                ) : (
-                  keywords.map((item) => (
-                    <tr key={item.id} className={`border-b border-black/5 ${!item.isActive ? "opacity-50" : ""}`}>
-                      <td className="py-3 font-semibold text-ink">{item.keyword}</td>
-                      <td>{appliesToLabels[item.appliesTo]}</td>
-                      <td>{matchModeLabels[item.matchMode]}</td>
-                      <td>{item.approvalMinAmount != null ? formatCurrency(item.approvalMinAmount) : "ทุกยอด"}</td>
-                      <td>
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${item.isActive ? "bg-leaf/10 text-leaf" : "bg-ink/10 text-ink/60"}`}>
-                          {item.isActive ? "ใช้งาน" : "ปิดใช้งาน"}
-                        </span>
-                      </td>
-                      <td className="text-right">
-                        {item.isActive && (
-                          <button
-                            type="button"
-                            onClick={() => void handleDisableKeyword(item.id, item.keyword)}
-                            className="focus-ring inline-flex h-9 items-center gap-2 rounded-md bg-amber px-3 font-semibold text-white hover:bg-amber/90"
-                          >
-                            <Power size={16} />
-                            ปิด
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
+        <IncomeExpenseApprovalSettings settings={settings} keywords={keywords} canEdit={canEditSettings}
+          settingsLoading={settingsLoading} keywordsLoading={keywordsLoading} settingsError={settingsError} keywordsError={keywordsError}
+          save={saveSettings} add={addKeyword} disable={disableKeyword} retrySettings={retrySettings} retryKeywords={retryKeywords} onBusyChange={setConfigBusy} />
       </div>
       {inputDialog}
+      <AlertDialog open={confirmation !== null} title="ยืนยันดำเนินการ" description={confirmation ?? ""} confirmLabel="ยืนยัน" onConfirm={() => finishConfirmation(true)} onCancel={() => finishConfirmation(false)} />
     </ModalShell>
   );
 }

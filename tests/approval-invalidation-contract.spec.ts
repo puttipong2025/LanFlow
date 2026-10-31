@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { moneyFlowQueryKeys } from "../src/lib/money-flow/query-keys";
+import { invalidateBranchTransferDeletionViews } from "../src/lib/money-flow/invalidation";
 
 type Mutation = {
   mutationFn?: (variables: unknown) => Promise<unknown>;
@@ -36,6 +37,7 @@ function loadHook(path: string, hook: string, args: object = {}) {
       useQuery: () => ({}),
       useMutation: (options: Mutation) => { mutations.push(options); return {}; },
       useQueryClient: () => ({
+        cancelQueries: async () => {},
         invalidateQueries: ({ queryKey }: { queryKey: unknown[] }) => {
           invalidated.push(queryKey);
           return new Promise<void>((resolve) => releases.push(resolve));
@@ -64,6 +66,7 @@ function loadHook(path: string, hook: string, args: object = {}) {
     },
     "@/hooks/useStockProductApprovals": { STOCK_PRODUCT_APPROVAL_REQUESTS_KEY: "stockProductApprovalRequests" },
     "@/lib/money-flow/query-keys": { moneyFlowQueryKeys },
+    "@/lib/money-flow/invalidation": { invalidateBranchTransferDeletionViews },
     "@/lib/auth-fetch": {
       authFetch: async (url: string) => {
         requestedUrls.push(url);
@@ -102,6 +105,9 @@ function loadHook(path: string, hook: string, args: object = {}) {
     },
     "@/lib/income-expense/query-keys": { INCOME_EXPENSE_FEED_QUERY_KEY: "incomeExpenseFeed" },
     "@/lib/income-expense/approval-cache": {},
+    "@/lib/income-expense/branch-transfer-delete-approvals": {},
+    "@/lib/connectivity": { getConnectivitySnapshot: () => true },
+    "@/lib/income-expense/approval-settings-mutations": {},
     "@/lib/bangkok-date": {},
     "@/lib/supabase-pages": { readAllSupabaseRows: () => Promise.resolve([]) },
   };
@@ -413,7 +419,7 @@ test("income approval settings and decisions await every affected owner", async 
     loaded.invalidated.length = 0;
     let settled = false;
     const result = Promise.resolve(mutation.onSuccess({ status: "approved" })).then(() => { settled = true; });
-    await Promise.resolve();
+    await expect.poll(() => loaded.invalidated.length).toBeGreaterThan(0);
     expect(settled).toBe(false);
     if (index === 3) expect(loaded.invalidated).toContainEqual(["stock"]);
     loaded.release();

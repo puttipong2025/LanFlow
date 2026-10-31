@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { requireAuth } from "@/lib/server/auth";
+import { rpcErrorMessage, rpcErrorStatus } from "@/lib/server/time-payroll-rpc-errors";
 import { paymentAllocationSourceLabel } from "@/lib/time-tracking/payment-label";
 import {
   buildPayrollSlipDocument,
@@ -141,6 +142,12 @@ export async function GET(
       generatedAt: new Date().toISOString(),
     }));
   } catch (error) {
+    if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+      const status = rpcErrorStatus(error.message);
+      if (status === 401 || status === 403) {
+        return NextResponse.json({ error: rpcErrorMessage(error.message) }, { status });
+      }
+    }
     console.error("Failed to build time/payroll document:", error);
     return NextResponse.json({ error: "สร้างข้อมูลเอกสารไม่สำเร็จ" }, { status: 500 });
   }

@@ -125,7 +125,8 @@ test("cash deletion decision rejects malformed or mismatched acknowledgements", 
 test("cash deletion decision converts RPC throw into opaque JSON without retry", async () => {
   const target = cashDecision(null, true);
   const response = await target.post();
-  expect(response.status).toBe(500);
+  expect(response.status).toBe(503);
+  expect(response.headers.get("cache-control")).toContain("no-store");
   expect(response.headers.get("content-type")).toContain("application/json");
   expect(await response.text()).not.toContain("private decision failure");
   expect(target.calls()).toBe(1);

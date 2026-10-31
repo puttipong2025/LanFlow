@@ -157,24 +157,24 @@ test("approval history identifies create, update, and delete without duplicate s
   await expect(createRow.getByText("รออนุมัติ", { exact: true })).toBeVisible();
   await expect(createRow.getByRole("list")).toHaveCSS("list-style-type", "decimal");
   await expect(createRow.getByRole("listitem")).not.toHaveText(/^\s*1\./);
-  const createItemText = await createRow.locator("td").nth(1).innerText();
+  const createItemText = await createRow.innerText();
   expect(createItemText.indexOf("เพิ่มใหม่")).toBeLessThan(createItemText.indexOf("บิลขาย — 1 รายการ"));
 
   await expect(updateRow.getByText("แก้ไข", { exact: true })).toHaveClass(/bg-amber\/15/);
   await expect(updateRow.getByText("แก้ไข", { exact: true })).toHaveClass(/text-amber-800/);
   await expect(updateRow.getByText("อนุมัติแล้ว", { exact: true })).toBeVisible();
-  await expect(updateRow.locator("td").nth(7)).toHaveText("รายจ่าย");
+  await expect(updateRow.getByText("รายจ่าย", { exact: true })).toHaveText("รายจ่าย");
 
   await expect(deleteRow.getByText("ลบ", { exact: true })).toHaveClass(/bg-danger\/10/);
   await expect(deleteRow.getByText("ลบ", { exact: true })).toHaveClass(/text-danger/);
   await expect(deleteRow.getByText("ปฏิเสธแล้ว", { exact: true })).toBeVisible();
-  await expect(deleteRow.locator("td").nth(7)).toHaveText("รายรับ");
+  await expect(deleteRow.getByText("รายรับ", { exact: true })).toHaveText("รายรับ");
 
   await expect(cancelledRow.getByText("ลบ", { exact: true })).toBeVisible();
   await expect(cancelledRow.getByText("ยกเลิกแล้ว", { exact: true })).toBeVisible();
   await expect(cashDeleteRequestRow.getByText("ลบ", { exact: true })).toBeVisible();
   await expect(cashDeleteRequestRow.getByText("อนุมัติแล้ว", { exact: true })).toBeVisible();
-  const cashDeleteItemText = await cashDeleteRequestRow.locator("td").nth(1).innerText();
+  const cashDeleteItemText = await cashDeleteRequestRow.innerText();
   expect(cashDeleteItemText.indexOf("ลบ")).toBeLessThan(cashDeleteItemText.indexOf("CT-TEST-001"));
 
   expect(incomeExpenseProjections.length).toBeGreaterThanOrEqual(2);

@@ -991,6 +991,7 @@ export function IncomeExpenseModule({
 
       {approvalModalOpen && (
         <IncomeExpenseApprovalModal
+          canEditSettings={profile.role === "super_admin" && profile.isActive}
           initialLocationId={selectedLocation.id}
           initialRequestId={approvalRequestId}
           onClose={() => { setApprovalModalOpen(false); setApprovalRequestId(undefined); }}

@@ -131,6 +131,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
 
+      await approvalModal.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       // Fill "เบิก"
       const newKeywordInput = approvalModal.locator('input[placeholder="ข้อความที่ต้องตรวจ"]').first();
       await newKeywordInput.fill('เบิก');
@@ -139,7 +140,7 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       await approvalModal.locator('button:has-text("เพิ่ม")').last().click();
       
       // Wait for it to be saved
-      await expect(approvalModal.locator('table', { hasText: 'เบิก' }).first()).toBeVisible();
+      await expect(approvalModal.getByRole('article', { name: 'ข้อความ เบิก', exact: true }).filter({ has: page.getByRole('button', { name: 'ปิดใช้งาน', exact: true }) })).toBeVisible();
       await approvalModal.locator('button[aria-label="ปิด"]').first().click();
       await expect(approvalModal).toBeHidden();
     });
@@ -230,9 +231,9 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
 
       await approvalButton.click();
       const approvalModal = page.locator('.fixed.inset-0').last();
-      const requestRow = approvalModal.locator('tr', { hasText: marker }).first();
+      const requestRow = approvalModal.locator('tbody tr', { hasText: marker }).first();
       await expect(requestRow).toBeVisible();
-      await requestRow.locator('button[title="ปฏิเสธ"]').click();
+      await requestRow.getByRole('button', { name: 'ปฏิเสธ', exact: true }).click();
       const rejectDialog = page.getByRole('dialog', { name: 'ปฏิเสธรายการ' });
       await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('badge test cleanup');
       await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
@@ -269,41 +270,29 @@ test.describe('Income/Expense: Branch Transfer & Approval', () => {
       const approvalModal = page.locator('.fixed.inset-0').last();
       await expect(approvalModal).toBeVisible();
       await expect(approvalModal.locator('h3').first()).toHaveText('คำขออนุมัติรับ-จ่าย');
-      await expect(approvalModal.locator('h3').nth(1)).toHaveText('เกณฑ์ยอดเงินที่ต้องอนุมัติ');
-      const approvalTable = approvalModal.locator('section', { hasText: 'คำขออนุมัติรับ-จ่าย' }).locator('table');
-      await expect(approvalTable.locator('thead th')).toHaveText([
-        'จัดการ',
-        'รายการ',
-        'จำนวนเงิน',
-        'วันที่',
-        'สถานะ',
-        'ผู้ขอ',
-        'ผู้พิจารณา',
-        'ประเภท',
-        'สาขา',
-        'เหตุผล',
-      ]);
+      await expect(approvalModal.getByRole('heading', { name: 'การตั้งค่าทั้งระบบ' })).toBeVisible();
+      await expect(approvalModal.locator('table')).toHaveCount(1);
 
       // Approve the first one
-      const approveRow = approvalModal.locator('tr', { hasText: approveMarker }).first();
+      const approveRow = approvalModal.locator('tbody tr', { hasText: approveMarker }).first();
       await expect(approveRow).toBeVisible();
-      await expect(approveRow.locator('td').nth(5)).not.toHaveText('—');
-      await expect(approveRow.locator('td').nth(6)).toHaveText('—');
-      page.once("dialog", dialog => dialog.accept());
-      await approveRow.locator('button[title="อนุมัติ"]').click();
+      await expect(approveRow.locator('td').nth(4)).not.toHaveText('—');
+      await expect(approveRow.locator('td').nth(5)).toHaveText('—');
+      await approveRow.getByRole('button', { name: 'อนุมัติ', exact: true }).click();
+      await page.getByRole('alertdialog', { name: 'ยืนยันดำเนินการ' }).getByRole('button', { name: 'ยืนยัน', exact: true }).click();
 
       await expect(page.getByText("อนุมัติรายการแล้ว")).toBeVisible();
-      await expect(approveRow.locator('td').nth(6)).not.toHaveText('—');
+      await expect(approveRow.locator('td').nth(5)).not.toHaveText('—');
       // Reject the second one
-      const rejectRow = approvalModal.locator('tr', { hasText: rejectMarker }).first();
+      const rejectRow = approvalModal.locator('tbody tr', { hasText: rejectMarker }).first();
       await expect(rejectRow).toBeVisible();
-      await expect(rejectRow.locator('td').nth(6)).toHaveText('—');
-      await rejectRow.locator('button[title="ปฏิเสธ"]').first().click();
+      await expect(rejectRow.locator('td').nth(5)).toHaveText('—');
+      await rejectRow.getByRole('button', { name: 'ปฏิเสธ', exact: true }).click();
       const rejectDialog = page.getByRole('dialog', { name: 'ปฏิเสธรายการ' });
       await rejectDialog.getByLabel('เหตุผลที่ปฏิเสธ (ไม่บังคับ)').fill('ทดสอบปฏิเสธ');
       await rejectDialog.getByRole('button', { name: 'ยืนยัน' }).click();
       await expect(page.getByText("ปฏิเสธรายการแล้ว")).toBeVisible();
-      await expect(rejectRow.locator('td').nth(6)).not.toHaveText('—');
+      await expect(rejectRow.locator('td').nth(5)).not.toHaveText('—');
       await approvalModal.locator('button[aria-label="ปิด"]').first().click();
       await expect(approvalModal).toBeHidden();
 

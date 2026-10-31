@@ -3,6 +3,10 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/income-expense-approval-keyword-scope.spec.ts',
+    '**/income-expense-approval-cache-scrutiny.spec.ts',
+    '**/income-expense-approval-scrutiny.spec.ts',
+    '**/income-expense-approval-settings.spec.ts',
     '**/time-payroll-adjustment-errors.spec.ts',
     '**/time-payroll-route-failures.spec.ts',
     '**/rubber-device-numbering.spec.ts',

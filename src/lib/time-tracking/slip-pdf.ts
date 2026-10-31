@@ -7,6 +7,7 @@ import {
 } from "@/lib/pdf/searchable-a4";
 import {
   buildSlipDocumentDetailRows,
+  getSlipCalendarFirstWeekday,
   type SlipDocumentRow,
   type TimePayrollSlipDocument,
 } from "@/lib/time-tracking/slip-document";
@@ -86,24 +87,27 @@ function sectionTitle(state: ReceiptState, title: string) {
   state.y += height + 5;
 }
 
-function keyValueRows(state: ReceiptState, rows: Array<{ label: string; value: string }>) {
-  const labelWidth = 72;
+function keyValueRows(state: ReceiptState, rows: Array<{ label: string; value: string }>, financialSummary = false) {
+  const labelWidth = financialSummary ? 116 : 72;
   const valueWidth = CONTENT_WIDTH - labelWidth - 10;
   for (const row of rows) {
-    const labelHeight = textHeight(state.doc, row.label, labelWidth, { size: 7.7 });
+    const isNetPay = financialSummary && row === rows.at(-1);
+    const size = isNetPay ? 8.5 : 7.7;
+    const labelHeight = textHeight(state.doc, row.label, labelWidth, { size, bold: isNetPay });
     const valueHeight = textHeight(state.doc, row.value, valueWidth, {
       bold: true,
-      size: 7.7,
+      size,
       align: "right",
     });
     const rowHeight = Math.max(18, Math.max(labelHeight, valueHeight) + 7);
     text(state.doc, row.label, RECEIPT_MARGIN + 3, state.y + 3, labelWidth, {
       color: PDF_PALETTE.muted,
-      size: 7.7,
+      size,
+      bold: isNetPay,
     });
     text(state.doc, row.value, RECEIPT_MARGIN + labelWidth + 7, state.y + 3, valueWidth, {
       bold: true,
-      size: 7.7,
+      size,
       align: "right",
     });
     state.y += rowHeight;
@@ -125,7 +129,7 @@ function drawCalendar(state: ReceiptState) {
   });
   state.y += 14;
 
-  const firstWeekday = new Date(`${state.document.month}-01T00:00:00+07:00`).getDay();
+  const firstWeekday = getSlipCalendarFirstWeekday(state.document.month);
   const cells = [
     ...Array.from({ length: firstWeekday }, () => null),
     ...state.document.calendar,
@@ -164,15 +168,6 @@ function drawCalendar(state: ReceiptState) {
 
 function drawTransactionRows(state: ReceiptState, title: string, rows: SlipDocumentRow[]) {
   sectionTitle(state, title);
-  if (rows.length === 0) {
-    text(state.doc, "ไม่มีรายการ", RECEIPT_MARGIN + 3, state.y, CONTENT_WIDTH - 6, {
-      size: 7.5,
-      color: PDF_PALETTE.muted,
-    });
-    state.y += 18;
-    return;
-  }
-
   const amountWidth = 60;
   const labelWidth = CONTENT_WIDTH - amountWidth - 8;
   for (const row of rows) {
@@ -250,12 +245,20 @@ function renderDocument(doc: PdfDocument, document: TimePayrollSlipDocument) {
 
   sectionTitle(state, "ข้อมูลเอกสาร");
   keyValueRows(state, buildSlipDocumentDetailRows(document));
-  sectionTitle(state, document.kind === "withdrawal" ? "สรุปค่าแรงประกอบการเบิกเงิน" : "สรุปเงินเดือน");
-  keyValueRows(state, document.summary);
+  if (document.kind === "withdrawal") {
+    sectionTitle(state, "สรุปค่าแรงประกอบการเบิกเงิน");
+    keyValueRows(state, document.summary);
+  } else if (document.workSummary) {
+    sectionTitle(state, "ข้อมูลค่าแรง");
+    keyValueRows(state, document.workSummary);
+  }
   if (document.calendar.length > 0) drawCalendar(state);
   if (document.kind === "payroll") {
-    drawTransactionRows(state, "รายการหักเงิน", document.deductionRows);
-    drawTransactionRows(state, "รายการหนี้สินและเบิกเงิน", document.sourceRows);
+    if (document.sourceRows.length > 0) {
+      drawTransactionRows(state, "รายละเอียดหนี้และเงินเบิก", document.sourceRows);
+    }
+    sectionTitle(state, "สรุปยอด");
+    keyValueRows(state, document.summary, true);
   }
   drawNotice(state);
   drawSignatures(state);

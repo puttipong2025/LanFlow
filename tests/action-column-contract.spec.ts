@@ -10,7 +10,7 @@ const tables = [
   "src/components/reports/ReportsModule.tsx",
   "src/components/MoneyTransferModule.tsx",
   "src/components/income-expense/IncomeExpenseModule.tsx",
-  "src/components/income-expense/IncomeExpenseApprovalModal.tsx",
+  "src/components/income-expense/IncomeExpenseApprovalTable.tsx",
   "src/components/rubber-bills/RubberBillsTable.tsx",
   "src/components/rubber-exports/RubberExportTable.tsx",
   "src/components/rubber-bills/WeighingQueueModal.tsx",

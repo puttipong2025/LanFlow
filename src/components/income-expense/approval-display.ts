@@ -25,6 +25,10 @@ export function parseOptionalAmount(value: string) {
   return Number.isFinite(amount) ? amount : Number.NaN;
 }
 
+export function formatApprovalAmount(value: number) {
+  return new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
 export function formatDateTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;

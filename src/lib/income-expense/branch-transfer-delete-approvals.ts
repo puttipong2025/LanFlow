@@ -1,5 +1,6 @@
 import { authFetch } from "@/lib/auth-fetch";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { readApprovalDecisionResponse } from "@/lib/income-expense/approval-decision-response";
 import type { BranchTransferDeleteRequest } from "@/types";
 
 export async function loadBranchTransferDeleteRequests(supabase: any, locationId?: string) {
@@ -63,7 +64,5 @@ export async function decideBranchTransferDeleteRequest(input: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ decision: input.decision, comment: input.comment }),
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.errorMessage || data.error || "ดำเนินการคำขอลบไม่สำเร็จ");
-  return data;
+  return readApprovalDecisionResponse(response, input.id, input.decision);
 }

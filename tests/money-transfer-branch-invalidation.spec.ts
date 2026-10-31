@@ -171,19 +171,43 @@ test("branch receipt and approved deletion invalidate every affected money-flow 
 });
 
 test("approval modal guards each request synchronously while independent requests remain available", async () => {
-  const source = await readFile(
-    "src/components/income-expense/IncomeExpenseApprovalModal.tsx",
-    "utf8",
+  const calls: string[] = [];
+  let release!: () => void;
+  let completed = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const Cards = () => null;
+  const module = loadSourceModule<typeof import("../src/components/income-expense/IncomeExpenseApprovalModal")>(
+    "src/components/income-expense/IncomeExpenseApprovalModal.tsx", {
+      react: { useEffect: () => {}, useMemo: (fn: () => unknown) => fn(), useRef: (current: unknown) => ({ current }), useState: (value: unknown) => [value, () => {}] },
+      sonner: { toast: { success: () => { completed++; }, error: () => {} } },
+      "@/hooks/useInputDialog": { useInputDialog: () => ({ requestInput: async () => "", inputDialog: null }) },
+      "@/hooks/useLocations": { useLocations: () => ({ locations: [] }) },
+      "@/hooks/useIncomeExpenseApprovals": { useIncomeExpenseApprovals: () => ({
+        requests: [{ id: "a", locationId: "branch" }, { id: "b", locationId: "branch" }], cashDeleteRequests: [], branchDeleteRequests: [],
+        decideRequest: ({ id }: { id: string }) => { calls.push(id); return held; },
+      }) },
+      "@/components/shared/ModalShell": { ModalShell: () => null },
+      "@/components/shared/AlertDialog": { AlertDialog: () => null },
+      "./IncomeExpenseApprovalTable": { IncomeExpenseApprovalTable: Cards },
+      "./IncomeExpenseApprovalSettings": { IncomeExpenseApprovalSettings: () => null },
+    },
   );
-
-  expect(source).toContain("const decidingRef = useRef(new Set<string>());");
-  expect(source).toContain("if (decidingRef.current.has(id)) return;");
-  expect(source).toContain("decidingRef.current.add(id);");
-  expect(source).toContain("decidingRef.current.delete(id);");
-  expect(source.match(/await runDecision\(/g)).toHaveLength(4);
-  expect(source).toContain("closeDisabled={decidingIds.size > 0}");
-  expect(source).toContain("isDeciding={decidingIds.has(request.id)}");
-  expect(source.match(/disabled={decidingIds.has\(request.id\)}/g)).toHaveLength(4);
+  type Element = { type?: unknown; props?: { children?: unknown; onDecision?: (id: string, decision: "rejected") => void } };
+  function find(node: unknown): Element | undefined {
+    if (Array.isArray(node)) return node.map(find).find(Boolean);
+    if (!node || typeof node !== "object") return undefined;
+    const element = node as Element;
+    return element.type === Cards ? element : find(element.props?.children);
+  }
+  const card = find(module.IncomeExpenseApprovalModal({ initialLocationId: "branch", canEditSettings: false, onClose: () => {} }));
+  expect(card).toBeTruthy();
+  const decide = card!.props!.onDecision!;
+  decide("a", "rejected"); decide("a", "rejected"); decide("b", "rejected");
+  await expect.poll(() => calls).toEqual(["a", "b"]);
+  release();
+  await expect.poll(() => completed).toBe(2);
+  decide("a", "rejected");
+  await expect.poll(() => calls).toEqual(["a", "b", "a"]);
 });
 
 test("branch receipt route rejects a malformed successful RPC result", async () => {

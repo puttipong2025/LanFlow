@@ -12,7 +12,6 @@ const grandfathered = new Map(Object.entries({
   "src/components/acid-stock/AcidStockModule.tsx": 992,
   "src/components/cash-counts/CashCountModule.tsx": 570,
   "src/components/dashboard/Dashboard.tsx": 809,
-  "src/components/income-expense/IncomeExpenseApprovalModal.tsx": 650,
   "src/components/income-expense/IncomeExpenseModal.tsx": 583,
   "src/components/income-expense/IncomeExpenseModule.tsx": 1015,
   "src/components/lanflow/TelegramBadgeConfigModal.tsx": 684,
@@ -22,7 +21,6 @@ const grandfathered = new Map(Object.entries({
   "src/components/rubber-evidence/RubberEvidenceModule.tsx": 539,
   "src/components/rubber-exports/RubberExportDetailModal.tsx": 514,
   "src/components/rubber-exports/RubberExportsModule.tsx": 679,
-  "src/hooks/useIncomeExpenseApprovals.ts": 508,
   "src/types/index.ts": 610,
 }));
 

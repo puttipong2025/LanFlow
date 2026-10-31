@@ -1,6 +1,7 @@
 import { bangkokDateString } from "@/lib/bangkok-date";
 
 const CACHE_KEY = "lanflow:income-expense-approval-settings:v1";
+const invalidatedStorage = new WeakSet<Storage>();
 
 export type CachedIncomeExpenseApprovalSettings = {
   nonCurrentDateRequiresApproval: boolean;
@@ -8,7 +9,8 @@ export type CachedIncomeExpenseApprovalSettings = {
 };
 
 function browserStorage() {
-  return typeof window === "undefined" ? null : window.localStorage;
+  try { return typeof window === "undefined" ? null : window.localStorage; }
+  catch { return null; }
 }
 
 export function saveIncomeExpenseApprovalSettingsCache(
@@ -17,16 +19,23 @@ export function saveIncomeExpenseApprovalSettingsCache(
   storage = browserStorage(),
 ) {
   if (!storage) return;
-  storage.setItem(CACHE_KEY, JSON.stringify({
-    nonCurrentDateRequiresApproval,
-    cachedAt: cachedAt.toISOString(),
-  } satisfies CachedIncomeExpenseApprovalSettings));
+  try {
+    storage.setItem(CACHE_KEY, JSON.stringify({
+      nonCurrentDateRequiresApproval,
+      cachedAt: cachedAt.toISOString(),
+    } satisfies CachedIncomeExpenseApprovalSettings));
+    invalidatedStorage.delete(storage);
+  } catch {
+    // Optional cache failure must not turn an acknowledged server write into failure.
+    invalidatedStorage.add(storage);
+    try { storage.removeItem(CACHE_KEY); } catch { /* Reads remain blocked for this storage instance. */ }
+  }
 }
 
 export function loadIncomeExpenseApprovalSettingsCache(
   storage = browserStorage(),
 ): CachedIncomeExpenseApprovalSettings | null {
-  if (!storage) return null;
+  if (!storage || invalidatedStorage.has(storage)) return null;
   try {
     const parsed = JSON.parse(storage.getItem(CACHE_KEY) ?? "null") as Partial<CachedIncomeExpenseApprovalSettings> | null;
     return parsed

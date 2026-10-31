@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 import { createTimePayrollSlipPdfFile } from "@/lib/time-tracking/slip-pdf";
 import {
   buildSlipDocumentDetailRows,
+  getSlipCalendarFirstWeekday,
   type SlipDocumentRow,
   type TimePayrollSlipDocument,
 } from "@/lib/time-tracking/slip-document";
@@ -18,8 +19,6 @@ import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 const moneyFormatter = new Intl.NumberFormat("th-TH", { maximumFractionDigits: 2 });
 
 function DocumentRows({ rows }: { rows: SlipDocumentRow[] }) {
-  if (rows.length === 0) return <p className="text-sm text-ink/50">ไม่มีรายการ</p>;
-
   return (
     <div className="divide-y divide-black/10 rounded-md border border-black/10">
       {rows.map((row) => (
@@ -27,12 +26,35 @@ function DocumentRows({ rows }: { rows: SlipDocumentRow[] }) {
           <div className="min-w-0">
             <p className="font-semibold text-ink">{row.label}</p>
             {row.dateLabel && <p className="text-[10px] tabular-nums text-ink/55">{row.dateLabel}</p>}
-            {row.description && <p className="text-pretty text-xs text-ink/60">{row.description}</p>}
+            {row.description && <p className="whitespace-pre-wrap break-words text-pretty text-xs text-ink/60">{row.description}</p>}
           </div>
           <p className="shrink-0 text-right font-semibold tabular-nums text-ink">{moneyFormatter.format(row.amount)} บาท</p>
         </div>
       ))}
     </div>
+  );
+}
+
+function DocumentSummary({ title, rows, emphasizeLast = false }: {
+  title: string;
+  rows: TimePayrollSlipDocument["summary"];
+  emphasizeLast?: boolean;
+}) {
+  return (
+    <section className="mt-4">
+      <h4 className="text-balance rounded-md bg-mint/55 px-2 py-1.5 text-sm font-bold">{title}</h4>
+      <dl className="divide-y divide-black/10">
+        {rows.map((item, index) => (
+          <div key={item.label} className={cn(
+            "flex items-start justify-between gap-2 py-2 text-xs",
+            emphasizeLast && index === rows.length - 1 && "border-t-2 border-ink font-bold text-leaf",
+          )}>
+            <dt className="min-w-0 text-pretty">{item.label}</dt>
+            <dd className="shrink-0 font-bold tabular-nums">{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -154,19 +176,12 @@ export function SlipPreviewModal({
                 </dl>
               </section>
 
-              <section className="mt-4">
-                <h4 className="rounded-md bg-mint/55 px-2 py-1.5 text-sm font-bold">
-                  {document.kind === "withdrawal" ? "สรุปค่าแรงประกอบการเบิกเงิน" : "สรุปเงินเดือน"}
-                </h4>
-                <dl className="divide-y divide-black/10">
-                  {document.summary.map((item) => (
-                    <div key={item.label} className="flex items-center justify-between gap-2 py-2 text-xs">
-                      <dt className="text-ink/65">{item.label}</dt>
-                      <dd className="shrink-0 font-bold tabular-nums">{item.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
+              {document.kind === "withdrawal" && (
+                <DocumentSummary title="สรุปค่าแรงประกอบการเบิกเงิน" rows={document.summary} />
+              )}
+              {document.kind === "payroll" && document.workSummary && (
+                <DocumentSummary title="ข้อมูลค่าแรง" rows={document.workSummary} />
+              )}
 
               {document.calendar.length > 0 && (
                 <section className="mt-4">
@@ -175,7 +190,7 @@ export function SlipPreviewModal({
                     {['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'].map((day) => <span key={day}>{day}</span>)}
                   </div>
                   <div className="mt-1 grid grid-cols-7 gap-0.5">
-                    {Array.from({ length: new Date(`${document.month}-01T00:00:00+07:00`).getDay() }, (_, index) => (
+                    {Array.from({ length: getSlipCalendarFirstWeekday(document.month) }, (_, index) => (
                       <span key={`blank-${index}`} aria-hidden="true" />
                     ))}
                     {document.calendar.map((day) => (
@@ -198,16 +213,15 @@ export function SlipPreviewModal({
               )}
 
               {document.kind === "payroll" && (
-                <div className="mt-4 grid gap-4">
-                  <section>
-                    <h4 className="mb-2 rounded-md bg-mint/55 px-2 py-1.5 text-sm font-bold">รายการหักเงิน</h4>
-                    <DocumentRows rows={document.deductionRows} />
-                  </section>
-                  <section>
-                    <h4 className="mb-2 rounded-md bg-mint/55 px-2 py-1.5 text-sm font-bold">รายการหนี้สินและเบิกเงิน</h4>
-                    <DocumentRows rows={document.sourceRows} />
-                  </section>
-                </div>
+                <>
+                  {document.sourceRows.length > 0 && (
+                    <section className="mt-4">
+                      <h4 className="text-balance mb-2 rounded-md bg-mint/55 px-2 py-1.5 text-sm font-bold">รายละเอียดหนี้และเงินเบิก</h4>
+                      <DocumentRows rows={document.sourceRows} />
+                    </section>
+                  )}
+                  <DocumentSummary title="สรุปยอด" rows={document.summary} emphasizeLast />
+                </>
               )}
 
               <p className="mt-4 text-pretty rounded-md bg-mint/40 p-2 text-xs text-ink/65">{document.notice}</p>

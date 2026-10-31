@@ -37,8 +37,8 @@ export type TimePayrollSlipDocument = {
   paymentLabel: string | null;
   adminComment: string | null;
   summary: Array<{ label: string; value: string }>;
+  workSummary?: Array<{ label: string; value: string }>;
   calendar: SlipCalendarDay[];
-  deductionRows: SlipDocumentRow[];
   sourceRows: SlipDocumentRow[];
   notice: string;
   filename: string;
@@ -71,12 +71,14 @@ type SnapshotTransaction = {
   id: string;
   type: string;
   status: string;
-  amount: number;
+  amount: number | string;
   description?: string | null;
   effective_date?: string | null;
   applied_month?: string | null;
   source_effective_date?: string | null;
   created_at?: string | null;
+  carried_forward?: boolean;
+  cancelled_at?: string | null;
 };
 
 type AttendanceSnapshot = {
@@ -115,6 +117,7 @@ type PayrollSource = ApprovalFields & {
     transactions?: SnapshotTransaction[] | null;
     attendance?: AttendanceSnapshot | null;
     outstandingAdjustments?: OutstandingAdjustmentsSnapshot | null;
+    outstandingSources?: SnapshotTransaction[] | null;
   } | null;
 };
 
@@ -247,12 +250,22 @@ function filenameDate(date: string) {
   return date.slice(0, 10).replaceAll("-", "");
 }
 
-function transactionLabel(type: string) {
-  if (type === "DEBT") return "สร้างหนี้สิน";
-  if (type === "WITHDRAWAL") return "เบิกเงิน";
-  if (type === "DEBT_DEDUCTION") return "หักหนี้อัตโนมัติ";
-  if (type === "WITHDRAWAL_DEDUCTION") return "หักยอดเบิกอัตโนมัติ";
-  return "รายการหักเงิน";
+function readTransactionSnapshot(value: unknown): SnapshotTransaction[] | null {
+  if (!Array.isArray(value) || !value.every((row) => (
+    row && typeof row === "object"
+    && typeof row.id === "string" && typeof row.type === "string" && typeof row.status === "string"
+    && (typeof row.amount === "number" || (typeof row.amount === "string" && row.amount.trim() !== ""))
+    && Number.isFinite(Number(row.amount)) && Number(row.amount) >= 0
+    && ["description", "effective_date", "source_effective_date", "applied_month", "created_at", "cancelled_at"]
+      .every((key) => row[key] == null || typeof row[key] === "string")
+    && (row.carried_forward == null || typeof row.carried_forward === "boolean")
+  ))) return null;
+  return value;
+}
+
+export function getSlipCalendarFirstWeekday(month: string) {
+  // This is a calendar date, not an instant to convert to the device timezone.
+  return new Date(`${month}-01T00:00:00Z`).getUTCDay();
 }
 
 function transactionRow(transaction: SnapshotTransaction): SlipDocumentRow {
@@ -264,7 +277,9 @@ function transactionRow(transaction: SnapshotTransaction): SlipDocumentRow {
   return {
     id: transaction.id,
     dateLabel: formatTransactionDate(date),
-    label: transactionLabel(transaction.type),
+    label: transaction.carried_forward
+      ? transaction.type === "DEBT" ? "หนี้ยกมา" : "เงินเบิกยกมา"
+      : transaction.type === "DEBT" ? "หนี้" : "เบิกเงิน",
     description: transaction.description || null,
     amount: Number(transaction.amount) || 0,
   };
@@ -329,7 +344,6 @@ export function buildWithdrawalSlipDocument({
       { label: "ยอดเบิกที่ยังหักไม่หมด", value: formatMoney(outstanding) },
     ],
     calendar: attendance ? calendarForAttendance(attendance) : calendarForMonth(month, segments),
-    deductionRows: [],
     sourceRows: [],
     notice: source.status === "PENDING"
       ? "ประมาณการหากอนุมัติ โดยคำนวณจากข้อมูลปัจจุบันในระบบ เอกสารนี้รับรองสถานะคำขอ ไม่ใช่หลักฐานการรับเงิน"
@@ -347,8 +361,6 @@ export function buildPayrollSlipDocument({
   employeeName: string;
   generatedAt: string;
 }): TimePayrollSlipDocument {
-  const transactions = source.slip_data?.transactions || [];
-  const approved = transactions.filter((transaction) => transaction.status === "APPROVED");
   const statusLabel = statusLabels[source.status];
   const attendance = source.slip_data?.attendance;
   const outstanding = source.slip_data?.outstandingAdjustments ?? {
@@ -356,11 +368,18 @@ export function buildPayrollSlipDocument({
     deductedThisSlip: source.total_deductions,
     remainingAfterDeductions: 0,
   };
-  const deductionRows: SlipDocumentRow[] = [
-    { id: "outstanding-before", dateLabel: null, label: "ยอดหนี้/เบิกก่อนหัก", description: null, amount: Number(outstanding.beforeDeductions) || 0 },
-    { id: "outstanding-deducted", dateLabel: null, label: "หักหนี้/เบิกในสลิปนี้", description: null, amount: Number(outstanding.deductedThisSlip) || 0 },
-    { id: "outstanding-remaining", dateLabel: null, label: "ยอดหนี้/เบิกคงค้าง", description: null, amount: Number(outstanding.remainingAfterDeductions) || 0 },
-  ];
+  // New snapshots include each source's balance before this month's deductions,
+  // including carried balances. Legacy snapshots retain their saved source rows.
+  const sources = readTransactionSnapshot(source.slip_data?.outstandingSources)
+    ?? readTransactionSnapshot(source.slip_data?.transactions) ?? [];
+  const sourceRows = sources
+    .filter((transaction) => transaction.status === "APPROVED"
+      && (transaction.type === "DEBT" || transaction.type === "WITHDRAWAL")
+      && (transaction.cancelled_at == null
+        || new Date(transaction.cancelled_at).getTime() > new Date(source.created_at).getTime()))
+    .map(transactionRow);
+  const hasAdjustments = sourceRows.length > 0 || Number(outstanding.beforeDeductions) > 0
+    || Number(source.total_deductions) > 0 || Number(outstanding.remainingAfterDeductions) > 0;
 
   return {
     kind: "payroll",
@@ -380,7 +399,7 @@ export function buildPayrollSlipDocument({
     approvedAt: source.approved_at || null,
     paymentLabel: source.payment_label || null,
     adminComment: source.admin_comment || null,
-    summary: [
+    workSummary: [
       ...(attendance ? [
         { label: "วันเต็ม", value: formatDays(attendance.summary.fullDays) },
         { label: "ครึ่งวัน", value: formatDays(attendance.summary.halfDays) },
@@ -388,19 +407,19 @@ export function buildPayrollSlipDocument({
       ] : []),
       { label: "จำนวนวันทำงานรวม", value: formatDays(source.total_days) },
       { label: "ค่าแรงต่อวัน", value: formatDailyWageMoney(source.daily_wage) },
+    ],
+    summary: [
       { label: "ค่าแรงรวม", value: formatPayrollMoneyValue(source.gross_pay) },
-      { label: "ยอดหักรวม", value: formatPayrollMoneyValue(source.total_deductions) },
-      { label: "ยอดหนี้/เบิกคงค้าง", value: formatPayrollMoneyValue(outstanding.remainingAfterDeductions) },
-      { label: "ยอดสุทธิ", value: formatPayrollMoneyValue(source.net_pay) },
+      ...(hasAdjustments ? [{ label: "หนี้และเงินเบิกก่อนหักรวม", value: formatPayrollMoneyValue(outstanding.beforeDeductions) }] : []),
+      { label: "หักรวมเดือนนี้", value: formatPayrollMoneyValue(source.total_deductions) },
+      ...(hasAdjustments ? [{ label: "ยอดค้างยกไปเดือนถัดไป", value: formatPayrollMoneyValue(outstanding.remainingAfterDeductions) }] : []),
+      { label: "เงินเดือนสุทธิที่ต้องจ่าย", value: formatPayrollMoneyValue(source.net_pay) },
     ],
     calendar: attendance ? calendarForAttendance(attendance) : calendarForMonth(source.month, source.slip_data?.segments),
-    deductionRows,
-    sourceRows: approved
-      .filter((transaction) => transaction.type === "DEBT" || transaction.type === "WITHDRAWAL")
-      .map(transactionRow),
+    sourceRows,
     notice: source.status === "APPROVED"
-      ? "เอกสารนี้รับรองข้อมูลสลิปเงินเดือนที่อนุมัติแล้วตามข้อมูลในระบบ"
-      : "เอกสารนี้เป็นสลิปเงินเดือนที่อยู่ระหว่างรออนุมัติ",
+      ? "เอกสารนี้รับรองข้อมูลสลิปเงินเดือนที่อนุมัติแล้วตามข้อมูลในระบบ ไม่ใช่หลักฐานการรับเงินจริง"
+      : "เอกสารนี้เป็นสลิปเงินเดือนที่อยู่ระหว่างรออนุมัติ ไม่ใช่หลักฐานการรับเงินจริง",
     filename: `LanFlow-เงินเดือน-${source.month}-${source.id.slice(0, 8)}-${statusLabel}-80mm.pdf`,
   };
 }
