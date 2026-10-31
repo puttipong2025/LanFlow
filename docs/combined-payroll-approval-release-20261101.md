@@ -37,3 +37,10 @@ Before/after data invariants match: Auth users 54, profiles 54, payroll slips 57
 The CLI completed migration application with a warning that its optional pg-delta catalog cache could not find a temporary CA file. Direct catalog/data checks, subsequent CLI dry-run and remote lint succeeded.
 
 Application commit is ready to push to `main`; Vercel's Git integration will deploy the matching code. Application deployment status and public HTTP smoke will be checked after push.
+
+## Application push and CI fixture follow-up
+
+- Commit `a0c3908358724f9a6603f81f03e0675f3c4b5554` was pushed to `main`; Vercel deployment `J1Rp2EBeEJQ4bKXWSikw74zPwLPj` completed successfully. Production smoke returned `/` 307, `/login` 200, `/api/auth/me` 401 and `/api/lanflow` 401.
+- GitHub's fresh-database gate exposed a test fixture assumption: seed truncates profiles with CASCADE and removes the settings singleton, while the new permissions test only updated that missing row. Seven assertions failed. Keyword permissions and all other DB files passed.
+- Deterministic red reproduction: delete the Local singleton only inside the test's rollback transaction; the same assertions 1, 10–11 and 13–16 fail, while the unchanged test on an existing singleton passes. The only changed input is row presence, ruling out changed Cloud RLS, SMS session access and database-version differences. Source trace follows `seed.sql` profile truncation → settings profile foreign key → empty settings table → zero-row test UPDATE.
+- Fix: initialize the singleton inside the permissions test, matching the existing background-test fixture. This is test-only and does not alter migrations, application behavior or Cloud data. Both fresh-empty (rollback reproduction) and existing-row verification passed all 26 assertions. The original application commit's GitHub web gate passed; a test-only follow-up will rerun the database gate.

@@ -6,6 +6,8 @@ insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_
  ('73000000-0000-4000-8000-000000000003','0897300003','Settings Admin','admin',true,false);
 create temp table settings_super as select id,gen_random_uuid() as session_id from public.profiles where role='super_admin' and is_active limit 1;
 insert into auth.sessions(id,user_id,created_at,updated_at) select session_id,id,clock_timestamp(),clock_timestamp() from settings_super;
+-- Fresh seed truncation can remove the singleton via its profiles foreign key.
+insert into public.income_expense_approval_settings(id) values(true) on conflict(id) do nothing;
 update public.income_expense_approval_settings set approval_min_amount=500, applies_to='both', non_current_date_requires_approval=false, cash_transfer_delete_requires_approval=true where id;
 insert into public.income_expense_approval_keywords(id,keyword,is_active) values
  ('73000000-0000-4000-8000-000000000011','permission active',true),
