@@ -116,3 +116,7 @@ for (const [name, body] of [
 test("the client rejects HTTP 200 HTML instead of treating it as an empty policy", async () => {
   await expect(policyQuery(new Response("<html>unavailable</html>"))).rejects.toThrow("รูปแบบ");
 });
+
+test("a null failed policy response uses the public load error", async () => {
+  await expect(policyQuery(Response.json(null, { status: 503 }))).rejects.toThrow("โหลดกติกาอนุมัติไม่สำเร็จ");
+});

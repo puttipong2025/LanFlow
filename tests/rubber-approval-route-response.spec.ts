@@ -157,6 +157,11 @@ function sequencedRouteDependencies(dataByCall: unknown[]) {
   };
   return {
     "@/lib/server/auth": {
+      requireRole: async () => ({
+        ok: true,
+        auth: { role: "super_admin" },
+        supabase,
+      }),
       requireSystemManager: async () => ({
         ok: true,
         auth: { role: "super_admin" },
@@ -1484,6 +1489,23 @@ test("effective rubber approval settings GET accepts PostgreSQL-canonical UUID c
 
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual(payload);
+});
+
+test("date rule PUT requires exact super admin before reading or saving settings", async () => {
+  let requestedRoles: string[] = [];
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/approval-settings/route")>(
+    "src/app/api/lanflow/rubber-bills/approval-settings/route.ts", {
+      "@/lib/server/auth": {
+        requireRole: async (_request: unknown, roles: string[]) => {
+          requestedRoles = roles;
+          return { ok: false, response: Response.json({ error: "ไม่มีสิทธิ์เข้าถึง" }, { status: 403 }) };
+        },
+      },
+    },
+  );
+  const response = await route.PUT({} as never);
+  expect(requestedRoles).toEqual(["super_admin"]);
+  expect(response.status).toBe(403);
 });
 
 test("effective rubber approval settings PUT rejects a malformed post-save response", async () => {

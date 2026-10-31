@@ -26617,8 +26617,11 @@ CREATE OR REPLACE FUNCTION "public"."save_rubber_bill_date_approval_setting"("p_
     SET "search_path" TO ''
     AS $$
 begin
-  if not private.is_active_user() or not private.can_access_super_admin_features() then
-    raise exception 'FORBIDDEN: ไม่มีสิทธิ์ตั้งค่าการอนุมัติบิลยาง';
+  if not private.is_active_user() or not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.role = 'super_admin' and p.is_active = true
+  ) then
+    raise exception 'FORBIDDEN: เฉพาะ super admin เท่านั้นที่ตั้งกฎวันที่บิลยางได้';
   end if;
   if p_non_current_date_requires_approval is null then
     raise exception 'RUBBER_GROUP_INVALID: ต้องระบุกฎวันที่บิล';

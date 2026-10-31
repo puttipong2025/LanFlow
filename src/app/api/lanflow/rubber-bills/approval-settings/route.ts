@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { requireAuth, requireSystemManager } from "@/lib/server/auth";
+import { requireAuth, requireRole } from "@/lib/server/auth";
 import {
   isUuid,
   isJsonObject,
@@ -17,68 +17,83 @@ function locationIdFrom(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const authCheck = await requireAuth(request);
-  if (!authCheck.ok) return managementAuthFailure(authCheck.response);
+  try {
+    const authCheck = await requireAuth(request);
+    if (!authCheck.ok) return managementAuthFailure(authCheck.response);
 
-  const locationId = locationIdFrom(request);
-  if (!locationId) {
-    return NextResponse.json({ errorMessage: "ต้องระบุสาขา" }, { status: 400 });
+    const locationId = locationIdFrom(request);
+    if (!locationId) {
+      return NextResponse.json({ errorMessage: "ต้องระบุสาขา" }, { status: 400 });
+    }
+    const { data, error } = await authCheck.supabase.rpc(
+      "get_effective_rubber_approval_settings",
+      { p_location_id: locationId },
+    );
+    if (error) return managementErrorResponse(error, "โหลดการตั้งค่าไม่สำเร็จ");
+    if (!isEffectiveRubberApprovalSettings(data, locationId)) {
+      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+    }
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ errorMessage: "ระบบตั้งค่าบิลยางไม่พร้อมใช้งาน กรุณาลองอีกครั้ง" }, {
+      status: 503, headers: { "Cache-Control": "private, no-store" },
+    });
   }
-  const { data, error } = await authCheck.supabase.rpc(
-    "get_effective_rubber_approval_settings",
-    { p_location_id: locationId },
-  );
-  if (error) return managementErrorResponse(error, "โหลดการตั้งค่าไม่สำเร็จ");
-  if (!isEffectiveRubberApprovalSettings(data, locationId)) {
-    return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
-  }
-  return NextResponse.json(data);
 }
 
 export async function PUT(request: NextRequest) {
-  const authCheck = await requireSystemManager(request);
-  if (!authCheck.ok) return managementAuthFailure(authCheck.response);
-
-  const locationId = locationIdFrom(request);
-  if (!locationId) {
-    return NextResponse.json({ errorMessage: "ต้องระบุสาขา" }, { status: 400 });
-  }
-  let body: unknown;
   try {
-    body = await request.json();
+    const authCheck = await requireRole(request, ["super_admin"]);
+    if (!authCheck.ok) return managementAuthFailure(authCheck.response);
+
+    const locationId = locationIdFrom(request);
+    if (!locationId) {
+      return NextResponse.json({ errorMessage: "ต้องระบุสาขา" }, { status: 400 });
+    }
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
+    }
+    if (!isJsonObject(body) || typeof body.nonCurrentDateRequiresApproval !== "boolean") {
+      return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
+    }
+    const current = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
+      p_location_id: locationId,
+    });
+    if (current.error) {
+      return managementErrorResponse(current.error, "โหลดการตั้งค่าก่อนบันทึกไม่สำเร็จ");
+    }
+    if (!isEffectiveRubberApprovalSettings(current.data, locationId)) {
+      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+    }
+
+    const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
+      p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
+    });
+    if (saved.error) return managementErrorResponse(saved.error, "บันทึกการตั้งค่าไม่สำเร็จ");
+    if (saved.data !== body.nonCurrentDateRequiresApproval) {
+      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+    }
+
+    const effective = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
+      p_location_id: locationId,
+    });
+    if (effective.error) {
+      return managementErrorResponse(effective.error, "โหลดการตั้งค่าหลังบันทึกไม่สำเร็จ");
+    }
+    if (!isEffectiveRubberApprovalSettings(
+      effective.data,
+      locationId,
+      body.nonCurrentDateRequiresApproval,
+    )) {
+      return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
+    }
+    return NextResponse.json(effective.data);
   } catch {
-    return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
+    return NextResponse.json({ errorMessage: "ระบบตั้งค่าบิลยางไม่พร้อมใช้งาน กรุณาลองอีกครั้ง" }, {
+      status: 503, headers: { "Cache-Control": "private, no-store" },
+    });
   }
-  if (!isJsonObject(body) || typeof body.nonCurrentDateRequiresApproval !== "boolean") {
-    return NextResponse.json({ errorMessage: "ต้องระบุกฎวันที่บิล" }, { status: 400 });
-  }
-  const current = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
-    p_location_id: locationId,
-  });
-  if (current.error) {
-    return managementErrorResponse(current.error, "โหลดการตั้งค่าก่อนบันทึกไม่สำเร็จ");
-  }
-  if (!isEffectiveRubberApprovalSettings(current.data, locationId)) {
-    return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
-  }
-
-  const saved = await authCheck.supabase.rpc("save_rubber_bill_date_approval_setting", {
-    p_non_current_date_requires_approval: body.nonCurrentDateRequiresApproval,
-  });
-  if (saved.error) return managementErrorResponse(saved.error, "บันทึกการตั้งค่าไม่สำเร็จ");
-
-  const effective = await authCheck.supabase.rpc("get_effective_rubber_approval_settings", {
-    p_location_id: locationId,
-  });
-  if (effective.error) {
-    return managementErrorResponse(effective.error, "โหลดการตั้งค่าหลังบันทึกไม่สำเร็จ");
-  }
-  if (!isEffectiveRubberApprovalSettings(
-    effective.data,
-    locationId,
-    body.nonCurrentDateRequiresApproval,
-  )) {
-    return NextResponse.json({ errorMessage: MALFORMED_SETTINGS_MESSAGE }, { status: 500 });
-  }
-  return NextResponse.json(effective.data);
 }

@@ -4,6 +4,7 @@ import { assertOfflineRubberBillPriceAllowed } from "../../src/lib/rubber-bills/
 import { bangkokDateString } from "../../src/lib/bangkok-date";
 import { selectedAppLocationId } from "../helpers/select-app-location";
 import { createTransferLocationFixture } from "../helpers/transfer-location-fixture";
+import { installThresholdAlertHandler } from "../helpers/dismiss-threshold-alert";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -1761,6 +1762,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
   });
 
   test("only system managers see the approval entry point and it is disabled offline", async ({ browser }) => {
+    test.setTimeout(60_000);
     const branchAdmin = await authContext(browser, "admin");
     const superAdmin = await authContext(browser, "super_admin");
 
@@ -1769,6 +1771,7 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
         branchAdmin.newPage(),
         superAdmin.newPage(),
       ]);
+      await Promise.all([installThresholdAlertHandler(branchAdminPage), installThresholdAlertHandler(superPage)]);
       await Promise.all([branchAdminPage.goto("/"), superPage.goto("/")]);
       await Promise.all([
         branchAdminPage.getByRole("button", { name: "บิลยาง" }).click(),
@@ -1811,12 +1814,14 @@ test.describe.serial("Rubber Bill approval contract @rubber-bill-approval", () =
       await expect(managerButton).toBeEnabled();
       await managerButton.click();
       const approvalDialog = superPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
-      await expect(approvalDialog.getByText("ราคากลางยางทั้งระบบ")).toBeVisible();
+      await expect(approvalDialog.getByText("ราคากลางยางทั้งระบบ")).toBeHidden();
       await expect(approvalDialog.getByText("กลุ่มราคาและเวลา")).toBeVisible();
       const ungroupedSettings = approvalDialog.getByTestId("ungrouped-approval-settings");
       await expect(ungroupedSettings.getByRole("heading", { name: "สาขาที่ยังไม่จัดกลุ่ม" })).toBeVisible();
+      await approvalDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
+      await expect(approvalDialog.getByText("ราคากลางยางทั้งระบบ")).toBeVisible();
       await expect(approvalDialog.getByText("ราคายางที่กำหนดสูงสุด", { exact: true })).toBeVisible();
-      await expect(approvalDialog.getByText("กฎวันที่บิล")).toBeVisible();
+      await expect(approvalDialog.getByRole("heading", { name: "กฎวันที่บิล", exact: true })).toBeVisible();
       await expect(approvalDialog.getByText("งานรออนุมัติบิลยาง")).toBeVisible();
       await ungroupedSettings.getByRole("button", { name: "แก้ไข", exact: true }).click();
       await expect(ungroupedSettings.getByLabel("เวลาแก้ไขได้ (นาที)")).toBeVisible();

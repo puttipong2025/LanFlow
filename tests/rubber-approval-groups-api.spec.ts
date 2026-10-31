@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import { mapLocationRow } from "../src/hooks/useLocations";
 import { parseRubberApprovalGroupBody } from "../src/lib/server/rubber-approval-groups";
+import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -11,7 +12,9 @@ const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   || "";
 
 async function authContext(browser: Browser, role: "user" | "admin" | "super_admin") {
-  return browser.newContext({ storageState: `playwright/.auth/${role}.json` });
+  const context = await browser.newContext({ storageState: `playwright/.auth/${role}.json` });
+  context.on("page", page => { void installThresholdAlertHandler(page); });
+  return context;
 }
 
 async function profile(context: BrowserContext) {
@@ -299,6 +302,7 @@ test.describe.serial("Rubber approval groups API", () => {
       await page.getByRole("button", { name: "บิลยาง" }).click();
       await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await approvalDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       const dateRule = approvalDialog.getByRole("checkbox", {
         name: /ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน/,
       });
@@ -314,6 +318,8 @@ test.describe.serial("Rubber approval groups API", () => {
       const response = await settingsResponse;
       expect(response.ok(), await response.text()).toBeTruthy();
       await expect(dateRule).toBeEnabled();
+      await expect(saveDateRule).toBeDisabled();
+      await dateRule.setChecked(!await dateRule.isChecked());
       await expect(saveDateRule).toBeEnabled();
     } finally {
       releaseSettings();
@@ -321,7 +327,7 @@ test.describe.serial("Rubber approval groups API", () => {
     }
   });
 
-  test("global date rule is manager-only while effective settings stay location-scoped", async ({ browser }) => {
+  test("global date rule is super-admin-only while effective settings stay location-scoped", async ({ browser }) => {
     const user = await authContext(browser, "user");
     const manager = await authContext(browser, "super_admin");
     const locationId = (await profile(user)).locationIds[0];
@@ -628,6 +634,7 @@ test.describe.serial("Rubber approval groups API", () => {
       await superAdminPage.getByRole("button", { name: "บิลยาง" }).click();
       await superAdminPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const approvalDialog = superAdminPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await approvalDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       await expect(approvalDialog.getByText(/ส่วนต่างสูงสุด 100\.00 บาท\/กก\./)).toBeVisible();
       const centralInput = approvalDialog.getByLabel("ราคากลางใหม่");
       const centralSubmit = approvalDialog.getByRole("button", { name: "เปลี่ยนราคากลาง" });
@@ -673,6 +680,7 @@ test.describe.serial("Rubber approval groups API", () => {
       await managerPage.getByRole("button", { name: "บิลยาง" }).click();
       await managerPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const managerDialog = managerPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await managerDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       await expect(managerDialog.getByText("เฉพาะ Superadmin เท่านั้นที่เปลี่ยนค่านี้ได้")).toBeVisible();
       await expect(managerDialog.getByLabel("ราคายางที่กำหนดสูงสุด")).toHaveCount(0);
     } finally {
@@ -700,6 +708,7 @@ test.describe.serial("Rubber approval groups API", () => {
       await page.getByRole("button", { name: "บิลยาง" }).click();
       await page.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const approvalDialog = page.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await approvalDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       const maximumInput = approvalDialog.getByLabel("ราคายางที่กำหนดสูงสุด");
       const submitButton = approvalDialog.getByRole("button", { name: "เปลี่ยนค่าสูงสุด" });
 
@@ -752,10 +761,16 @@ test.describe.serial("Rubber approval groups API", () => {
       expect(await unchanged.json()).toEqual({ status: "unchanged", enabled: false });
 
       const superAdminPage = await superAdmin.newPage();
+      let mockedResetEnabled = false;
+      await superAdminPage.route("**/api/lanflow/rubber-bills/approval-groups", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...await response.json(), priceAllowanceAutoResetEnabled: mockedResetEnabled } });
+      });
       await superAdminPage.route(
         "**/api/lanflow/rubber-bills/approval-settings/price-allowance-auto-reset",
         async (route) => {
           const body = route.request().postDataJSON() as { enabled: boolean };
+          mockedResetEnabled = body.enabled;
           await route.fulfill({
             status: 200,
             contentType: "application/json",
@@ -767,6 +782,7 @@ test.describe.serial("Rubber approval groups API", () => {
       await superAdminPage.getByRole("button", { name: "บิลยาง" }).click();
       await superAdminPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const superAdminDialog = superAdminPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await superAdminDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       const toggle = superAdminDialog.getByRole("checkbox", {
         name: /รีเซ็ตราคายางที่กำหนดเป็น 0 ทุก 24 ชั่วโมง/,
       });
@@ -794,6 +810,7 @@ test.describe.serial("Rubber approval groups API", () => {
       await managerPage.getByRole("button", { name: "บิลยาง" }).click();
       await managerPage.getByRole("button", { name: /ตั้งค่าและอนุมัติบิลยาง/ }).click();
       const managerDialog = managerPage.getByRole("dialog", { name: "ตั้งค่าและอนุมัติบิลยาง" });
+      await managerDialog.getByRole("button", { name: "ตั้งค่าระบบ", exact: true }).click();
       await expect(managerDialog.getByRole("checkbox", {
         name: /รีเซ็ตราคายางที่กำหนดเป็น 0 ทุก 24 ชั่วโมง/,
       })).toBeDisabled();
@@ -941,7 +958,7 @@ test.describe.serial("Rubber approval groups API", () => {
     }
   });
 
-  test("management polling preserves an ungrouped draft and submits its opening revision", async ({ browser }) => {
+  test("management focus refresh preserves an ungrouped draft and submits its opening revision", async ({ browser }) => {
     const manager = await authContext(browser, "super_admin");
     const db = service();
     const initialResponse = await manager.request.get("/api/lanflow/rubber-bills/approval-groups");
@@ -981,6 +998,9 @@ test.describe.serial("Rubber approval groups API", () => {
       );
       expect(competing.ok(), await competing.text()).toBeTruthy();
       await page.clock.runFor(60_001);
+      expect(listReads).toBe(1);
+      await page.clock.resume();
+      await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
       await expect.poll(() => listReads).toBeGreaterThanOrEqual(2);
       await expect(minutesInput).toHaveValue(String(draftMinutes));
 

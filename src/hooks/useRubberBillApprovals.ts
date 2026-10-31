@@ -10,6 +10,7 @@ import {
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { authFetch } from "@/lib/auth-fetch";
+import { getConnectivitySnapshot } from "@/lib/connectivity";
 import { acceptRubberManagerCommand, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
 import type { EffectiveRubberApprovalSettings } from "@/types";
 
@@ -38,7 +39,10 @@ export function useRubberBillApprovals({
     queryFn: async (): Promise<EffectiveRubberApprovalSettings> => {
       const response = await authFetch(`/api/lanflow/rubber-bills/approval-settings?locationId=${encodeURIComponent(locationId)}`);
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.errorMessage || "โหลดกติกาอนุมัติไม่สำเร็จ");
+      if (!response.ok) throw new Error(
+        typeof data?.errorMessage === "string" && data.errorMessage
+          ? data.errorMessage : "โหลดกติกาอนุมัติไม่สำเร็จ",
+      );
       if (!isRubberBillApprovalSettings(data, locationId)) throw new Error("กติกาบิลยางไม่ตรงตามรูปแบบหรือสาขาที่กำหนด");
       return data;
     },
@@ -72,6 +76,7 @@ export function useRubberBillApprovals({
   }
 
   const saveSettingsMutation = useMutation({
+    networkMode: "always",
     mutationFn: async ({
       nonCurrentDateRequiresApproval,
       locationId: submissionLocationId,
@@ -79,6 +84,7 @@ export function useRubberBillApprovals({
       nonCurrentDateRequiresApproval: boolean;
       locationId: string;
     }) => {
+      if (!getConnectivitySnapshot()) throw new Error("การตั้งค่าบิลยางใช้ได้เมื่อออนไลน์เท่านั้น");
       const response = await authFetch(`/api/lanflow/rubber-bills/approval-settings?locationId=${encodeURIComponent(submissionLocationId)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -86,7 +92,12 @@ export function useRubberBillApprovals({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.errorMessage || "บันทึกการตั้งค่าไม่สำเร็จ");
+        throw new Error(typeof data?.errorMessage === "string" && data.errorMessage
+          ? data.errorMessage : "บันทึกการตั้งค่าไม่สำเร็จ");
+      }
+      if (!isRubberBillApprovalSettings(data, submissionLocationId)
+          || data.nonCurrentDateRequiresApproval !== nonCurrentDateRequiresApproval) {
+        throw new Error("ระบบไม่ตอบกลับผลการบันทึกกฎวันที่ตามรูปแบบที่กำหนด");
       }
       return data;
     },

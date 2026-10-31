@@ -72,8 +72,10 @@ export function RubberBillApprovalModal({
   const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [confirmation, setConfirmation] = useState<{ kind: "approve" | "delete"; bill: RubberBill } | null>(null);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const settingsSaveRef = useRef(false);
   const requestLocksRef = useRef(new Set<string>());
+  const serverDateRule = settings?.nonCurrentDateRequiresApproval;
 
   useEffect(() => {
     let active = true;
@@ -99,9 +101,9 @@ export function RubberBillApprovalModal({
   }, [profile.id, locationFilter]);
 
   useEffect(() => {
-    if (!settings) return;
-    setNonCurrentDateRequiresApproval(settings.nonCurrentDateRequiresApproval);
-  }, [settings]);
+    if (serverDateRule === undefined) return;
+    setNonCurrentDateRequiresApproval(serverDateRule);
+  }, [serverDateRule]);
 
   useEffect(() => {
     setLocationFilter(locationId);
@@ -123,20 +125,25 @@ export function RubberBillApprovalModal({
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations]
   );
-  const settingsReady = settings != null
+  const canEditDateRule = profile.role === "super_admin";
+  const settingsReady = isOnline && settings != null
     && !settingsLoading
     && !settingsFetching
     && !settingsError;
   async function handleSaveSettings(event: React.FormEvent) {
     event.preventDefault();
-    if (!settingsReady || settingsSaveRef.current) return;
+    if (!canEditDateRule || !settingsReady || settingsSaveRef.current
+        || nonCurrentDateRequiresApproval === settings?.nonCurrentDateRequiresApproval) return;
     settingsSaveRef.current = true;
+    setSettingsSaveError(null);
     try {
       setIsSaving(true);
       await saveGlobalDateRule(nonCurrentDateRequiresApproval);
       toast.success("บันทึกกฎวันที่แล้ว");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "บันทึกกฎวันที่ไม่สำเร็จ");
+      const message = error instanceof Error ? error.message : "บันทึกกฎวันที่ไม่สำเร็จ";
+      setSettingsSaveError(message);
+      toast.error(message);
     } finally {
       settingsSaveRef.current = false;
       setIsSaving(false);
@@ -181,6 +188,30 @@ export function RubberBillApprovalModal({
     }
   }
 
+  const dateRule = (
+    <form onSubmit={handleSaveSettings} aria-busy={isSaving}>
+      <h5 className="text-balance text-sm font-semibold text-ink">กฎวันที่บิล</h5>
+      <p className="mt-1 text-pretty text-xs text-ink/60">ใช้กับทุกสาขา รวมสาขานอกกลุ่ม โดยอิงวันที่ประเทศไทย</p>
+      {(settingsLoading || settingsFetching) && <p role="status" className="mt-2 text-pretty text-sm text-ink/60">กำลังโหลดกฎวันที่...</p>}
+      {settingsError && <p role="alert" className="mt-2 rounded-lg bg-rose-50 p-3 text-pretty text-sm text-rose-700">{settingsError instanceof Error ? settingsError.message : "โหลดกฎวันที่ไม่สำเร็จ"}</p>}
+      {!isOnline && <p role="status" className="mt-2 text-pretty text-sm text-amber-800">เชื่อมต่ออินเทอร์เน็ตเพื่อแก้ไขกฎวันที่</p>}
+      <label className="mt-3 flex items-start gap-3 rounded-lg bg-field/55 p-3 text-sm text-ink">
+        <input
+          type="checkbox"
+          checked={nonCurrentDateRequiresApproval}
+          disabled={!canEditDateRule || !settingsReady || isSaving}
+          onChange={(event) => { setNonCurrentDateRequiresApproval(event.target.checked); setSettingsSaveError(null); }}
+          className="focus-ring mt-0.5 size-5 shrink-0 accent-river disabled:cursor-not-allowed"
+        />
+        <span className="text-pretty font-semibold">ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน</span>
+      </label>
+      {settingsSaveError && <p role="alert" className="mt-2 text-pretty text-sm text-rose-700">{settingsSaveError}</p>}
+      {canEditDateRule ? (
+        <button type="submit" disabled={!settingsReady || isSaving || nonCurrentDateRequiresApproval === settings?.nonCurrentDateRequiresApproval} className="focus-ring mt-3 min-h-11 w-full rounded-lg bg-commit px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{isSaving ? "กำลังบันทึกกฎวันที่..." : "บันทึกกฎวันที่"}</button>
+      ) : <p className="mt-2 text-pretty text-xs text-ink/60">เฉพาะ Super Admin เท่านั้นที่เปลี่ยนกฎวันที่บิลได้</p>}
+    </form>
+  );
+
   return (
     <ModalShell
       title="ตั้งค่าและอนุมัติบิลยาง"
@@ -190,16 +221,17 @@ export function RubberBillApprovalModal({
       size="wide"
     >
       <div className="space-y-5">
-        <section className="rounded-md border border-black/10 p-4">
+        <section className="rounded-xl border border-black/10 bg-white p-4 sm:p-5">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <h3 className="text-balance font-bold text-ink">งานรออนุมัติบิลยาง</h3>
             <div className="flex flex-wrap gap-2">
               <label className="grid gap-1 text-sm font-semibold">
                 สาขา
                 <select
+                  aria-label="สาขา"
                   value={locationFilter}
                   onChange={(event) => setLocationFilter(event.target.value)}
-                  className="focus-ring h-10 rounded-md border border-black/10 bg-white px-3"
+                  className="focus-ring h-11 max-w-full rounded-lg border border-black/15 bg-white px-3"
                 >
                   {locations.map((location) => (
                     <option key={location.id} value={location.id}>{location.name}</option>
@@ -241,30 +273,30 @@ export function RubberBillApprovalModal({
                 netTotal: request.netTotal,
               };
               return (
-                <article key={request.id} className="rounded-md border border-black/10 p-3 text-sm">
+                <article key={request.id} className="rounded-lg border border-black/10 bg-field/20 p-4 text-sm">
                   {actionErrors[`${profile.id}:${request.locationId}:${request.approvalRequestId}`] && (
                     <p role="alert" className="mb-2 text-pretty text-sm text-danger">
                       {actionErrors[`${profile.id}:${request.locationId}:${request.approvalRequestId}`]}
                     </p>
                   )}
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-                    <div className="flex shrink-0 gap-1.5 whitespace-nowrap">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+                    <div className="flex shrink-0 gap-2 whitespace-nowrap lg:order-last">
                       <button
                         type="button"
                         disabled={busyIds.has(request.approvalRequestId ?? "")}
                         onClick={() => setConfirmation({ kind: "approve", bill: request })}
-                        className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-success text-white disabled:opacity-50"
+                        className="focus-ring inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-success px-3 font-bold text-white disabled:opacity-50"
                         title="อนุมัติ"
                         aria-label={busyIds.has(request.approvalRequestId ?? "") ? "รอผลคำสั่ง" : "อนุมัติ"}
                         aria-busy={busyIds.has(request.approvalRequestId ?? "")}
                       >
-                        {busyIds.has(request.approvalRequestId ?? "") ? <span className="text-xs">รอผล</span> : <Check size={17} />}
+                        {busyIds.has(request.approvalRequestId ?? "") ? "รอผล" : <><Check size={17} aria-hidden="true" /> อนุมัติ</>}
                       </button>
                       <button
                         type="button"
                         disabled={busyIds.has(request.approvalRequestId ?? "")}
                         onClick={() => setConfirmation({ kind: "delete", bill: request })}
-                        className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
+                        className="focus-ring inline-flex h-11 items-center gap-1.5 rounded-lg bg-rose-600 px-3 font-bold text-white disabled:opacity-50"
                         title="ลบคำขอถาวร"
                         aria-label={busyIds.has(request.approvalRequestId ?? "") ? "รอผลคำสั่ง" : "ลบคำขอถาวร"}
                         aria-busy={busyIds.has(request.approvalRequestId ?? "")}
@@ -273,7 +305,7 @@ export function RubberBillApprovalModal({
                         {busyIds.has(request.approvalRequestId ?? "") ? "รอผล" : "ลบ"}
                       </button>
                     </div>
-                    <div className="min-w-0 space-y-1">
+                    <div className="min-w-0 flex-1 space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
                           {operationLabels[request.approvalOperation ?? "update"]}
@@ -288,9 +320,17 @@ export function RubberBillApprovalModal({
                         {locationNames.get(request.locationId) ?? "ไม่ทราบสาขา"} · {request.approvalRequestedByName ?? request.createdByName}
                       </p>
                       <p className="text-ink/55">{formatBangkokDateTime(request.operationalSortAt ?? request.clientCreatedAt)}</p>
-                      <p className="text-pretty text-ink/70">
-                        {summary.customerName || "ไม่ระบุลูกค้า"} · {summary.billDate} · ประเภทบิล: {summary.billType || "ไม่ระบุ"} · น้ำหนักสุทธิ: <span className="tabular-nums">{formatNumber(summary.netWeight)}</span> กก. · ราคาเฉลี่ย: <span className="tabular-nums">{formatNumber(summary.averagePrice)}</span> บาท · มูลค่ายาง: <span className="tabular-nums">{formatNumber(summary.netRubberValue)}</span> บาท · ยอดหัก: <span className="tabular-nums">{formatNumber(summary.deductionTotal)}</span> บาท · ยอดสุทธิ: <span className="tabular-nums">{formatNumber(summary.netTotal)}</span> บาท
-                      </p>
+                      <p className="text-pretty font-semibold text-ink">{summary.customerName || "ไม่ระบุลูกค้า"}</p>
+                      <p className="text-pretty text-xs text-ink/60">{summary.billDate} · ประเภทบิล: {summary.billType || "ไม่ระบุ"}</p>
+                      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-black/10 pt-3 sm:grid-cols-3">
+                        {[
+                          ["น้ำหนักสุทธิ", `${formatNumber(summary.netWeight)} กก.`],
+                          ["ราคาเฉลี่ย", `${formatNumber(summary.averagePrice)} บาท`],
+                          ["มูลค่ายาง", `${formatNumber(summary.netRubberValue)} บาท`],
+                          ["ยอดหัก", `${formatNumber(summary.deductionTotal)} บาท`],
+                          ["ยอดสุทธิ", `${formatNumber(summary.netTotal)} บาท`],
+                        ].map(([label, value]) => <div key={label}><dt className="text-xs text-ink/60">{label}</dt><dd className="mt-1 break-words font-semibold tabular-nums text-ink">{value}</dd></div>)}
+                      </dl>
                     </div>
                   </div>
                 </article>
@@ -313,20 +353,8 @@ export function RubberBillApprovalModal({
           locations={locations}
           locationsLoading={locationsLoading}
           locationsError={locationsError instanceof Error ? locationsError : null}
+          dateRule={dateRule}
         />
-        <form onSubmit={handleSaveSettings} className="rounded-md border border-black/10 p-4">
-          <h3 className="text-balance font-bold text-ink">กฎวันที่บิล</h3>
-          {(settingsLoading || settingsFetching) && (
-            <p role="status" className="mt-2 text-pretty text-sm text-ink/60">กำลังโหลดกฎวันที่...</p>
-          )}
-          {settingsError && (
-            <p role="alert" className="mt-2 rounded-md bg-rose-50 p-3 text-pretty text-sm text-rose-700">
-              {settingsError instanceof Error ? settingsError.message : "โหลดกฎวันที่ไม่สำเร็จ"}
-            </p>
-          )}
-          <label className="mt-3 flex items-start gap-3 rounded-md bg-field/55 p-3 text-sm text-ink"><input type="checkbox" checked={nonCurrentDateRequiresApproval} disabled={!settingsReady || isSaving} onChange={(event) => setNonCurrentDateRequiresApproval(event.target.checked)} className="mt-0.5 size-4 accent-river disabled:cursor-not-allowed" /><span><strong className="block">ขออนุมัติเมื่อวันที่บิลไม่ใช่วันปัจจุบัน</strong><span className="text-ink/60">ใช้กับทุกสาขา รวมสาขานอกกลุ่ม</span></span></label>
-          <button type="submit" disabled={!settingsReady || isSaving} className="focus-ring mt-3 h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:opacity-50">บันทึกกฎวันที่</button>
-        </form>
 
       </div>
       <AlertDialog
