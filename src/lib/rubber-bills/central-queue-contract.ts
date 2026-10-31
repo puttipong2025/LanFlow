@@ -1,3 +1,4 @@
+import { isRubberBillNumbering } from "./numbering-contract";
 const isUuid = (value: unknown): value is string => typeof value === "string"
   && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const isJsonObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -65,6 +66,7 @@ export function isRubberQueueRow(value: unknown): value is RubberQueueRow {
 }
 
 export function isRubberQueueSubmission(value: unknown): value is Record<string, unknown> {
+  if (isJsonObject(value) && value.billNumbering !== undefined && !isRubberBillNumbering(value.billNumbering)) return false;
   if (!isJsonObject(value) || value.centralQueue !== true || value.localContextPending !== undefined || value.contractVersion !== 2 || !isUuid(value.commandId)
     || value.idempotencyKey !== value.commandId || !isUuid(value.locationId) || !isUuid(value.actorUserId)
     || typeof value.clientTempId !== "string" || value.clientTempId.length < 1 || value.clientTempId.length > 512) return false;

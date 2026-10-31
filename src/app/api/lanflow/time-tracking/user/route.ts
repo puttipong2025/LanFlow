@@ -11,12 +11,14 @@ export const dynamic = "force-dynamic";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function rpcErrorStatus(message: string) {
+  if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
   if (/MONTH_CLOSED|REPORT_LOCKED|ADJUSTMENT_(STALE|NO_OP|PENDING_EXISTS|ALREADY_DECIDED|BELOW_CLOSED_FLOOR)|already been decided/i.test(message)) return 409;
   return 400;
 }
 
 function rpcErrorMessage(message: string) {
+  if (/Authentication required/i.test(message)) return "กรุณาเข้าสู่ระบบใหม่ก่อนทำรายการ";
   const closedMonth = message.match(/MONTH_CLOSED:([0-9]{4}-[0-9]{2})/)?.[1];
   if (closedMonth) return `เดือน ${closedMonth} มีสลิปเงินเดือนแล้ว กรุณาลบสลิปก่อน`;
   if (/FUTURE_EFFECTIVE_DATE/i.test(message)) return "วันที่รายการต้องไม่เกินวันปัจจุบัน";
@@ -149,7 +151,7 @@ export async function GET(request: NextRequest) {
       }),
       readAllSupabaseRows((from, to) => supabase
         .from("financial_transactions")
-        .select("id, parent_debt_id, amount, adjustment_base_amount, status, description, history_creator_name, created_at, approved_at")
+        .select("id, parent_debt_id, amount, adjustment_base_amount, status, description, history_creator_name, created_at, approved_at, expense_location_id, expense_location_name, report_lock_no")
         .eq("profile_id", targetUserId)
         .eq("type", "ADJUSTMENT")
         .is("cancelled_at", null)
@@ -234,7 +236,7 @@ export async function GET(request: NextRequest) {
       && typeof error === "object"
       && "message" in error
       && typeof error.message === "string"
-      && rpcErrorStatus(error.message) === 403
+      && [401, 403].includes(rpcErrorStatus(error.message))
     ) {
       return rpcFailure({ message: error.message });
     }
@@ -257,63 +259,72 @@ export async function POST(request: NextRequest) {
   const payload = body.payload;
   const supabase = result.supabase;
 
-  if (body.action === "REQUEST_WITHDRAWAL") {
-    const { amount } = payload;
-    if (typeof amount !== "number" || !Number.isFinite(amount)) {
-      return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
+  try {
+    if (body.action === "REQUEST_WITHDRAWAL") {
+      const { amount } = payload;
+      if (typeof amount !== "number" || !Number.isFinite(amount)) {
+        return NextResponse.json({ error: "ข้อมูลรายการไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("request_time_tracking_withdrawal", {
+        p_amount: amount,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
     }
-    const { data, error } = await supabase.rpc("request_time_tracking_withdrawal", {
-      p_amount: amount,
-    });
-    if (error) return rpcFailure(error);
-    return NextResponse.json({ success: true, result: data });
+
+    if (body.action === "REQUEST_WITHDRAWAL_ADJUSTMENT") {
+      const { withdrawal_id, target_amount, reason } = payload;
+      if (
+        typeof withdrawal_id !== "string"
+        || !UUID_PATTERN.test(withdrawal_id)
+        || typeof target_amount !== "number"
+        || !Number.isFinite(target_amount)
+        || (reason != null && typeof reason !== "string")
+      ) {
+        return NextResponse.json({ error: "ข้อมูลปรับยอดเบิกไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("request_time_tracking_withdrawal_adjustment", {
+        p_withdrawal_id: withdrawal_id,
+        p_target_amount: target_amount,
+        p_expense_location_id: null,
+        p_reason: typeof reason === "string" ? reason.slice(0, 500) : null,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "WITHDRAW_WITHDRAWAL_ADJUSTMENT") {
+      const { adjustment_id } = payload;
+      if (typeof adjustment_id !== "string" || !UUID_PATTERN.test(adjustment_id)) {
+        return NextResponse.json({ error: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("withdraw_time_tracking_withdrawal_adjustment", {
+        p_adjustment_id: adjustment_id,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, result: data });
+    }
+
+    if (body.action === "DELETE_TRANSACTION") {
+      const { transaction_id } = payload;
+      if (typeof transaction_id !== "string" || !UUID_PATTERN.test(transaction_id)) {
+        return NextResponse.json({ error: "รหัสรายการไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("delete_time_tracking_source_permanently", {
+        p_source_type: "transaction",
+        p_source_id: transaction_id,
+      });
+      if (error) return rpcFailure(error);
+      return NextResponse.json({ success: true, deleted: true, result: data });
+    }
+
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  } catch (error) {
+    console.error("Failed to mutate employee time/payroll data:", error);
+    return NextResponse.json(
+      { error: "ดำเนินการข้อมูลเวลาและเงินเดือนไม่สำเร็จ" },
+      { status: 500 },
+    );
   }
 
-  if (body.action === "REQUEST_WITHDRAWAL_ADJUSTMENT") {
-    const { withdrawal_id, target_amount, reason } = payload;
-    if (
-      typeof withdrawal_id !== "string"
-      || !UUID_PATTERN.test(withdrawal_id)
-      || typeof target_amount !== "number"
-      || !Number.isFinite(target_amount)
-      || (reason != null && typeof reason !== "string")
-    ) {
-      return NextResponse.json({ error: "ข้อมูลปรับยอดเบิกไม่ถูกต้อง" }, { status: 400 });
-    }
-    const { data, error } = await supabase.rpc("request_time_tracking_withdrawal_adjustment", {
-      p_withdrawal_id: withdrawal_id,
-      p_target_amount: target_amount,
-      p_expense_location_id: null,
-      p_reason: typeof reason === "string" ? reason.slice(0, 500) : null,
-    });
-    if (error) return rpcFailure(error);
-    return NextResponse.json({ success: true, result: data });
-  }
-
-  if (body.action === "WITHDRAW_WITHDRAWAL_ADJUSTMENT") {
-    const { adjustment_id } = payload;
-    if (typeof adjustment_id !== "string" || !UUID_PATTERN.test(adjustment_id)) {
-      return NextResponse.json({ error: "รหัสคำขอไม่ถูกต้อง" }, { status: 400 });
-    }
-    const { data, error } = await supabase.rpc("withdraw_time_tracking_withdrawal_adjustment", {
-      p_adjustment_id: adjustment_id,
-    });
-    if (error) return rpcFailure(error);
-    return NextResponse.json({ success: true, result: data });
-  }
-
-  if (body.action === "DELETE_TRANSACTION") {
-    const { transaction_id } = payload;
-    if (typeof transaction_id !== "string" || !UUID_PATTERN.test(transaction_id)) {
-      return NextResponse.json({ error: "รหัสรายการไม่ถูกต้อง" }, { status: 400 });
-    }
-    const { data, error } = await supabase.rpc("delete_time_tracking_source_permanently", {
-      p_source_type: "transaction",
-      p_source_id: transaction_id,
-    });
-    if (error) return rpcFailure(error);
-    return NextResponse.json({ success: true, deleted: true, result: data });
-  }
-
-  return NextResponse.json({ error: "Invalid action" }, { status: 400 });
 }

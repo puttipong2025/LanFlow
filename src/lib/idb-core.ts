@@ -3,10 +3,11 @@ export const RUBBER_BILL_RECEIPT_STORE = "rubber_bill_receipts";
 export const RUBBER_BILL_RECEIPT_TOMBSTONE_STORE = "rubber_bill_receipt_tombstones";
 export const INCOME_EXPENSE_OUTCOME_STORE = "income_expense_outcomes";
 export const BUSINESS_CACHE_META_STORE = "business_cache_meta";
+export const RUBBER_NUMBER_STORE = "rubber_bill_numbers";
 
 const DB_NAME = "lanflow_sync_db";
 // Protocol fence: older uploaders must not read locally staged command envelopes.
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 const LEGACY_QUEUE_ERROR = "รายการออฟไลน์นี้สร้างก่อนอัปเกรดและไม่มีข้อมูลผู้ใช้ จึงหยุดซิงก์เพื่อความปลอดภัย";
 
 type LegacyQueuedEvent = {
@@ -34,6 +35,7 @@ export function getSyncDb(): Promise<IDBDatabase> {
     };
     request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
       const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(RUBBER_NUMBER_STORE)) db.createObjectStore(RUBBER_NUMBER_STORE, { keyPath: "key" });
       if (!db.objectStoreNames.contains(BUSINESS_CACHE_META_STORE)) {
         db.createObjectStore(BUSINESS_CACHE_META_STORE, { keyPath: "key" });
       }

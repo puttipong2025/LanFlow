@@ -99,6 +99,60 @@ async function lockInReport(
 }
 
 test.describe.serial("locked withdrawal adjustment @time-payroll-withdrawal-adjustment", () => {
+  test("real admin API accepts explicit outside settlement and deletes only the chosen latest ID", async ({ request }) => {
+    const service = serviceClient();
+    const manager = await managerClient();
+    const employee = await createEmployee(service);
+    const session = await manager.auth.getSession();
+    const headers = { Authorization: `Bearer ${session.data.session!.access_token}` };
+    const managerProfile = await manager.from("profiles").select("id,name,phone").eq("id", session.data.session!.user.id).single();
+    const location = await service.from("locations").select("id").eq("is_active", true).limit(1).single();
+    expect(location.error).toBeNull();
+    await service.from("user_locations").insert({ user_id: employee.id, location_id: location.data!.id, is_primary: true });
+    const source = await manager.rpc("create_time_tracking_transaction", {
+      p_profile_id: employee.id, p_type: "WITHDRAWAL", p_amount: 1000,
+      p_effective_date: bangkokDate(), p_description: "API deletion regression",
+      p_expense_location_id: location.data!.id, p_comment: null,
+    });
+    expect(source.error).toBeNull();
+    const row = await service.from("financial_transactions").select("id").eq("profile_id", employee.id).eq("type", "WITHDRAWAL").single();
+    const sourceId = row.data!.id;
+    const reportId = await lockInReport(service, managerProfile.data!, location.data!.id, sourceId);
+    try {
+      for (const expenseLocation of [undefined, "bad-branch"]) {
+        const invalid = await request.post(`${appUrl}/api/lanflow/time-tracking/admin`, {
+          headers, data: { action: "ADMIN_REQUEST_WITHDRAWAL_ADJUSTMENT", payload: { withdrawal_id: sourceId, target_amount: 1500, expense_location_id: expenseLocation } },
+        });
+        expect(invalid.status()).toBe(400);
+      }
+      const created = await request.post(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        headers, data: { action: "ADMIN_REQUEST_WITHDRAWAL_ADJUSTMENT", payload: { withdrawal_id: sourceId, target_amount: 1500, expense_location_id: null } },
+      });
+      expect(created.status(), await created.text()).toBe(200);
+      const adjustmentId = (await created.json()).result.id;
+      const feed = await request.get(`${appUrl}/api/lanflow/time-tracking/user?userId=${employee.id}`, { headers });
+      expect(feed.status()).toBe(200);
+      const data = await feed.json();
+      expect(data.adjustmentSummaries.find((item: { withdrawalId: string }) => item.withdrawalId === sourceId))
+        .toMatchObject({ latestApprovedAdjustmentId: adjustmentId, latestTarget: 1500 });
+      expect(data.adjustments.find((item: { id: string }) => item.id === adjustmentId)).toMatchObject({ expense_location_id: null, report_lock_no: null });
+      const removed = await request.post(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        headers, data: { action: "DELETE_TRANSACTION", payload: { transaction_id: adjustmentId } },
+      });
+      expect(removed.status(), await removed.text()).toBe(200);
+      const target = await service.from("financial_transactions").select("remaining_amount,report_lock_no").eq("id", sourceId).single();
+      expect(target.data).toMatchObject({ remaining_amount: 1000 });
+      expect(target.data!.report_lock_no).toBeTruthy();
+      const retry = await request.post(`${appUrl}/api/lanflow/time-tracking/admin`, {
+        headers, data: { action: "DELETE_TRANSACTION", payload: { transaction_id: adjustmentId } },
+      });
+      expect(retry.status()).toBe(409);
+    } finally {
+      await manager.rpc("delete_report_batch", { p_report_id: reportId });
+      await manager.rpc("delete_time_tracking_source_permanently", { p_source_type: "transaction", p_source_id: sourceId });
+      await service.auth.admin.deleteUser(employee.id);
+    }
+  });
   test("records the dashboard deletion when an unlocked source removes an approved adjustment", async () => {
     const service = serviceClient();
     const manager = await managerClient();
@@ -491,7 +545,7 @@ test.describe.serial("locked withdrawal adjustment @time-payroll-withdrawal-adju
     const missingBranch = await manager.rpc("decide_time_tracking_withdrawal_adjustment", {
       p_adjustment_id: approvedRequest.data.id,
       p_decision: "APPROVED",
-      p_expense_location_id: null,
+      p_expense_location_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
       p_comment: null,
     });
     expect(missingBranch.error?.message).toContain("ADJUSTMENT_BRANCH_REQUIRED");

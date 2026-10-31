@@ -3,6 +3,10 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/time-payroll-adjustment-errors.spec.ts',
+    '**/time-payroll-route-failures.spec.ts',
+    '**/rubber-device-numbering.spec.ts',
+    '**/rubber-issuer-route.spec.ts',
     '**/business-cache.spec.ts',
     '**/business-cache-refresh.spec.ts',
     '**/business-cache-settings.spec.ts',

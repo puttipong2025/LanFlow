@@ -4,7 +4,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import type { Location } from "@/types";
 import { LazyPaymentAllocationModal as PaymentAllocationModal } from "../LazyPaymentAllocationModal";
 import { SlipPreviewModal } from "../SlipPreviewModal";
-import { WithdrawalAdjustmentModal } from "../WithdrawalAdjustmentModal";
+import { LazyWithdrawalAdjustmentModal as WithdrawalAdjustmentModal } from "../LazyWithdrawalAdjustmentModal";
 import { bangkokToday, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 import type { PaymentAllocationInput } from "../contracts";
 

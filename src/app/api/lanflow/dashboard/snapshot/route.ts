@@ -10,6 +10,18 @@ const UUID =
 const NO_STORE_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
 
 export async function GET(request: NextRequest) {
+  try {
+    return await readSnapshot(request);
+  } catch {
+    console.error("Dashboard snapshot request failed");
+    return NextResponse.json(
+      { error: "โหลดผลคำนวณ Dashboard ไม่สำเร็จ" },
+      { status: 500, headers: NO_STORE_HEADERS },
+    );
+  }
+}
+
+async function readSnapshot(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 
@@ -33,7 +45,7 @@ export async function GET(request: NextRequest) {
     console.error("Dashboard snapshot error:", error.message);
     return NextResponse.json(
       { error: "โหลดผลคำนวณ Dashboard ไม่สำเร็จ" },
-      { status: 500 },
+      { status: 500, headers: NO_STORE_HEADERS },
     );
   }
 

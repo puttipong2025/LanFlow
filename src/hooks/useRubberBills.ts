@@ -29,7 +29,7 @@ import { normalizeRubberBillQueueBeforeSync } from "@/lib/rubber-bills/normalize
 import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
 import { immediateRubberReceipt } from "@/lib/rubber-bills/immediate-receipt";
 import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
-
+import { enqueueNumberedRubberCreate } from "@/lib/rubber-bills/numbering-idb";
 export function assertRubberBillDeleteAllowed(pendingCreateCount: number, isOnline: boolean) {
   if (pendingCreateCount === 0 && !isOnline) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
 }
@@ -179,16 +179,20 @@ export function useRubberBillMutations(
           navigator.onLine
         );
       }
-      
-      const { calculatedBill, payload: builtPayload } = buildRubberBillRpcPayload(
+      let { calculatedBill, payload: builtPayload } = buildRubberBillRpcPayload(
         bill,
         operation,
         operation === "create" ? mutationApprovalSettings?.effectivePriceCap : bill.configuredPriceSnapshot
       );
       const isOnline = typeof navigator === "undefined" || navigator.onLine;
-      const immediatePdfBill = immediateRubberReceipt(calculatedBill, mutationApprovalSettings);
+      let immediatePdfBill = immediateRubberReceipt(calculatedBill, mutationApprovalSettings);
       const existingEvents = await getPendingEvents(queuePartition(ownerUserId, mutationLocationId));
       const clientEvents = existingEvents.filter(e => e.id === bill.clientTempId);
+      if (clientEvents[0]?.payload.billNumbering) {
+        calculatedBill = { ...calculatedBill, localBillNo: clientEvents[0].payload.localBillNo, billNo: clientEvents[0].payload.localBillNo, billNumbering: clientEvents[0].payload.billNumbering };
+        builtPayload = { ...builtPayload, localBillNo: calculatedBill.localBillNo, billNumbering: calculatedBill.billNumbering! };
+        immediatePdfBill = immediateRubberReceipt(calculatedBill, mutationApprovalSettings);
+      }
       const payload = clientEvents.length > 0 ? builtPayload : await prepareRubberBillCommand({ ...builtPayload, ...(operation === "update" ? { background: true, expectedServerId: bill.id } : {}) }, ownerUserId, { deferContext: operation === "update" || immediatePdfBill !== null });
       const centralQueue = "centralQueue" in payload && payload.centralQueue === true;
       if (clientEvents.some((event) => event.serverSubmissionAttempted === true)) {
@@ -244,7 +248,7 @@ export function useRubberBillMutations(
           ? `${ownerUserId}:${mutationLocationId}`
           : null;
         if (directSubmissionScope) beginDirectSubmission(directSubmissionScope);
-        const event: Omit<SyncEvent, "queueId"> = {
+        let event: Omit<SyncEvent, "queueId"> = {
           id: bill.clientTempId,
           entity: "rubber_bills",
           ownerUserId,
@@ -259,7 +263,9 @@ export function useRubberBillMutations(
         };
         let queueId: number;
         try {
-          const queuedId = await enqueueSyncEvent(event, clientEvents);
+          const numbered = bill.numberingRequested && operation === "create" ? await enqueueNumberedRubberCreate(event, calculatedBill) : null;
+          if (numbered) { event = numbered.event; calculatedBill = numbered.bill; immediatePdfBill = immediateRubberReceipt(calculatedBill, mutationApprovalSettings); }
+          const queuedId = numbered ? numbered.event.queueId! : await enqueueSyncEvent(event, clientEvents);
           if (queuedId === null) {
             throw new Error("ข้อมูลบิลในเครื่องถูกเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่อีกครั้ง");
           }

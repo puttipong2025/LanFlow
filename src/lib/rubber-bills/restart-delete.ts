@@ -1,4 +1,4 @@
-import { acknowledgeRubberCommand } from "@/lib/rubber-bills/complete-command";
+import { acknowledgeRubberCommand, completeRubberCommand } from "@/lib/rubber-bills/complete-command";
 import { getPendingEvents, reconcileSyncEventsIfCurrent, type SyncEvent } from "@/lib/idb-queue";
 import { prepareRubberBillCommand } from "./command";
 import { sendRubberBillCommand, probeDeletedRubberCommand } from "./sync-request";
@@ -29,7 +29,10 @@ export async function restartRubberDelete(ownerUserId: string, locationId: strin
       return "silent";
     }
     if (response.ok && isConfirmedRubberSyncResult(result, event) && result.status !== "discarded") {
-      if (!await reconcileSyncEventsIfCurrent(events, undefined, true)) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล");
+      const completed = result.status === "synced"
+        ? await completeRubberCommand(event, true)
+        : await reconcileSyncEventsIfCurrent(events, undefined, true);
+      if (!completed) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล");
       return result.status as string;
     }
     if (!(response.ok && result.status === "discarded" && isConfirmedRubberSyncResult(result, event))) {
@@ -45,7 +48,9 @@ export async function restartRubberDelete(ownerUserId: string, locationId: strin
     const submitted = await sendRubberBillCommand(next, payload);
     const data = await submitted.json().catch(() => ({}));
     if (submitted.ok && isConfirmedRubberSyncResult(data, next)) {
-      if (!await (next.payload.background ? acknowledgeRubberCommand(next, data) : reconcileSyncEventsIfCurrent([next], undefined, true))) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล");
+      const completed = data.status === "synced" ? await completeRubberCommand(next, true)
+        : await (next.payload.background ? acknowledgeRubberCommand(next, data) : reconcileSyncEventsIfCurrent([next], undefined, true));
+      if (!completed) throw new Error("คิวเปลี่ยนระหว่างยืนยันผล");
       return data.status as string;
     }
     await recordRubberSyncFailure(next, submitted.status, data);

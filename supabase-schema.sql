@@ -171,6 +171,31 @@ $$;
 ALTER FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."allocate_rubber_bill_suffix"("payload" "jsonb") RETURNS "text"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+declare b private.rubber_bill_number_bindings; n bigint; loc uuid:=(payload->>'locationId')::uuid;
+  base text:=payload->>'localBillNo'; client text:=payload->>'clientTempId';
+begin
+  perform private.assert_rubber_bill_numbering(payload);
+  select * into b from private.rubber_bill_number_bindings where client_temp_id=client;
+  if b.client_temp_id is not null then
+    if b.location_id<>loc or b.base_number<>base or b.metadata is distinct from payload->'billNumbering' then
+      raise exception 'BILL_NUMBER_CHANGED'; end if;
+    return b.final_number;
+  end if;
+  insert into private.rubber_bill_suffix_counters values(loc,base,1)
+    on conflict(location_id,base_number) do update set last_suffix=rubber_bill_suffix_counters.last_suffix+1
+    returning last_suffix into n;
+  insert into private.rubber_bill_number_bindings values(client,loc,base,base||'-'||n::text,payload->'billNumbering');
+  return base||'-'||n::text;
+end $$;
+
+
+ALTER FUNCTION "private"."allocate_rubber_bill_suffix"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid" DEFAULT NULL::"uuid", "p_actor_name" "text" DEFAULT NULL::"text") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -780,6 +805,37 @@ $$;
 ALTER FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_rubber_bill_numbering"("payload" "jsonb") RETURNS "void"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $_$
+declare m jsonb:=payload->'billNumbering'; i private.rubber_bill_issuers; d date; seq bigint;
+  existing public.rubber_bills; date_part text; sequence_part text;
+begin
+  select * into existing from public.rubber_bills where client_temp_id=payload->>'clientTempId';
+  if existing.numbering_metadata is not null and
+    (m is distinct from existing.numbering_metadata or payload->>'localBillNo' is distinct from existing.local_bill_no) then
+    raise exception 'BILL_NUMBER_CHANGED'; end if;
+  if m is null then return; end if;
+  if jsonb_typeof(m)<>'object' or m->>'version' is distinct from '1'
+    or jsonb_typeof(m->'sequence') is distinct from 'number'
+    or (m->>'date') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'INVALID_BILL_NUMBER'; end if;
+  d:=(m->>'date')::date; seq:=(m->>'sequence')::bigint;
+  date_part:=to_char(d,'YYMMDD'); sequence_part:=lpad(seq::text,greatest(4,length(seq::text)),'0');
+  select * into i from private.rubber_bill_issuers where id=(m->>'issuerId')::uuid;
+  if i.id is null or i.location_id is distinct from (payload->>'locationId')::uuid or seq<1
+    or (m->>'sequence')::numeric<>seq or seq>9007199254740991 or d::text is distinct from m->>'date'
+    or (payload->>'localBillNo' is distinct from date_part||sequence_part||'-'||i.code
+      and payload->>'localBillNo' is distinct from sequence_part||'-'||date_part||'-'||i.code)
+    or coalesce(payload->>'billType','') not in ('weighing','บิลเครื่องชั่งเล็ก') then raise exception 'INVALID_BILL_NUMBER'; end if;
+exception when invalid_text_representation or invalid_datetime_format or datetime_field_overflow or numeric_value_out_of_range then
+  raise exception 'INVALID_BILL_NUMBER';
+end $_$;
+
+
+ALTER FUNCTION "private"."assert_rubber_bill_numbering"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_rubber_weight_alert_group_not_empty"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -1205,9 +1261,14 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
 
     union all
 
-    select 'expense', ft.amount, true, true,
+    select 'expense', portion.amount, portion.affects_balance, portion.operating_expense,
       (ft.approved_at at time zone 'Asia/Bangkok')::date
     from public.financial_transactions ft
+    cross join lateral (values
+      (private.time_payroll_branch_paid_amount(ft.amount, ft.payment_contract_version,
+        ft.payment_channel, ft.payment_transfer_amount, ft.expense_location_id), true, false),
+      (ft.amount, false, true)
+    ) portion(amount, affects_balance, operating_expense)
     where ft.type = 'WITHDRAWAL'
       and ft.status = 'APPROVED'
       and ft.cancelled_at is null
@@ -1216,9 +1277,14 @@ CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_i
 
     union all
 
-    select 'expense', ps.net_pay, true, true,
+    select 'expense', portion.amount, portion.affects_balance, portion.operating_expense,
       (ps.approved_at at time zone 'Asia/Bangkok')::date
     from public.payroll_slips ps
+    cross join lateral (values
+      (private.time_payroll_branch_paid_amount(ps.net_pay, ps.payment_contract_version,
+        ps.payment_channel, ps.payment_transfer_amount, ps.expense_location_id), true, false),
+      (ps.net_pay, false, true)
+    ) portion(amount, affects_balance, operating_expense)
     where ps.status = 'APPROVED'
       and ps.cancelled_at is null
       and ps.expense_location_id = p_location_id
@@ -4029,6 +4095,68 @@ $$;
 
 
 ALTER FUNCTION "private"."delete_time_payroll_transfer_for_source"("p_source_type" "text", "p_source_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."delete_withdrawal_adjustment"("p_adjustment_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+ actor uuid:=auth.uid(); adjustment public.financial_transactions%rowtype;
+ source public.financial_transactions%rowtype; latest_id uuid; report_no text; slip record;
+ old_flag text:=current_setting('app.time_tracking_permanent_delete_rpc',true);
+begin
+ if actor is null or not private.is_active_user() then raise exception 'Authentication required'; end if;
+ select * into adjustment from public.financial_transactions where id=p_adjustment_id and type='ADJUSTMENT';
+ if not found then raise exception 'ADJUSTMENT_NOT_FOUND'; end if;
+ if not private.can_manage_time_payroll_profile(adjustment.profile_id) then raise exception 'Forbidden'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('time-tracking:'||adjustment.profile_id::text,0));
+ select * into adjustment from public.financial_transactions where id=p_adjustment_id and type='ADJUSTMENT' for update;
+ if not found then raise exception 'ADJUSTMENT_NOT_FOUND'; end if;
+ if not private.is_active_user() or not private.can_manage_time_payroll_profile(adjustment.profile_id) then
+   raise exception 'Forbidden'; end if;
+ select * into source from public.financial_transactions where id=adjustment.parent_debt_id for update;
+ if not found or source.type<>'WITHDRAWAL' or source.status<>'APPROVED' or source.cancelled_at is not null then
+   raise exception 'WITHDRAWAL_SOURCE_NOT_FOUND'; end if;
+ if adjustment.status<>'APPROVED' or adjustment.cancelled_at is not null then raise exception 'ADJUSTMENT_ALREADY_DECIDED'; end if;
+ if not private.is_global_time_payroll_manager() and adjustment.expense_location_id is not null
+   and not private.can_assign_time_tracking_expense_location(adjustment.expense_location_id) then
+   raise exception 'Existing expense location access denied'; end if;
+ -- The planner can touch all open parents of this employee. Fence all affected branches in sorted order.
+ perform private.lock_report_locations(array(
+   select distinct expense_location_id from public.financial_transactions
+   where profile_id=adjustment.profile_id and status='APPROVED' and cancelled_at is null
+     and type in ('DEBT','WITHDRAWAL','ADJUSTMENT') and expense_location_id is not null));
+ if not private.is_active_user() then raise exception 'Authentication required'; end if;
+ if not private.can_manage_time_payroll_profile(adjustment.profile_id) then raise exception 'Forbidden'; end if;
+ if not private.is_global_time_payroll_manager() and adjustment.expense_location_id is not null
+   and not private.can_assign_time_tracking_expense_location(adjustment.expense_location_id) then
+   raise exception 'Existing expense location access denied'; end if;
+ select id into latest_id from public.financial_transactions
+ where parent_debt_id=source.id and type='ADJUSTMENT' and status='APPROVED' and cancelled_at is null
+ order by approved_at desc nulls last,created_at desc,id desc limit 1;
+ if latest_id is distinct from adjustment.id then raise exception 'ADJUSTMENT_NOT_LATEST'; end if;
+ if exists(select 1 from public.financial_transactions where parent_debt_id=source.id
+   and type='ADJUSTMENT' and status='PENDING' and cancelled_at is null) then raise exception 'ADJUSTMENT_PENDING_EXISTS'; end if;
+ report_no:=private.active_report_no('financial_transaction',adjustment.id);
+ if report_no is not null then perform private.raise_report_lock(report_no); end if;
+ select * into slip from private.withdrawal_adjustment_blocking_slip(adjustment.id);
+ if found then raise exception 'MONTH_CLOSED:%:PAYROLL_SLIP:%:%',slip.month,slip.status,slip.id; end if;
+ if adjustment.adjustment_base_amount < private.withdrawal_closed_floor(source.id) then
+   raise exception 'ADJUSTMENT_BELOW_CLOSED_FLOOR:%',private.withdrawal_closed_floor(source.id); end if;
+ perform set_config('app.time_tracking_permanent_delete_rpc','true',true);
+ delete from public.financial_transactions where id=adjustment.id;
+ perform set_config('app.time_tracking_permanent_delete_rpc',coalesce(nullif(old_flag,''),'false'),true);
+ perform private.rebuild_open_withdrawal_deductions(adjustment.profile_id,actor,source.id,adjustment.id);
+ insert into public.time_tracking_audit_logs(admin_id,action,target_table,record_id,old_data,new_data,comment)
+ values(actor,'DELETE_WITHDRAWAL_ADJUSTMENT','financial_transactions',adjustment.id,to_jsonb(adjustment),
+ jsonb_build_object('withdrawalId',source.id,'targetAmount',private.latest_withdrawal_target(source.id)),
+ 'ลบการปรับยอดล่าสุดและคืนยอดเดือนเปิด');
+ return jsonb_build_object('status','deleted','sourceType','transaction','sourceId',adjustment.id,'withdrawalId',source.id);
+end $$;
+
+
+ALTER FUNCTION "private"."delete_withdrawal_adjustment"("p_adjustment_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "price_time_exempt" boolean, "edit_window_minutes" integer, "configured_price" numeric, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone)
@@ -6959,6 +7087,31 @@ $$;
 ALTER FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."preserve_rubber_bill_number"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+declare b private.rubber_bill_number_bindings;
+begin
+  if tg_op='INSERT' then
+    select * into b from private.rubber_bill_number_bindings where client_temp_id=new.client_temp_id;
+    if b.client_temp_id is null and new.numbering_metadata is not null then raise exception 'UNBOUND_BILL_NUMBER'; end if;
+    if b.client_temp_id is not null then
+      if new.location_id<>b.location_id or new.local_bill_no<>b.base_number or new.server_bill_no<>b.final_number then
+        raise exception 'BILL_NUMBER_CHANGED'; end if;
+      new.numbering_metadata:=b.metadata;
+    end if;
+  elsif old.numbering_metadata is not null and
+    (new.local_bill_no is distinct from old.local_bill_no or new.server_bill_no is distinct from old.server_bill_no
+      or new.numbering_metadata is distinct from old.numbering_metadata) then raise exception 'BILL_NUMBER_CHANGED';
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."preserve_rubber_bill_number"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."prevent_approved_adjustment_delete"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -7640,6 +7793,21 @@ CREATE OR REPLACE FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+declare source_id uuid;
+begin
+ select parent_debt_id into source_id from public.financial_transactions where id=p_adjustment_id and type='ADJUSTMENT' and cancelled_at is null;
+ if source_id is null then raise exception 'WITHDRAWAL_SOURCE_NOT_FOUND'; end if;
+ return private.rebuild_open_withdrawal_deductions(p_profile_id,p_actor,source_id,p_adjustment_id);
+end $$;
+
+
+ALTER FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rebuild_open_withdrawal_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_withdrawal_id" "uuid", "p_adjustment_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
 declare
   v_current_month date := date_trunc('month', now() at time zone 'Asia/Bangkok')::date;
   v_previous_flag text := current_setting('app.time_payroll_settlement_rpc', true);
@@ -7741,11 +7909,7 @@ begin
         - private.withdrawal_closed_floor(source.id),
       0
     )
-    from public.financial_transactions adjustment
-    where adjustment.id = p_adjustment_id
-      and adjustment.type = 'ADJUSTMENT'
-      and adjustment.cancelled_at is null
-      and adjustment.parent_debt_id = source.id
+    where source.id = p_withdrawal_id
       and source.profile_id = p_profile_id
       and source.type = 'WITHDRAWAL'
       and source.status = 'APPROVED'
@@ -7824,7 +7988,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "private"."rebuild_open_withdrawal_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_withdrawal_id" "uuid", "p_adjustment_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rebuild_rubber_bill_evidence_projection"("p_location_id" "uuid") RETURNS bigint
@@ -11412,6 +11576,25 @@ $$;
 ALTER FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."withdrawal_adjustment_blocking_slip"("p_adjustment_id" "uuid") RETURNS TABLE("id" "uuid", "month" "text", "status" "text")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+ select slip.id,slip.month,slip.status::text
+ from public.financial_transactions adjustment
+ join public.financial_transactions source on source.id=adjustment.parent_debt_id
+ join public.payroll_slips slip on slip.profile_id=source.profile_id
+ where adjustment.id=p_adjustment_id and adjustment.type='ADJUSTMENT'
+   and slip.status in ('PENDING','APPROVED') and slip.cancelled_at is null
+   and slip.created_at >= coalesce(adjustment.approved_at,adjustment.created_at)
+   and source.effective_date < ((slip.month||'-01')::date+interval '1 month')::date
+ order by slip.month,slip.created_at,slip.id limit 1
+$$;
+
+
+ALTER FUNCTION "private"."withdrawal_adjustment_blocking_slip"("p_adjustment_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."withdrawal_closed_floor"("p_withdrawal_id" "uuid") RETURNS numeric
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -14268,6 +14451,7 @@ declare
   v_segments jsonb;
   v_transactions jsonb;
   v_slip public.payroll_slips%rowtype;
+  v_snapshot_at timestamptz;
   v_blocker record;
 begin
   if v_actor_id is null or not private.can_approve_time_tracking_profile(p_profile_id) then
@@ -14434,6 +14618,7 @@ begin
       )
     );
 
+  v_snapshot_at := clock_timestamp();
   insert into public.payroll_slips (
     profile_id,
     month,
@@ -14444,7 +14629,8 @@ begin
     daily_wage,
     slip_data,
     status,
-    created_by
+    created_by,
+    created_at
   )
   values (
     p_profile_id,
@@ -14459,10 +14645,11 @@ begin
       'transactions', v_transactions,
       'netPayBeforeRounding', v_net_before_rounding,
       'roundingAdjustment', v_rounding_adjustment,
-      'lockedAt', now()
+      'lockedAt', v_snapshot_at
     ),
     'PENDING',
-    v_actor_id
+    v_actor_id,
+    v_snapshot_at
   )
   returning * into v_slip;
 
@@ -15733,6 +15920,7 @@ declare
   v_delta numeric;
   v_direction text;
   v_payload jsonb;
+  v_approved_at timestamptz;
   v_previous_expense_flag text := current_setting('app.time_tracking_expense_rpc', true);
 begin
   if v_actor_id is null or not private.is_active_user() then
@@ -15755,6 +15943,20 @@ begin
   from public.financial_transactions
   where id = p_adjustment_id and type = 'ADJUSTMENT'
   for update;
+  if not found then raise exception 'ADJUSTMENT_NOT_FOUND'; end if;
+  if p_decision = 'APPROVED' then
+    perform private.lock_report_locations(array(
+      select p_expense_location_id
+      union
+      select expense_location_id from public.financial_transactions
+      where profile_id = v_adjustment.profile_id and status = 'APPROVED' and cancelled_at is null
+        and type in ('DEBT', 'WITHDRAWAL', 'ADJUSTMENT') and expense_location_id is not null
+    ));
+  end if;
+  if not private.is_active_user() then raise exception 'Authentication required'; end if;
+  if not private.can_manage_time_payroll_profile(v_adjustment.profile_id) then
+    raise exception 'Forbidden';
+  end if;
   select * into v_source
   from public.financial_transactions
   where id = v_adjustment.parent_debt_id
@@ -15805,8 +16007,8 @@ begin
     return jsonb_build_object('id', v_adjustment.id, 'status', 'rejected');
   end if;
 
-  if p_expense_location_id is null
-    or not private.can_assign_time_tracking_expense_location(p_expense_location_id) then
+  if p_expense_location_id is not null
+    and not private.can_assign_time_tracking_expense_location(p_expense_location_id) then
     raise exception 'ADJUSTMENT_BRANCH_REQUIRED';
   end if;
 
@@ -15821,8 +16023,9 @@ begin
   select name into v_actor_name from public.profiles where id = v_actor_id;
 
   perform set_config('app.time_tracking_expense_rpc', 'true', true);
+  v_approved_at := clock_timestamp();
   update public.financial_transactions
-  set status = 'APPROVED', approved_by = v_actor_id, approved_at = now(),
+  set status = 'APPROVED', approved_by = v_actor_id, approved_at = v_approved_at,
     expense_location_id = p_expense_location_id,
     admin_comment = left(coalesce(p_comment, ''), 500)
   where id = v_adjustment.id;
@@ -15833,6 +16036,7 @@ begin
     v_adjustment.id
   );
 
+  if p_expense_location_id is not null then
   v_payload := private.dashboard_money_event_entry(
     'withdrawal-adjustment:' || v_adjustment.id::text,
     p_expense_location_id,
@@ -15848,7 +16052,7 @@ begin
       'targetAmount', v_adjustment.amount,
       'delta', v_delta,
       'locationId', p_expense_location_id,
-      'approvedAt', now()
+      'approvedAt', v_approved_at
     ),
     v_actor_id,
     v_actor_name
@@ -15859,6 +16063,7 @@ begin
   insert into private.dashboard_money_event_projection (source_type, source_id, event_key, payload)
   values ('withdrawal_adjustment', v_adjustment.id, v_payload ->> 'eventKey', v_payload)
   on conflict (source_type, source_id, event_key) do update set payload = excluded.payload;
+  end if;
 
   insert into public.time_tracking_audit_logs (
     admin_id, action, target_table, record_id, old_data, new_data, comment
@@ -16713,6 +16918,10 @@ begin
     raise exception 'Invalid deletion source';
   end if;
 
+  if p_source_type = 'transaction' and exists(
+    select 1 from public.financial_transactions where id=p_source_id and type='ADJUSTMENT'
+  ) then return private.delete_withdrawal_adjustment(p_source_id); end if;
+
   if p_source_type = 'transaction' then
     select * into v_tx
     from public.financial_transactions
@@ -16984,7 +17193,7 @@ CREATE TABLE IF NOT EXISTS "public"."financial_transactions" (
     "payment_transfer_amount" numeric(14,2),
     "history_creator_user_id" "uuid",
     "history_creator_name" "text",
-    CONSTRAINT "financial_transactions_adjustment_expense_assignment" CHECK ((("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR (("expense_location_id" IS NOT NULL) AND ("approved_at" IS NOT NULL)))),
+    CONSTRAINT "financial_transactions_adjustment_expense_assignment" CHECK ((("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") OR ("status" <> 'APPROVED'::"public"."approval_status") OR ("cancelled_at" IS NOT NULL) OR ("approved_at" IS NOT NULL))),
     CONSTRAINT "financial_transactions_adjustment_shape" CHECK (((("type" = 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("parent_debt_id" IS NOT NULL) AND ("effective_date" IS NOT NULL) AND ("adjustment_base_amount" IS NOT NULL) AND ("amount" >= (0)::numeric) AND ("adjustment_base_amount" >= (0)::numeric) AND (("amount")::"text" <> ALL (ARRAY['NaN'::"text", 'Infinity'::"text", '-Infinity'::"text"])) AND (("adjustment_base_amount")::"text" <> ALL (ARRAY['NaN'::"text", 'Infinity'::"text", '-Infinity'::"text"]))) OR (("type" <> 'ADJUSTMENT'::"public"."financial_transaction_type") AND ("adjustment_base_amount" IS NULL)))),
     CONSTRAINT "financial_transactions_applied_month_shape" CHECK (((("type" = ANY (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NOT NULL) AND ("applied_month" = ("date_trunc"('month'::"text", ("applied_month")::timestamp with time zone))::"date")) OR (("type" <> ALL (ARRAY['DEBT_DEDUCTION'::"public"."financial_transaction_type", 'WITHDRAWAL_DEDUCTION'::"public"."financial_transaction_type"])) AND ("applied_month" IS NULL)))),
     CONSTRAINT "financial_transactions_effective_date_shape" CHECK (((("type" = ANY (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])) AND ("effective_date" IS NOT NULL)) OR ("type" <> ALL (ARRAY['DEBT'::"public"."financial_transaction_type", 'WITHDRAWAL'::"public"."financial_transaction_type"])))),
@@ -17433,6 +17642,22 @@ end $$;
 
 
 ALTER FUNCTION "public"."get_branch_threshold_alert_check"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_business_cache_settings"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.can_access_business_modules() or not private.sms_access_allowed() then
+    raise exception 'FORBIDDEN' using errcode = '42501';
+  end if;
+  return (select jsonb_build_object('intervalMinutes', interval_minutes, 'revision', revision)
+    from public.business_cache_settings where id = true);
+end $$;
+
+
+ALTER FUNCTION "public"."get_business_cache_settings"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") RETURNS "jsonb"
@@ -18224,7 +18449,21 @@ begin
           when direction = 'income' then amount
           else -amount
         end
-      ), 0) as net_cash_flow
+      ), 0)
+      + (select coalesce(sum(ft.amount - private.time_payroll_branch_paid_amount(
+          ft.amount, ft.payment_contract_version, ft.payment_channel,
+          ft.payment_transfer_amount, ft.expense_location_id)), 0)
+        from public.financial_transactions ft
+        where ft.type = 'WITHDRAWAL' and ft.status = 'APPROVED'
+          and ft.cancelled_at is null and ft.expense_location_id = p_location_id
+          and ft.payment_contract_version = 1 and ft.amount > 0)
+      + (select coalesce(sum(ps.net_pay - private.time_payroll_branch_paid_amount(
+          ps.net_pay, ps.payment_contract_version, ps.payment_channel,
+          ps.payment_transfer_amount, ps.expense_location_id)), 0)
+        from public.payroll_slips ps
+        where ps.status = 'APPROVED' and ps.cancelled_at is null
+          and ps.expense_location_id = p_location_id
+          and ps.payment_contract_version = 1 and ps.net_pay > 0) as net_cash_flow
       from financial_events
     ),
     operating_stats as (
@@ -21610,7 +21849,8 @@ begin
         'work_identity', 'approval:' || r.id::text,
         'id', r.id,
         'client_temp_id', r.client_temp_id,
-        'local_bill_no', coalesce(r.proposed_payload->>'localBillNo', 'รอเลขบิล'),
+        'numbering_metadata',r.proposed_payload->'billNumbering',
+'local_bill_no', coalesce(r.proposed_payload->>'localBillNo', 'รอเลขบิล'),
         'server_bill_no', null,
         'idempotency_key', coalesce(r.proposed_payload->>'idempotencyKey', r.id::text),
         'location_id', r.location_id,
@@ -22914,7 +23154,9 @@ begin
       'withdrawalId', source.id,
       'latestTarget', private.latest_withdrawal_target(source.id),
       'closedSlipFloor', private.withdrawal_closed_floor(source.id),
-      'pendingAdjustmentId', pending.id
+      'pendingAdjustmentId', pending.id,
+      'latestApprovedAdjustmentId', latest.id,
+      'blockingSlip', (select to_jsonb(blocker) from private.withdrawal_adjustment_blocking_slip(latest.id) blocker)
     ) order by source.effective_date desc, source.created_at desc, source.id desc)
     from public.financial_transactions source
     left join lateral (
@@ -22927,6 +23169,12 @@ begin
       order by adjustment.created_at desc, adjustment.id desc
       limit 1
     ) pending on true
+    left join lateral (
+      select adjustment.id from public.financial_transactions adjustment
+      where adjustment.parent_debt_id=source.id and adjustment.type='ADJUSTMENT'
+        and adjustment.status='APPROVED' and adjustment.cancelled_at is null
+      order by adjustment.approved_at desc nulls last,adjustment.created_at desc,adjustment.id desc limit 1
+    ) latest on true
     where source.profile_id = p_profile_id
       and source.type = 'WITHDRAWAL'
       and source.status = 'APPROVED'
@@ -23179,6 +23427,33 @@ $$;
 
 
 ALTER FUNCTION "public"."list_rubber_approval_groups"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."list_rubber_bill_issuers"("p_location_id" "uuid" DEFAULT NULL::"uuid", "p_search" "text" DEFAULT ''::"text", "p_offset" integer DEFAULT 0, "p_limit" integer DEFAULT 20, "p_status" "text" DEFAULT 'all'::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare result jsonb;
+begin
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then
+    raise exception 'FORBIDDEN' using errcode='42501'; end if;
+  if p_limit is null or p_offset is null or p_status is null or p_search is null or p_status not in ('all','active','retired') or p_offset<0 or p_limit not between 1 and 100 or length(p_search)>160 then raise exception 'INVALID_INPUT'; end if;
+  with filtered as (
+    select i.id,i.code,i.location_id as "locationId",l.name as "locationName",i.browser,i.platform,
+      p.name as "lastUserName",i.created_at as "createdAt",i.last_seen_at as "lastSeenAt",
+      i.retired_at as "retiredAt",r.name as "retiredByName"
+    from private.rubber_bill_issuers i left join public.locations l on l.id=i.location_id
+      left join public.profiles p on p.id=i.last_user_id left join public.profiles r on r.id=i.retired_by
+    where (p_location_id is null or i.location_id=p_location_id) and (p_status='all' or (p_status='active' and i.retired_at is null) or (p_status='retired' and i.retired_at is not null))
+      and (p_search='' or concat_ws(' ',i.code,l.name,i.browser,i.platform,p.name) ilike '%'||p_search||'%')
+  ), page as (select * from filtered order by "createdAt" desc,id limit p_limit offset p_offset)
+  select jsonb_build_object('total',(select count(*) from filtered),'rows',coalesce(
+    (select jsonb_agg(to_jsonb(page) order by "createdAt" desc,id) from page),'[]'::jsonb)) into result;
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."list_rubber_bill_issuers"("p_location_id" "uuid", "p_search" "text", "p_offset" integer, "p_limit" integer, "p_status" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean DEFAULT false, "p_before" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_before_id" "uuid" DEFAULT NULL::"uuid", "p_limit" integer DEFAULT 50, "p_search" "text" DEFAULT ''::"text") RETURNS "jsonb"
@@ -24033,6 +24308,42 @@ $$;
 ALTER FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."register_rubber_bill_issuer"("p_location_id" "uuid", "p_installation_id" "uuid", "p_generation_id" "uuid", "p_browser" "text" DEFAULT ''::"text", "p_platform" "text" DEFAULT ''::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare h private.rubber_bill_issuer_heads; i private.rubber_bill_issuers; n bigint;
+begin
+  if not private.rubber_actor_active() or not private.rubber_actor_location(p_location_id)
+    or not exists(select 1 from public.profiles where id=auth.uid() and role in ('admin','super_admin')) then
+    raise exception 'FORBIDDEN' using errcode='42501';
+  end if;
+  if p_installation_id is null or p_generation_id is null or p_location_id is null
+    or length(p_browser)>160 or length(p_platform)>80 then raise exception 'INVALID_ISSUER'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('rubber-issuer:'||p_location_id::text,0));
+  select * into h from private.rubber_bill_issuer_heads where location_id=p_location_id
+    and installation_id=p_installation_id and generation_id=p_generation_id for update;
+  select * into i from private.rubber_bill_issuers where id=h.issuer_id;
+  if i.id is null or i.retired_at is not null then
+    insert into private.rubber_bill_issuer_counters values(p_location_id,1)
+      on conflict(location_id) do update set last_code=rubber_bill_issuer_counters.last_code+1
+      returning last_code into n;
+    insert into private.rubber_bill_issuers(location_id,code,installation_id,generation_id,browser,platform,last_user_id)
+      values(p_location_id,'D'||lpad(n::text,greatest(2,length(n::text)),'0'),p_installation_id,p_generation_id,
+        coalesce(p_browser,''),coalesce(p_platform,''),auth.uid()) returning * into i;
+    insert into private.rubber_bill_issuer_heads values(p_location_id,p_installation_id,p_generation_id,i.id)
+      on conflict(location_id,installation_id,generation_id) do update set issuer_id=excluded.issuer_id;
+  else
+    update private.rubber_bill_issuers set last_seen_at=clock_timestamp(),last_user_id=auth.uid(),
+      browser=coalesce(p_browser,''),platform=coalesce(p_platform,'') where id=i.id;
+  end if;
+  return jsonb_build_object('id',i.id,'code',i.code,'locationId',p_location_id,'version',1);
+end $$;
+
+
+ALTER FUNCTION "public"."register_rubber_bill_issuer"("p_location_id" "uuid", "p_installation_id" "uuid", "p_generation_id" "uuid", "p_browser" "text", "p_platform" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."release_weight_evidence_completion"("p_bill_id" "uuid", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -24511,6 +24822,7 @@ END - "deduction_total"), (0)::numeric)) STORED,
     "rubber_price_rule_source" "text",
     "last_submission_fingerprint" "text",
     "price_adjustment_target" numeric(14,2) DEFAULT 0 NOT NULL,
+    "numbering_metadata" "jsonb",
     CONSTRAINT "rubber_bills_allowance_snapshot_check" CHECK ((("price_allowance_snapshot" IS NULL) OR ("price_allowance_snapshot" >= (0)::numeric))),
     CONSTRAINT "rubber_bills_approval_revision_shape_check" CHECK (((("approval_state" = 'not_required'::"text") AND ("approved_by_name" IS NULL) AND ("approval_revision_no" IS NULL)) OR (("approval_state" = 'approved'::"text") AND ("approved_by_name" IS NOT NULL) AND ("approval_revision_no" = "revision_no")))),
     CONSTRAINT "rubber_bills_approval_state_check" CHECK (("approval_state" = ANY (ARRAY['not_required'::"text", 'approved'::"text"]))),
@@ -24969,10 +25281,9 @@ begin
   if private.active_report_no('financial_transaction', v_source.id) is null then
     raise exception 'WITHDRAWAL_NOT_REPORT_LOCKED';
   end if;
-  if v_is_manager and (
-    p_expense_location_id is null
-    or not private.can_assign_time_tracking_expense_location(p_expense_location_id)
-  ) then raise exception 'ADJUSTMENT_BRANCH_REQUIRED'; end if;
+  if v_is_manager and p_expense_location_id is not null
+    and not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+  then raise exception 'ADJUSTMENT_BRANCH_REQUIRED'; end if;
   if not v_is_manager and p_expense_location_id is not null then raise exception 'Forbidden'; end if;
 
   perform pg_advisory_xact_lock(hashtextextended('time-tracking:' || v_source.profile_id::text, 0));
@@ -24980,6 +25291,27 @@ begin
   from public.financial_transactions
   where id = p_withdrawal_id
   for update;
+  if not found or v_source.type <> 'WITHDRAWAL'
+    or v_source.status <> 'APPROVED' or v_source.cancelled_at is not null then
+    raise exception 'WITHDRAWAL_SOURCE_NOT_FOUND';
+  end if;
+  perform private.lock_report_locations(array(
+    select p_expense_location_id
+    union
+    select expense_location_id from public.financial_transactions
+    where profile_id = v_source.profile_id and status = 'APPROVED' and cancelled_at is null
+      and type in ('DEBT', 'WITHDRAWAL', 'ADJUSTMENT') and expense_location_id is not null
+  ));
+  if not private.is_active_user() then raise exception 'Authentication required'; end if;
+  v_is_manager := private.can_manage_time_payroll_profile(v_source.profile_id);
+  if v_source.profile_id <> v_actor_id and not v_is_manager then raise exception 'Forbidden'; end if;
+  if not v_is_manager and p_expense_location_id is not null then raise exception 'Forbidden'; end if;
+  if v_is_manager and p_expense_location_id is not null
+    and not private.can_assign_time_tracking_expense_location(p_expense_location_id)
+  then raise exception 'ADJUSTMENT_BRANCH_REQUIRED'; end if;
+  if private.active_report_no('financial_transaction',v_source.id) is null then
+    raise exception 'WITHDRAWAL_NOT_REPORT_LOCKED';
+  end if;
 
   v_base := private.latest_withdrawal_target(v_source.id);
   v_floor := private.withdrawal_closed_floor(v_source.id);
@@ -25056,6 +25388,23 @@ CREATE OR REPLACE FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_
 
 
 ALTER FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then
+    raise exception 'FORBIDDEN' using errcode='42501'; end if;
+  update private.rubber_bill_issuers set retired_at=clock_timestamp(),retired_by=auth.uid()
+    where id=p_id and retired_at is null;
+  if not exists(select 1 from private.rubber_bill_issuers where id=p_id) then raise exception 'ISSUER_NOT_FOUND'; end if;
+  return jsonb_build_object('id',p_id,'retired',true);
+end $$;
+
+
+ALTER FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") RETURNS "jsonb"
@@ -25314,6 +25663,34 @@ $$;
 
 
 ALTER FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare current_settings public.business_cache_settings%rowtype;
+begin
+  if not private.is_active_user() or not private.sms_access_allowed() or not exists (
+    select 1 from public.profiles where id = auth.uid() and is_active and role = 'super_admin'
+  ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
+  if (p_interval_minutes is not null and p_interval_minutes not between 10 and 120)
+     or p_expected_revision is null or p_expected_revision < 1 then
+    raise exception 'Invalid cache settings' using errcode = '22023';
+  end if;
+  select * into strict current_settings from public.business_cache_settings where id = true for update;
+  if current_settings.revision <> p_expected_revision then
+    raise exception 'Cache settings changed' using errcode = '40001';
+  end if;
+  if current_settings.interval_minutes is distinct from p_interval_minutes then
+    update public.business_cache_settings set interval_minutes = p_interval_minutes,
+      revision = revision + 1, updated_at = clock_timestamp(), updated_by = auth.uid() where id = true;
+  end if;
+  return public.get_business_cache_settings();
+end $$;
+
+
+ALTER FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."save_cash_count_alert_group"("p_group_id" "uuid", "p_location_ids" "uuid"[], "p_due_days" integer) RETURNS "jsonb"
@@ -28052,6 +28429,22 @@ end $$;
 ALTER FUNCTION "public"."submit_cash_count_v3"("p_session_id" "uuid", "p_actual_counts" "jsonb", "p_evidence_ids" "uuid"[]) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."submit_numbered_rubber_queue"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.rubber_actor_active() or not private.rubber_actor_location((payload->>'locationId')::uuid) then
+    raise exception 'FORBIDDEN' using errcode='42501'; end if;
+  if not (payload ? 'billNumbering') then raise exception 'INVALID_BILL_NUMBER'; end if;
+  perform private.assert_rubber_bill_numbering(payload);
+  return public.submit_rubber_queue(payload);
+end $$;
+
+
+ALTER FUNCTION "public"."submit_numbered_rubber_queue"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -28835,6 +29228,22 @@ $$;
 ALTER FUNCTION "public"."sync_money_transfer_item_source_fks"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."sync_numbered_rubber_bill"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.rubber_actor_active() or not private.rubber_actor_location((payload->>'locationId')::uuid) then
+    raise exception 'FORBIDDEN' using errcode='42501'; end if;
+  if not (payload ? 'billNumbering') then raise exception 'INVALID_BILL_NUMBER'; end if;
+  perform private.assert_rubber_bill_numbering(payload);
+  return public.sync_rubber_bill(payload);
+end $$;
+
+
+ALTER FUNCTION "public"."sync_numbered_rubber_bill"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."sync_rubber_bill"("payload" "jsonb") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -29283,6 +29692,7 @@ declare
   v_normalized jsonb;
   v_result jsonb;
 begin
+  perform private.assert_rubber_bill_numbering(payload);
   v_normalized := private.normalize_rubber_bill_calculation_payload(payload);
   v_result := public.sync_rubber_bill_core_before_price_adjustment_20261008018000(v_normalized);
   if v_result->>'status' = 'synced'
@@ -29621,7 +30031,9 @@ begin
     returning id, revision_no into v_bill_id, v_current_revision;
 
   else
-    if v_bill_id is null then
+    if v_bill_id is null and payload ? 'billNumbering' then
+      v_server_bill_no := private.allocate_rubber_bill_suffix(payload);
+    elsif v_bill_id is null then
       v_date := to_char((payload->>'billDate')::date, 'YYMMDD');
       perform pg_advisory_xact_lock(hashtext(v_location_id::text || v_date));
 
@@ -31068,6 +31480,7 @@ begin
   where id = p_adjustment_id and type = 'ADJUSTMENT'
   for update;
   if not found then raise exception 'ADJUSTMENT_NOT_FOUND'; end if;
+  if not private.is_active_user() then raise exception 'Authentication required'; end if;
   if v_adjustment.profile_id <> v_actor_id then raise exception 'Forbidden'; end if;
   if v_adjustment.cancelled_at is not null then
     raise exception 'ADJUSTMENT_ALREADY_DECIDED';
@@ -31221,6 +31634,67 @@ CREATE TABLE IF NOT EXISTS "private"."rubber_bill_evidence_projection" (
 
 
 ALTER TABLE "private"."rubber_bill_evidence_projection" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_bill_issuer_counters" (
+    "location_id" "uuid" NOT NULL,
+    "last_code" bigint NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_bill_issuer_counters" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_bill_issuer_heads" (
+    "location_id" "uuid" NOT NULL,
+    "installation_id" "uuid" NOT NULL,
+    "generation_id" "uuid" NOT NULL,
+    "issuer_id" "uuid" NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_bill_issuer_heads" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_bill_issuers" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "code" "text" NOT NULL,
+    "installation_id" "uuid" NOT NULL,
+    "generation_id" "uuid" NOT NULL,
+    "browser" "text" NOT NULL,
+    "platform" "text" NOT NULL,
+    "last_user_id" "uuid",
+    "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "last_seen_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "retired_at" timestamp with time zone,
+    "retired_by" "uuid"
+);
+
+
+ALTER TABLE "private"."rubber_bill_issuers" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_bill_number_bindings" (
+    "client_temp_id" "text" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "base_number" "text" NOT NULL,
+    "final_number" "text" NOT NULL,
+    "metadata" "jsonb" NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_bill_number_bindings" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."rubber_bill_suffix_counters" (
+    "location_id" "uuid" NOT NULL,
+    "base_number" "text" NOT NULL,
+    "last_suffix" bigint NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_bill_suffix_counters" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "private"."rubber_command_contexts" (
@@ -31586,6 +32060,21 @@ CREATE TABLE IF NOT EXISTS "public"."branch_transfer_delete_requests" (
 ALTER TABLE "public"."branch_transfer_delete_requests" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."business_cache_settings" (
+    "id" boolean DEFAULT true NOT NULL,
+    "interval_minutes" integer,
+    "revision" integer DEFAULT 1 NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_by" "uuid",
+    CONSTRAINT "business_cache_settings_id_check" CHECK ("id"),
+    CONSTRAINT "business_cache_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 120))),
+    CONSTRAINT "business_cache_settings_revision_check" CHECK (("revision" > 0))
+);
+
+
+ALTER TABLE "public"."business_cache_settings" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."cash_alert_group_locations" (
     "group_id" "uuid" NOT NULL,
     "location_id" "uuid" NOT NULL,
@@ -31652,10 +32141,10 @@ CREATE TABLE IF NOT EXISTS "public"."cash_count_bank_evidence" (
     "amount" numeric(14,2) NOT NULL,
     "balance_kind" "text" NOT NULL,
     "drive_file_id" "text",
-    "drive_uploaded_at" timestamp with time zone,
-    "upload_started_at" timestamp with time zone,
     "count_id" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "drive_uploaded_at" timestamp with time zone,
+    "upload_started_at" timestamp with time zone,
     "slot_id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "account_position" integer,
     CONSTRAINT "cash_count_bank_attached_position" CHECK (((("count_id" IS NULL) AND ("account_position" IS NULL)) OR (("count_id" IS NOT NULL) AND ("account_position" IS NOT NULL)))),
@@ -33019,6 +33508,41 @@ ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
 
 
 
+ALTER TABLE ONLY "private"."rubber_bill_issuer_counters"
+    ADD CONSTRAINT "rubber_bill_issuer_counters_pkey" PRIMARY KEY ("location_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_issuer_heads"
+    ADD CONSTRAINT "rubber_bill_issuer_heads_pkey" PRIMARY KEY ("location_id", "installation_id", "generation_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_issuers"
+    ADD CONSTRAINT "rubber_bill_issuers_location_id_code_key" UNIQUE ("location_id", "code");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_issuers"
+    ADD CONSTRAINT "rubber_bill_issuers_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_number_bindings"
+    ADD CONSTRAINT "rubber_bill_number_bindings_location_id_final_number_key" UNIQUE ("location_id", "final_number");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_number_bindings"
+    ADD CONSTRAINT "rubber_bill_number_bindings_pkey" PRIMARY KEY ("client_temp_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_suffix_counters"
+    ADD CONSTRAINT "rubber_bill_suffix_counters_pkey" PRIMARY KEY ("location_id", "base_number");
+
+
+
 ALTER TABLE ONLY "private"."rubber_command_contexts"
     ADD CONSTRAINT "rubber_command_contexts_pkey" PRIMARY KEY ("location_id", "client_temp_id");
 
@@ -33091,6 +33615,11 @@ ALTER TABLE ONLY "public"."branch_create_guard_settings"
 
 ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
     ADD CONSTRAINT "branch_transfer_delete_requests_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."business_cache_settings"
+    ADD CONSTRAINT "business_cache_settings_pkey" PRIMARY KEY ("id");
 
 
 
@@ -33521,11 +34050,6 @@ ALTER TABLE ONLY "public"."rubber_bills"
 
 ALTER TABLE ONLY "public"."rubber_bills"
     ADD CONSTRAINT "rubber_bills_idempotency_key_key" UNIQUE ("idempotency_key");
-
-
-
-ALTER TABLE ONLY "public"."rubber_bills"
-    ADD CONSTRAINT "rubber_bills_location_id_local_bill_no_key" UNIQUE ("location_id", "local_bill_no");
 
 
 
@@ -34089,7 +34613,15 @@ CREATE INDEX "rubber_bills_branch_receipt_source_lookup" ON "public"."rubber_bil
 
 
 
+CREATE UNIQUE INDEX "rubber_bills_device_final_number_unique" ON "public"."rubber_bills" USING "btree" ("location_id", "server_bill_no") WHERE ("numbering_metadata" IS NOT NULL);
+
+
+
 CREATE INDEX "rubber_bills_feed_active_idx" ON "public"."rubber_bills" USING "btree" ("location_id", "bill_date" DESC, "id") WHERE (("record_status" = 'active'::"public"."record_status") AND ("net_total" > (0)::numeric));
+
+
+
+CREATE UNIQUE INDEX "rubber_bills_legacy_local_number_unique" ON "public"."rubber_bills" USING "btree" ("location_id", "local_bill_no") WHERE ("numbering_metadata" IS NULL);
 
 
 
@@ -34637,6 +35169,10 @@ CREATE OR REPLACE TRIGGER "revoke_browser_on_manager_promotion" AFTER UPDATE OF 
 
 
 
+CREATE OR REPLACE TRIGGER "rubber_bill_number_identity" BEFORE INSERT OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."preserve_rubber_bill_number"();
+
+
+
 CREATE OR REPLACE TRIGGER "rubber_bill_ocr_sources_enforce_update" BEFORE UPDATE ON "public"."rubber_bill_ocr_sources" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_rubber_bill_ocr_source_update"();
 
 
@@ -34677,6 +35213,11 @@ ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
 
 ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
     ADD CONSTRAINT "rubber_bill_evidence_projection_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_issuer_heads"
+    ADD CONSTRAINT "rubber_bill_issuer_heads_issuer_id_fkey" FOREIGN KEY ("issuer_id") REFERENCES "private"."rubber_bill_issuers"("id");
 
 
 
@@ -34767,6 +35308,11 @@ ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
 
 ALTER TABLE ONLY "public"."branch_transfer_delete_requests"
     ADD CONSTRAINT "branch_transfer_delete_requests_transfer_id_fkey" FOREIGN KEY ("transfer_id") REFERENCES "public"."money_transfers"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."business_cache_settings"
+    ADD CONSTRAINT "business_cache_settings_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
 
 
 
@@ -35674,6 +36220,9 @@ ALTER TABLE "public"."branch_create_guard_settings" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."branch_transfer_delete_requests" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."business_cache_settings" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "cash counts manager select" ON "public"."cash_counts" FOR SELECT TO "authenticated" USING ("private"."can_delete_reports"());
@@ -36623,6 +37172,10 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "private"."allocate_rubber_bill_suffix"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."append_dashboard_money_event"("p_source_type" "text", "p_source_id" "uuid", "p_action" "text", "p_payload" "jsonb", "p_actor_user_id" "uuid", "p_actor_name" "text") FROM PUBLIC;
 
 
@@ -36668,6 +37221,10 @@ REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_not_empty"() FROM
 
 
 REVOKE ALL ON FUNCTION "private"."assert_rubber_approval_group_row_not_empty"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_rubber_bill_numbering"("payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -36894,6 +37451,10 @@ REVOKE ALL ON FUNCTION "private"."delete_time_payroll_transfer_for_source"("p_so
 
 
 
+REVOKE ALL ON FUNCTION "private"."delete_withdrawal_adjustment"("p_adjustment_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."effective_rubber_approval_settings"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -37107,6 +37668,10 @@ REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() F
 
 
 
+REVOKE ALL ON FUNCTION "private"."preserve_rubber_bill_number"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."prevent_approved_adjustment_delete"() FROM PUBLIC;
 
 
@@ -37148,6 +37713,10 @@ REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_p
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."rebuild_open_withdrawal_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_withdrawal_id" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
 
 
 
@@ -37404,6 +37973,10 @@ REVOKE ALL ON FUNCTION "private"."validate_time_payroll_payment"("p_payment" "js
 
 
 REVOKE ALL ON FUNCTION "private"."validate_wex_rubber_exports"("p_location_id" "uuid", "p_wex_id" "uuid", "p_rubber_export_ids" "uuid"[]) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."withdrawal_adjustment_blocking_slip"("p_adjustment_id" "uuid") FROM PUBLIC;
 
 
 
@@ -37880,6 +38453,11 @@ GRANT ALL ON FUNCTION "public"."get_branch_threshold_alert_check"() TO "authenti
 
 
 
+REVOKE ALL ON FUNCTION "public"."get_business_cache_settings"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_business_cache_settings"() TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_cash_branch_transfer_detail"("p_transfer_id" "uuid") TO "authenticated";
 
@@ -38326,6 +38904,11 @@ GRANT ALL ON FUNCTION "public"."list_rubber_approval_groups"() TO "authenticated
 
 
 
+REVOKE ALL ON FUNCTION "public"."list_rubber_bill_issuers"("p_location_id" "uuid", "p_search" "text", "p_offset" integer, "p_limit" integer, "p_status" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_rubber_bill_issuers"("p_location_id" "uuid", "p_search" "text", "p_offset" integer, "p_limit" integer, "p_status" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer, "p_search" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."list_rubber_queue"("p_location_id" "uuid", "p_history" boolean, "p_before" timestamp with time zone, "p_before_id" "uuid", "p_limit" integer, "p_search" "text") TO "authenticated";
 
@@ -38423,6 +39006,11 @@ GRANT ALL ON FUNCTION "public"."receive_same_branch_yard_remainder"("p_destinati
 
 REVOKE ALL ON FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_row_id" "uuid", "p_role" "text", "p_location_id" "uuid", "p_revision_no" integer, "p_completion_id" "uuid", "p_evidence_key" "text", "p_drive_file_id" "text", "p_web_view_url" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."register_rubber_bill_issuer"("p_location_id" "uuid", "p_installation_id" "uuid", "p_generation_id" "uuid", "p_browser" "text", "p_platform" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."register_rubber_bill_issuer"("p_location_id" "uuid", "p_installation_id" "uuid", "p_generation_id" "uuid", "p_browser" "text", "p_platform" "text") TO "authenticated";
 
 
 
@@ -38748,6 +39336,11 @@ GRANT ALL ON FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_sessi
 
 
 
+REVOKE ALL ON FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") TO "authenticated";
 
@@ -38775,6 +39368,11 @@ REVOKE ALL ON FUNCTION "public"."run_time_tracking_daily_cutoff"() FROM PUBLIC;
 REVOKE ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) TO "authenticated";
 GRANT ALL ON FUNCTION "public"."save_branch_create_confirmation_minutes"("p_confirmation_minutes" integer) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) TO "authenticated";
 
 
 
@@ -38970,6 +39568,11 @@ GRANT ALL ON FUNCTION "public"."submit_cash_count_v3"("p_session_id" "uuid", "p_
 
 
 
+REVOKE ALL ON FUNCTION "public"."submit_numbered_rubber_queue"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."submit_numbered_rubber_queue"("payload" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."submit_rubber_queue"("payload" "jsonb") TO "authenticated";
 
@@ -38995,6 +39598,11 @@ REVOKE ALL ON FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") FR
 
 
 REVOKE ALL ON FUNCTION "public"."sync_money_transfer_item_source_fks"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_numbered_rubber_bill"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."sync_numbered_rubber_bill"("payload" "jsonb") TO "authenticated";
 
 
 
@@ -39199,6 +39807,10 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."branch_create_guar
 
 GRANT ALL ON TABLE "public"."branch_transfer_delete_requests" TO "service_role";
 GRANT SELECT ON TABLE "public"."branch_transfer_delete_requests" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."business_cache_settings" TO "service_role";
 
 
 
@@ -39553,87 +40165,6 @@ GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."user_locations" TO
 GRANT ALL ON TABLE "public"."user_locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_locations" TO "service_role";
 
-
-
-CREATE OR REPLACE FUNCTION "public"."get_business_cache_settings"() RETURNS "jsonb"
-    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-begin
-  if not private.can_access_business_modules() or not private.sms_access_allowed() then
-    raise exception 'FORBIDDEN' using errcode = '42501';
-  end if;
-  return (select jsonb_build_object('intervalMinutes', interval_minutes, 'revision', revision)
-    from public.business_cache_settings where id = true);
-end $$;
-
-
-ALTER FUNCTION "public"."get_business_cache_settings"() OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare current_settings public.business_cache_settings%rowtype;
-begin
-  if not private.is_active_user() or not private.sms_access_allowed() or not exists (
-    select 1 from public.profiles where id = auth.uid() and is_active and role = 'super_admin'
-  ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
-  if (p_interval_minutes is not null and p_interval_minutes not between 10 and 120)
-     or p_expected_revision is null or p_expected_revision < 1 then
-    raise exception 'Invalid cache settings' using errcode = '22023';
-  end if;
-  select * into strict current_settings from public.business_cache_settings where id = true for update;
-  if current_settings.revision <> p_expected_revision then
-    raise exception 'Cache settings changed' using errcode = '40001';
-  end if;
-  if current_settings.interval_minutes is distinct from p_interval_minutes then
-    update public.business_cache_settings set interval_minutes = p_interval_minutes,
-      revision = revision + 1, updated_at = clock_timestamp(), updated_by = auth.uid() where id = true;
-  end if;
-  return public.get_business_cache_settings();
-end $$;
-
-
-ALTER FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."business_cache_settings" (
-    "id" boolean DEFAULT true NOT NULL,
-    "interval_minutes" integer,
-    "revision" integer DEFAULT 1 NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_by" "uuid",
-    CONSTRAINT "business_cache_settings_id_check" CHECK ("id"),
-    CONSTRAINT "business_cache_settings_interval_minutes_check" CHECK ((("interval_minutes" >= 10) AND ("interval_minutes" <= 120))),
-    CONSTRAINT "business_cache_settings_revision_check" CHECK (("revision" > 0))
-);
-
-
-ALTER TABLE "public"."business_cache_settings" OWNER TO "postgres";
-
-
-ALTER TABLE ONLY "public"."business_cache_settings"
-    ADD CONSTRAINT "business_cache_settings_pkey" PRIMARY KEY ("id");
-
-
-ALTER TABLE ONLY "public"."business_cache_settings"
-    ADD CONSTRAINT "business_cache_settings_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "public"."profiles"("id");
-
-
-ALTER TABLE "public"."business_cache_settings" ENABLE ROW LEVEL SECURITY;
-
-
-REVOKE ALL ON FUNCTION "public"."get_business_cache_settings"() FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."get_business_cache_settings"() TO "authenticated";
-
-
-REVOKE ALL ON FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."save_business_cache_settings"("p_interval_minutes" integer, "p_expected_revision" integer) TO "authenticated";
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."business_cache_settings" TO "service_role";
 
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";

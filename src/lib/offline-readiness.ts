@@ -1,6 +1,7 @@
 import { readBootstrapCache } from "@/lib/lanflow/bootstrap-cache";
 import { getSyncDb, SYNC_QUEUE_STORE } from "@/lib/idb-core";
 import { OFFLINE_AUTH_MAX_AGE_MS } from "@/lib/offline-auth-policy";
+import { rubberNumberingReady } from "@/lib/rubber-bills/numbering-idb";
 
 type OfflineAsset = { url: string; revision: string };
 type OfflineManifest = { buildId: string; assets: OfflineAsset[] };
@@ -79,13 +80,16 @@ export async function inspectOfflineReadiness(manifest: OfflineManifest, userId:
     } finally { db.close(); }
   } catch { /* Storage denial must keep readiness below 100%. */ }
   const workerReady = Boolean(navigator.serviceWorker.controller);
-  const checks = [Boolean(shellHtml) && shellFilesReady, authReady, branchReady, workerReady, queueReady];
+  const needsNumbering = bootstrap?.profile.role === "admin" || bootstrap?.profile.role === "super_admin";
+  const numberingReady = !needsNumbering || await rubberNumberingReady(locationId).catch(() => false);
+  const checks = [Boolean(shellHtml) && shellFilesReady, authReady, branchReady, workerReady, queueReady, numberingReady];
   const completed = assets.filter(Boolean).length + checks.filter(Boolean).length;
   const total = assets.length + checks.length;
   const percent = readinessPercent(completed, total, checks.every(Boolean));
   return {
     percent, ready: percent === 100,
-    detail: !queueReady ? "พื้นที่เก็บรายการออฟไลน์ยังไม่พร้อม"
+    detail: !numberingReady ? "เชื่อมต่ออินเทอร์เน็ตเพื่อเตรียมรหัสเครื่องออกบิล"
+      : !queueReady ? "พื้นที่เก็บรายการออฟไลน์ยังไม่พร้อม"
       : !authReady ? "เชื่อมต่ออินเทอร์เน็ตเพื่อยืนยันบัญชีอีกครั้ง"
         : !branchReady ? "กำลังเตรียมข้อมูลสาขาปัจจุบัน"
         : !shellFilesReady ? "กำลังเตรียมไฟล์สำหรับเปิดแอปใหม่"

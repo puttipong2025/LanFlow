@@ -6,6 +6,10 @@ import { processRubberQueueImmediately } from "@/lib/server/rubber-queue-immedia
 
 const headers = { "Cache-Control": "private, no-store, max-age=0" };
 const failure = (status = 503) => NextResponse.json({ errorMessage: "ยังยืนยันสถานะคิวซิงก์ไม่ได้ กรุณาลองใหม่" }, { status, headers });
+const rejectNumbering = (payload: Record<string, unknown>, status = 400) => NextResponse.json({
+  errorCode: "NUMBERING_REJECTED", commandId: payload.commandId, clientTempId: payload.clientTempId, operation: payload.operation,
+  errorMessage: "เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแลก่อนลองใหม่",
+}, { status, headers });
 const sameUuid = (left: unknown, right: unknown) => isUuid(left) && isUuid(right) && left.toLowerCase() === right.toLowerCase();
 
 async function boundedJson(request: Request) {
@@ -68,9 +72,19 @@ export async function POST(request: Request) {
     const auth = await requireAuth(request);
     if (!auth.ok) return auth.response;
     const payload = await boundedJson(request);
-    if (!isRubberQueueSubmission(payload)) return failure(400);
+    if (!isRubberQueueSubmission(payload)) {
+      if (isJsonObject(payload) && payload.billNumbering !== undefined
+        && isRubberQueueSubmission({ ...payload, billNumbering: undefined })) {
+        if (!sameUuid(payload.actorUserId, auth.auth.sub)) return failure(403);
+        return rejectNumbering(payload);
+      }
+      return failure(400);
+    }
     if (!sameUuid(payload.actorUserId, auth.auth.sub)) return failure(403);
-    const { data, error } = await auth.supabase.rpc("submit_rubber_queue", { payload });
+    const { data, error } = await auth.supabase.rpc(payload.billNumbering ? "submit_numbered_rubber_queue" : "submit_rubber_queue", { payload });
+    if (payload.billNumbering && error && ["INVALID_BILL_NUMBER", "BILL_NUMBER_CHANGED"].includes(error.message)) {
+      return rejectNumbering(payload, error.message === "BILL_NUMBER_CHANGED" ? 409 : 400);
+    }
     if (error) return failure(error.message.startsWith("FORBIDDEN") ? 403
       : ["COMMAND_MISMATCH", "REQUEST_CHANGED", "INVALID_COMMAND"].includes(error.message) ? 409 : 503);
     if (!isRubberQueueRow(data) || !sameUuid(data.commandId, payload.commandId) || !sameUuid(data.actorUserId, auth.auth.sub)

@@ -48,7 +48,7 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
         ));
       if (!event) throw new Error("ไม่พบรายการที่ซิงก์ไม่สำเร็จ");
       if (isCentralRubberEvent(event)) {
-        if (isUnsubmittedRubberPreparationFailure(event)) {
+        if (isUnsubmittedRubberPreparationFailure(event) || event.failureCode === "NUMBERING_REJECTED") {
           const retry = { ...event, status: "pending" as const, failureCode: undefined,
             failureHttpStatus: undefined, errorMessage: undefined, nextAttemptAt: 0 };
           if (!await reconcileSyncEventsIfCurrent([event], retry)) throw new Error("คิวเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่");

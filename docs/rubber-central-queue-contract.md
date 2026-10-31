@@ -4,6 +4,13 @@ Implementation scope: Rubber Bill create/update/delete and explicit manager appr
 
 ## Command and actor boundary
 
+New device-numbered small-scale bills follow [ADR 0091](adr/0091-stable-offline-rubber-bill-number.md).
+The local transaction freezes `localBillNo` plus explicit `billNumbering` metadata. Numbered admission uses
+`submit_numbered_rubber_queue`; a missing capability never falls back to the legacy allocator.
+The worker or manager approval appends a suffix only when the actual create commits. The immutable command
+continues to contain the base; its result contains the final number. Exact retries retain that final,
+and independent bills sharing a base get distinct suffixes. Registry retirement does not rewrite pending work.
+
 The browser first commits a v2 command with `centralQueue: true` to the existing local outbox. It uploads that immutable command to the central queue; it never processes it through a competing browser worker. A database worker processes accepted commands even with every browser closed. Other authorized operators read the same branch queue and may request retry. Only a system manager with branch access can retire a queued command after the origin account is permanently closed; retirement is conditional on the latest command state and records the real manager.
 
 Admission binds command UUID, actor, branch, operation, client identity, revision/generation and a normalized payload fingerprint. A retry cannot change payload or refresh admission time/policy. A new correction is a new command. Manager commands also bind the exact approval request UUID and its proposal fingerprint; they cannot apply to a replacement proposal.

@@ -10,6 +10,37 @@ import { rubberBillFromSyncEvent } from "../src/lib/rubber-bills/local-feed";
 import { normalizeRubberBillQueueBeforeSync } from "../src/lib/rubber-bills/normalize-sync-queue";
 import { coalesceQueueGroup } from "../src/lib/coalesceQueueGroup";
 
+test("a bound direct numbering rejection keeps its uncertain-submission lock and original payload", async () => {
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { indexedDB: new IDBFactory() } });
+  const event = { ...command(), serverSubmissionAttempted: true, payload: { ...command().payload,
+    contractVersion: 2, commandId: "ab000000-0000-4000-8000-000000000001", localBillNo: "0001-261031-D01",
+    billNumbering: { version: 1, issuerId: "ab000000-0000-4000-8000-000000000002", date: "2026-10-31", sequence: 1 } } };
+  event.queueId = await enqueueSyncEvent(event);
+  const frozen = JSON.stringify(event.payload);
+  expect(await recordRubberSyncFailure(event, 400, { status: "failed", errorCode: "NUMBERING_REJECTED",
+    commandId: event.payload.commandId, clientTempId: event.id, operation: event.operation,
+    errorMessage: "เลขบิลไม่ตรงกับทะเบียน" })).toBe("failed");
+  const [saved] = await getPendingEvents({ entity: "rubber_bills", ownerUserId: event.ownerUserId, locationId: event.locationId });
+  expect(saved.serverSubmissionAttempted).toBe(true);
+  expect(saved.failureCode).toBe("NUMBERING_REJECTED");
+  expect(JSON.stringify(saved.payload)).toBe(frozen);
+  expect(rubberBillFromSyncEvent(saved, event.ownerUserId)?.canCorrectSyncFailure).toBe(false);
+});
+for (const mismatch of [{ commandId: "other" }, { clientTempId: "other" }, { operation: "delete" }]) {
+  test(`an unbound direct numbering rejection cannot unlock or fail the current command: ${JSON.stringify(mismatch)}`, async () => {
+    const event = await queued();
+    event.payload = { ...event.payload, contractVersion: 2, commandId: "ab000000-0000-4000-8000-000000000001",
+      billNumbering: { version: 1, issuerId: "ab000000-0000-4000-8000-000000000002", date: "2026-10-31", sequence: 1 } };
+    event.serverSubmissionAttempted = true; await updateSyncEvent(event);
+    expect(await recordRubberSyncFailure(event, 400, { status: "failed", errorCode: "NUMBERING_REJECTED",
+      commandId: event.payload.commandId, clientTempId: event.id, operation: event.operation,
+      errorMessage: "invalid numbering", ...mismatch })).toBe("pending");
+    const [saved] = await getPendingEvents(event);
+    expect(saved.serverSubmissionAttempted).toBe(true); expect(saved.failureCode).toBeUndefined();
+    expect(saved.payload).toEqual(event.payload);
+  });
+}
+
 test("rubber search finds the proposed customer displayed in the table", () => {
   const source = loadSourceModule<typeof import("../src/hooks/useRubberBillList")>("src/hooks/useRubberBillList.ts", {});
   const record = { ...rubberBillFromSyncEvent(command(), "owner")!, customerName: "Original", approvalProposedSummary: {

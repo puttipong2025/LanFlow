@@ -183,6 +183,16 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
             if (correction) await notifyRubberBackgroundFailure(next);
           }
         } else {
+          if ([400, 409].includes(response.status) && event.payload.billNumbering !== undefined && row && typeof row === "object"
+            && "errorCode" in row && row.errorCode === "NUMBERING_REJECTED"
+            && "commandId" in row && row.commandId === event.payload.commandId && "clientTempId" in row && row.clientTempId === event.id
+            && "operation" in row && row.operation === event.operation) {
+            const failed: CentralEvent = { ...event, status: "failed", failureCode: "NUMBERING_REJECTED",
+              failureHttpStatus: response.status, nextAttemptAt: Number.MAX_SAFE_INTEGER,
+              errorMessage: "เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแลก่อนลองใหม่" };
+            if (await reconcileSyncEventsIfCurrent([event], failed)) changed.add(event.locationId);
+            continue;
+          }
           deferredBranches.add(event.locationId);
           const attempts = (event.attempts ?? 0) + 1;
           await reconcileSyncEventsIfCurrent([event], { ...event, attempts,

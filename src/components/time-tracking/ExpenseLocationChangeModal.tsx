@@ -21,7 +21,7 @@ export function ExpenseLocationChangeModal({
   primaryLocationId?: string | null;
   currentLocationId?: string | null;
   onClose: () => void;
-  onSubmit: (locationId: string, comment: string) => Promise<boolean>;
+  onSubmit: (locationId: string | null, comment: string) => Promise<boolean>;
 }) {
   const fieldId = useId();
   const submitting = useRef(false);
@@ -44,7 +44,7 @@ export function ExpenseLocationChangeModal({
     setSaving(true);
     setError(null);
     try {
-      const success = await onSubmit(locationId, comment);
+      const success = await onSubmit(locationId === "__central_outside_system__" ? null : locationId, comment);
       if (!success) setError("บันทึกวิธีจ่ายไม่สำเร็จ กรุณาลองใหม่");
     } catch (submitError) {
       console.error("Failed to change expense location:", submitError);
@@ -80,7 +80,9 @@ export function ExpenseLocationChangeModal({
           {orderedLocations.map((location) => (
             <option key={location.id} value={location.id}>{location.name}{location.id === primaryLocationId ? " (สาขาหลัก)" : ""}</option>
           ))}
+          <option value="__central_outside_system__">จ่ายนอกระบบ (ไม่เพิ่มรับ–จ่าย)</option>
         </select>
+        {locationId === "__central_outside_system__" && <p className="mt-2 text-pretty text-xs text-ink/65">ชำระส่วนต่างนอกระบบ ไม่สร้างรายการรับ–จ่ายของสาขา</p>}
         <label className="mt-4 block text-sm font-semibold text-ink" htmlFor={`${fieldId}-comment`}>
           หมายเหตุ (ถ้ามี)
         </label>

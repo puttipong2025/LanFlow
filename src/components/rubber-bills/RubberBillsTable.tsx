@@ -249,7 +249,7 @@ export function RubberBillsTable({
                 <td className="font-semibold">
                   <div className="flex flex-col gap-1">
                     <span>{getDisplayBillNo(bill)}</span>
-                    {!bill.serverBillNo && <span className="text-xs font-normal text-ink/55">{bill.localBillNo}</span>}
+                    {!bill.serverBillNo && !bill.billNumbering && <span className="text-xs font-normal text-ink/55">{bill.localBillNo}</span>}
                     {bill.approvalPending && (
                       <span
                         className="w-fit rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800"

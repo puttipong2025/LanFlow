@@ -139,6 +139,38 @@ test("atomic terminal cleanup preserves dependent work and permanently tombstone
   expect(await queue.getRubberBillReceiptSnapshots("location")).toHaveLength(0);
 });
 
+for (const outcome of ["replay", "new-command", "pending-approval"] as const) test(`restarting a legacy delete reconciles its receipt for ${outcome}`, async () => {
+  const event = await fixture();
+  delete event.payload.contractVersion;
+  delete event.payload.background;
+  event.status = "failed";
+  await queue.updateSyncEvent(event);
+  const bill = { ...rubberBillFromSyncEvent(event, "owner")!, revisionNo: 1 };
+  expect(bill.canRestartDelete).toBe(true);
+  const snapshot = { billId: serverId, locationId: "location", serverBillNo: "RB", serverReceivedAt: "2026-10-28T00:00:00Z", revisionNo: 1, bill, receipt: {} as never };
+  await queue.putRubberBillReceiptSnapshots([snapshot]);
+  let sends = 0;
+  const restart = loadSourceModule<typeof import("../src/lib/rubber-bills/restart-delete")>("src/lib/rubber-bills/restart-delete.ts", {
+    "@/lib/idb-queue": queue,
+    "@/lib/idb-core": { getSyncDb, SYNC_QUEUE_STORE, RUBBER_BILL_RECEIPT_STORE: "rubber_bill_receipts", RUBBER_BILL_RECEIPT_TOMBSTONE_STORE: "rubber_bill_receipt_tombstones" },
+    "./command": { prepareRubberBillCommand: async (payload: Record<string, unknown>) => ({ ...payload, contractVersion: 2, commandId: "fresh", idempotencyKey: "fresh" }) },
+    "./sync-request": { probeDeletedRubberCommand: async () => null, sendRubberBillCommand: async (current: queue.SyncEvent) => {
+      sends++;
+      return Response.json(outcome === "pending-approval"
+        ? { status: "pending_approval", operation: "delete", clientTempId: event.id, requestId: serverId }
+        : outcome === "new-command" && sends === 1
+          ? { status: "discarded", operation: "delete", clientTempId: event.id }
+          : { status: "synced", commandId: current.payload.commandId, id: serverId, revisionNo: 2, serverBillNo: "RB", serverReceivedAt: "2026-10-31T00:00:00Z" });
+    } },
+  }, { navigator: { onLine: true } });
+  expect(await restart.restartRubberDelete("owner", "location", event.id)).toBe(outcome === "pending-approval" ? "pending_approval" : "synced");
+  expect(sends).toBe(outcome === "new-command" ? 2 : 1);
+  expect(await queue.getPendingEvents(event)).toHaveLength(0);
+  expect(await queue.getRubberBillReceiptSnapshots("location")).toHaveLength(outcome === "pending-approval" ? 1 : 0);
+  await queue.putRubberBillReceiptSnapshots([snapshot]);
+  expect(await queue.getRubberBillReceiptSnapshots("location")).toHaveLength(outcome === "pending-approval" ? 1 : 0);
+});
+
 test("an old acknowledgement cannot remove a changed event", async () => {
   const event = await fixture();
   await queue.updateSyncEvent({ ...event, payload: { ...event.payload, commandId: "new" } });

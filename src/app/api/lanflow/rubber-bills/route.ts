@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isNumberedRubberFinal, isRubberBillNumbering } from "@/lib/rubber-bills/numbering-contract";
 import { isValidRubberPriceAdjustmentTarget } from "@/lib/rubber-bills/calculations";
 import { requireAuth } from "@/lib/server/auth";
 import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
@@ -11,6 +12,11 @@ import {
 } from "@/lib/server/management-route-error";
 
 const GENERIC_SYNC_FAILURE_MESSAGE = "บันทึกบิลยางไม่สำเร็จ";
+const rejectNumbering = (payload: Record<string, unknown>, status = 400) => NextResponse.json({
+  status: "failed", errorCode: "NUMBERING_REJECTED", commandId: payload.commandId,
+  clientTempId: payload.clientTempId, operation: payload.operation,
+  errorMessage: "เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแลก่อนลองใหม่",
+}, { status, headers: { "Cache-Control": "private, no-store, max-age=0" } });
 const MAX_SYNC_REQUEST_BYTES = 1024 * 1024;
 const DATABASE_ERROR_DETAIL_PATTERN = /(?:\b(?:relation|column|constraint|schema|table|function|operator|sequence|trigger)\b.*\b(?:does not exist|violates|already exists|not found)\b)|(?:duplicate key value|invalid input syntax|permission denied|sqlstate|syntax error at or near|division by zero|numeric field overflow|value too long|deadlock detected|could not serialize|current transaction is aborted)|(?:\b(?:private|public|auth|storage)\.[a-z_][a-z0-9_]*)|(?:\b[a-z][a-z0-9_]*(?:_pkey|_key|_fkey|_check)\b)/i;
 
@@ -100,6 +106,7 @@ function isRubberBillSyncResult(
         && isSafePositiveInteger(expectedRevisionNo)
         && value.revisionNo === expectedRevisionNo + 1;
     return hasValidRevision
+      && (!expectedSubmission.billNumbering || isNumberedRubberFinal(expectedSubmission.localBillNo, value.serverBillNo))
       && isUuid(value.id)
       && (operation === "create"
         || expectedSubmission.expectedServerId === undefined
@@ -163,6 +170,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    if (payload.billNumbering !== undefined && !isRubberBillNumbering(payload.billNumbering)) return rejectNumbering(payload);
     if (payload.priceAdjustmentTarget !== undefined
       && payload.priceAdjustmentTarget !== null
       && !isValidRubberPriceAdjustmentTarget(payload.priceAdjustmentTarget)) {
@@ -202,9 +210,13 @@ export async function POST(request: Request) {
 
     const rpcPayload = { ...payload };
     delete rpcPayload.expectedServerId;
-    const { data, error } = await authResult.supabase.rpc("sync_rubber_bill", { payload: rpcPayload });
+    const { data, error } = await authResult.supabase.rpc(payload.billNumbering ? "sync_numbered_rubber_bill" : "sync_rubber_bill", { payload: rpcPayload });
     const locked = cashCountLockResponse(error?.message ?? (data?.status === "failed" ? data.errorMessage : null));
     if (locked) return locked;
+    const numberingError = error?.message ?? (data?.status === "failed" ? data.errorMessage : null);
+    if (payload.billNumbering && ["INVALID_BILL_NUMBER", "BILL_NUMBER_CHANGED"].includes(numberingError)) {
+      return rejectNumbering(payload, numberingError === "BILL_NUMBER_CHANGED" ? 409 : 400);
+    }
     if (error) {
       console.error("Rubber Bill sync RPC failed", error.code ?? "unknown");
       return NextResponse.json(

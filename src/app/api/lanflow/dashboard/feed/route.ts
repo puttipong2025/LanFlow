@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
+import { isIsoTimestamp } from "@/lib/validation/primitives";
 import type {
   DashboardMoneyHistory,
   DashboardMoneyHistoryAction,
@@ -10,7 +11,6 @@ export const dynamic = "force-dynamic";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const NO_STORE_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
 
 type RawHistory = Omit<DashboardMoneyHistory, "nextCursor"> & {
@@ -27,7 +27,7 @@ function decodeCursor(cursor: string | null) {
     if (
       separator < 1 ||
       !UUID.test(id) ||
-      Number.isNaN(Date.parse(at))
+      !isIsoTimestamp(at)
     ) return null;
     return { at, id };
   } catch {
@@ -35,13 +35,19 @@ function decodeCursor(cursor: string | null) {
   }
 }
 
-function isValidDate(value: string) {
-  if (!ISO_DATE.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+export async function GET(request: NextRequest) {
+  try {
+    return await readMoneyHistory(request);
+  } catch {
+    console.error("Dashboard money history request failed");
+    return NextResponse.json(
+      { error: "โหลดรายการเงินล่าสุดไม่สำเร็จ" },
+      { status: 500, headers: NO_STORE_HEADERS },
+    );
+  }
 }
 
-export async function GET(request: NextRequest) {
+async function readMoneyHistory(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
   const rawPage = request.nextUrl.searchParams.get("page");
@@ -69,7 +75,7 @@ export async function GET(request: NextRequest) {
   }
 
   const eventDate = request.nextUrl.searchParams.get("date");
-  if (eventDate && !isValidDate(eventDate)) {
+  if (eventDate !== null && !isIsoTimestamp(`${eventDate}T00:00:00Z`)) {
     return NextResponse.json({ error: "วันที่ไม่ถูกต้อง" }, { status: 400 });
   }
 

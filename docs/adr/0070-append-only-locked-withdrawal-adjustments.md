@@ -5,6 +5,8 @@ date: 2026-09-19
 
 # Adjust report-locked withdrawals with append-only corrections
 
+The approved-adjustment deletion prohibition and mandatory branch-settlement rule are revised by [ADR 0092](0092-delete-unreported-withdrawal-adjustments.md), accepted on 2026-10-31. That successor records the new product boundaries; implementation is tracked separately.
+
 An approved withdrawal may already be frozen by a Report Lock while its payroll deductions remain financially open. We decided not to edit or delete the reported source. Instead, LanFlow accepts an append-only adjustment that sets a new effective withdrawal total and records only the difference in the next report period.
 
 ## Decision

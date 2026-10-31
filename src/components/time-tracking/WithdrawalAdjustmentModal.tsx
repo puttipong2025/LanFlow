@@ -4,6 +4,7 @@ import { useId, useMemo, useRef, useState } from "react";
 
 import { ModalShell } from "@/components/shared/ModalShell";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
+import { cn } from "@/lib/cn";
 import type { Location } from "@/types";
 
 type AdjustmentSubmit = {
@@ -58,6 +59,7 @@ export function WithdrawalAdjustmentModal({
   const delta = validTarget ? Math.round((targetAmount - currentAmount) * 100) / 100 : 0;
   const belowFloor = validTarget && targetAmount < closedSlipFloor;
   const noOp = validTarget && delta === 0;
+  const outsideSystem = managerMode && locationId === "__central_outside_system__";
   const disabled = saving || !validTarget || belowFloor || noOp || (managerMode && !locationId);
 
   async function submit() {
@@ -68,7 +70,7 @@ export function WithdrawalAdjustmentModal({
     try {
       const success = await onSubmit({
         targetAmount,
-        locationId: managerMode ? locationId : null,
+        locationId: managerMode && locationId !== "__central_outside_system__" ? locationId : null,
         reason: reason.trim(),
       });
       if (!success) setError("บันทึกคำขอปรับยอดไม่สำเร็จ กรุณาลองใหม่");
@@ -120,7 +122,7 @@ export function WithdrawalAdjustmentModal({
           aria-describedby={`${fieldId}-target-help`}
           className="mt-2 w-full rounded-md border border-black/15 bg-white px-3 py-2 tabular-nums"
         />
-        <p id={`${fieldId}-target-help`} className={`mt-2 text-pretty text-xs ${belowFloor || !validTarget ? "font-semibold text-danger" : "text-ink/55"}`} aria-live="polite">
+        <p id={`${fieldId}-target-help`} className={cn("mt-2 text-pretty text-xs", belowFloor || !validTarget ? "font-semibold text-danger" : "text-ink/55")} aria-live="polite">
           {!validTarget
             ? "กรอกยอดตั้งแต่ 0 บาท และทศนิยมไม่เกิน 2 ตำแหน่ง"
             : belowFloor
@@ -128,10 +130,10 @@ export function WithdrawalAdjustmentModal({
               : noOp ? "ยอดใหม่ต้องต่างจากยอดปัจจุบัน" : "ปรับได้เฉพาะยอดของเดือนที่ยังไม่ปิดสลิป"}
         </p>
         {validTarget && !belowFloor && !noOp && (
-          <div className={`mt-3 rounded-lg border p-3 ${delta > 0 ? "border-amber/30 bg-amber/10" : "border-leaf/25 bg-mint/30"}`}>
-            <p className="text-pretty text-xs font-semibold text-ink/60">ผลต่อรับ–จ่ายของสาขา</p>
-            <p className={`mt-1 tabular-nums font-bold ${delta > 0 ? "text-amber" : "text-leaf"}`}>
-              {delta > 0 ? "เพิ่มรายจ่าย" : "เพิ่มรายรับ (คืนเงิน)"} {formatPayrollCurrency(Math.abs(delta))}
+          <div className={cn("mt-3 rounded-lg border p-3", delta > 0 ? "border-amber/30 bg-amber/10" : "border-leaf/25 bg-mint/30")}>
+            <p className="text-pretty text-xs font-semibold text-ink/60">{outsideSystem ? "ชำระส่วนต่างนอกระบบ · ไม่เพิ่มรับ–จ่าย" : "ผลต่อรับ–จ่ายของสาขา"}</p>
+            <p className={cn("mt-1 tabular-nums font-bold", delta > 0 ? "text-amber" : "text-leaf")}>
+              {outsideSystem ? (delta > 0 ? "จ่ายเพิ่มนอกระบบ" : "รับคืนนอกระบบ") : delta > 0 ? "เพิ่มรายจ่าย" : "เพิ่มรายรับ (คืนเงิน)"} {formatPayrollCurrency(Math.abs(delta))}
             </p>
           </div>
         )}
@@ -155,6 +157,7 @@ export function WithdrawalAdjustmentModal({
                   {location.name}{location.id === primaryLocationId ? " (สาขาหลัก)" : ""}
                 </option>
               ))}
+              <option value="__central_outside_system__">จ่ายนอกระบบ (ไม่เพิ่มรับ–จ่าย)</option>
             </select>
           </>
         )}

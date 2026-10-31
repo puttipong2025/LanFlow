@@ -23,12 +23,13 @@ test("classifies transient sync responses without treating business failures as 
 function rubberRouteDependencies(
   data: unknown,
   existingServerId = "71000000-0000-4000-8000-000000000021",
+  error: unknown = null,
 ) {
   const selection = {
     eq: () => selection,
     maybeSingle: async () => ({ data: { id: existingServerId }, error: null }),
   };
-  const supabase = { rpc: async () => ({ data, error: null }) };
+  const supabase = { rpc: async () => ({ data, error }) };
   Object.assign(supabase, { from: () => ({ select: () => selection }) });
   return {
     "@/lib/server/auth": {
@@ -47,6 +48,20 @@ function validRubberSubmission(overrides: Record<string, unknown> = {}) {
     locationId: "71000000-0000-4000-8000-000000000021",
     ...overrides,
   };
+}
+
+for (const rpcError of [false, true]) for (const message of ["INVALID_BILL_NUMBER", "BILL_NUMBER_CHANGED"]) {
+  test(`direct numbered sync treats ${message} as permanent (rpc=${rpcError})`, async () => {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+      "src/app/api/lanflow/rubber-bills/route.ts", rubberRouteDependencies(
+        rpcError ? null : { status: "failed", errorMessage: message }, undefined, rpcError ? { message } : null));
+    const response = await route.POST(new Request("http://local/api/lanflow/rubber-bills", {
+      method: "POST", body: JSON.stringify(validRubberSubmission({ localBillNo: "0001-261031-D01",
+        billNumbering: { version: 1, issuerId: "71000000-0000-4000-8000-000000000021", date: "2026-10-31", sequence: 1 } })),
+    }));
+    expect(response.status).toBe(message === "BILL_NUMBER_CHANGED" ? 409 : 400);
+    expect(await response.json()).toMatchObject({ status: "failed", errorCode: "NUMBERING_REJECTED" });
+  });
 }
 
 test("rubber bill sync route rejects malformed mutation identity before the RPC can commit", async () => {

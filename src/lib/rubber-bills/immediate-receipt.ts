@@ -21,7 +21,7 @@ export function rubberReceiptEligibility(bill: RubberBill, settings: EffectiveRu
 export function immediateRubberReceipt(bill: RubberBill, settings: EffectiveRubberApprovalSettings | null | undefined): RubberBill | null {
   if (rubberReceiptEligibility(bill, settings) !== "allowed") return null;
   return JSON.parse(JSON.stringify({ ...bill, id: bill.clientTempId, serverBillNo: undefined,
-    billNo: bill.localBillNo, syncStatus: "pending", serverSubmissionAttempted: false,
+    billNo: bill.billNumbering ? bill.serverBillNo ?? bill.localBillNo : bill.localBillNo, syncStatus: "pending", serverSubmissionAttempted: false,
     approvalPending: false, approvalState: "not_required", approvalRevisionNo: null,
     approvalApprovedByName: null, configuredPriceSnapshot: settings!.effectivePriceCap })) as RubberBill;
 }

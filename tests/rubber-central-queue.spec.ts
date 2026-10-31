@@ -70,6 +70,26 @@ test("pending rows keep edits locked and allow deletion only before a new bill s
   }
 });
 
+test("a numbered pending row displays its base once without a second local reference", async () => {
+  const event = await fixture();
+  event.payload.localBillNo = "2610310001-D01";
+  event.payload.billNumbering = { version: 1, issuerId: server, date: "2026-10-31", sequence: 1 };
+  const { RubberBillsTable } = loadSourceModule<typeof import("../src/components/rubber-bills/RubberBillsTable")>(
+    "src/components/rubber-bills/RubberBillsTable.tsx", {});
+  const noop = () => {};
+  const tree = RubberBillsTable({ bills: [rubberBillFromSyncEvent(event, owner)!], page: 1, pageSize: 50,
+    onPageChange: noop, onView: noop, onEvidence: noop, onEdit: noop, onDelete: noop, onPrint: noop,
+    onRetry: noop, onDiscardLocal: noop, onOpenOcrSourceImage: noop, retryDisabled: false, discardDisabled: false,
+    evidenceStatesByBillId: new Map(), evidenceOnline: true, getActionBlockReason: getPendingServerActionBlockReason });
+  function textNodes(value: unknown): string[] {
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.flatMap(textNodes);
+    return value && typeof value === "object" && "props" in value
+      ? textNodes((value as { props: { children?: unknown } }).props.children) : [];
+  }
+  expect(textNodes(tree).filter(value => value === event.payload.localBillNo)).toHaveLength(1);
+});
+
 test("save and delete publish the local queue before releasing the mutation lock without waiting for network refresh", async () => {
   const event = await fixture();
   const client = new QueryClient();
@@ -179,6 +199,36 @@ function runner(fetch: (url: string, init?: RequestInit) => Promise<Response>, s
   }, { navigator: { onLine: true } });
 }
 const client = { invalidateQueries: async () => {} } as never;
+
+for (const nullMetadata of [false, true]) test(`a bound numbering rejection stays visible and does not retry automatically (null=${nullMetadata})`, async () => {
+  const event = await fixture();
+  event.payload.billNumbering = nullMetadata ? null : { version: 1, issuerId: server, date: "2026-10-28", sequence: 1 };
+  await queue.updateSyncEvent(event);
+  let calls = 0;
+  const run = runner(async () => { calls++; return Response.json({ errorCode: "NUMBERING_REJECTED",
+    commandId: event.payload.commandId, clientTempId: event.id, operation: event.operation,
+    errorMessage: "เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแล" }, { status: 400 }); });
+  await run.runRubberCentralQueue(client, owner);
+  const [saved] = await queue.getPendingEvents({ entity: "rubber_bills", ownerUserId: owner, locationId: branch });
+  expect(saved.status).toBe("failed");
+  expect(saved.serverSubmissionAttempted).toBe(true);
+  expect(saved.payload).toEqual(event.payload);
+  expect(saved.errorMessage).toContain("เลขบิลไม่ตรง");
+  await run.runRubberCentralQueue(client, owner, true);
+  expect(calls).toBe(1);
+});
+
+test("an unbound numbering error cannot declare another command failed", async () => {
+  const event = await fixture();
+  event.payload.billNumbering = { version: 1, issuerId: server, date: "2026-10-28", sequence: 1 };
+  await queue.updateSyncEvent(event);
+  const run = runner(async () => Response.json({ errorCode: "NUMBERING_REJECTED", commandId: crypto.randomUUID(),
+    clientTempId: event.id, operation: event.operation, errorMessage: "wrong command" }, { status: 400 }));
+  await run.runRubberCentralQueue(client, owner);
+  const [saved] = await queue.getPendingEvents({ entity: "rubber_bills", ownerUserId: owner, locationId: branch });
+  expect(saved.status).toBe("pending");
+  expect(saved.failureCode).toBeUndefined();
+});
 
 for (const disposeDuringRead of [true, false]) {
 test(disposeDuringRead ? "active polling does not start a stale scope after its IndexedDB read completes"

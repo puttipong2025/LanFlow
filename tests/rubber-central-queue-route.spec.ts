@@ -12,16 +12,46 @@ const accepted = { commandId, actorUserId: owner, locationId: branch, clientTemp
 type Routes = typeof import("../src/app/api/lanflow/rubber-bills/queue/route");
 function route(data: unknown, error: unknown = null, authOk = true,
   immediate: () => Promise<boolean> = async () => false, refreshed: unknown = data) {
-  let calls = 0;
+  let calls = 0; const names: string[] = [];
   const handlers = loadSourceModule<Routes>("src/app/api/lanflow/rubber-bills/queue/route.ts", {
     "@/lib/server/rubber-queue-immediate": { processRubberQueueImmediately: immediate },
     "@/lib/server/auth": { requireAuth: async () => authOk ? { ok: true, auth: { sub: owner },
-      supabase: { rpc: async () => { calls++; return { data: calls === 1 ? data : typeof refreshed === 'function' ? await refreshed() : refreshed, error }; } } } : { ok: false, response: Response.json({}, { status: 401 }) } },
+      supabase: { rpc: async (name: string) => { names.push(name); calls++; return { data: calls === 1 ? data : typeof refreshed === 'function' ? await refreshed() : refreshed, error }; } } } : { ok: false, response: Response.json({}, { status: 401 }) } },
   });
-  return { ...handlers, calls: () => calls };
+  return { ...handlers, calls: () => calls, names };
 }
 const post = (value: unknown) => new Request("https://example.test/api/lanflow/rubber-bills/queue", {
   method: "POST", body: JSON.stringify(value), headers: { "Content-Type": "application/json" },
+});
+
+test("numbering validation rejection identifies the unchanged command instead of masquerading as an outage", async () => {
+  const numbered = { ...payload, localBillNo: "2610310001-D01", billNumbering: { version: 1, issuerId: branch, date: "2026-10-31", sequence: 1 } };
+  const response = await route(null, { message: "INVALID_BILL_NUMBER" }).POST(post(numbered));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ errorCode: "NUMBERING_REJECTED", commandId, clientTempId: "local", operation: "create" });
+});
+for (const metadata of [null, false, { version: 1, issuerId: "bad", date: "2026-10-31", sequence: 1 }]) {
+  test(`malformed numbering is a bound permanent rejection before RPC: ${JSON.stringify(metadata)}`, async () => {
+    const h = route(accepted);
+    const response = await h.POST(post({ ...payload, billNumbering: metadata }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ errorCode: "NUMBERING_REJECTED", commandId, clientTempId: "local", operation: "create" });
+    expect(h.calls()).toBe(0);
+  });
+}
+test("malformed numbering cannot bind a failure to another actor or an invalid command envelope", async () => {
+  for (const change of [{ actorUserId: branch }, { commandId: "invalid" }]) {
+    const h = route(accepted), response = await h.POST(post({ ...payload, ...change, billNumbering: null }));
+    expect([400, 403]).toContain(response.status);
+    expect((await response.json()).errorCode).toBeUndefined(); expect(h.calls()).toBe(0);
+  }
+});
+
+test("a missing numbered backend cannot silently allocate a legacy bill number", async () => {
+  const numbered = { ...payload, localBillNo: "2610310001-D01", billNumbering: { version: 1, issuerId: branch, date: "2026-10-31", sequence: 1 } };
+  const handlers = route(null, { code: "PGRST202", message: "Function not found" });
+  expect((await handlers.POST(post(numbered))).status).toBe(503);
+  expect(handlers.names).toEqual(["submit_numbered_rubber_queue"]);
 });
 
 test("GET accepts UUID case variations without losing a valid admitted receipt", async () => {

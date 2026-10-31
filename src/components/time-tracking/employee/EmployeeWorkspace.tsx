@@ -402,6 +402,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       </div>
 
       <EmployeeTransactionHistory
+        ownerUserId={profile.id}
         data={data}
         transactions={debtTransactions}
         adjustmentSummaryByWithdrawal={adjustmentSummaryByWithdrawal}

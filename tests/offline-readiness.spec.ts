@@ -168,3 +168,90 @@ test("worker replacement during a manifest fetch discards its obsolete readiness
   expect(states.some((state) => state.ready)).toBe(false);
   expect(delays.at(-1)).toBe(0);
 });
+
+for (const assets of ["available", "manifest-outage", "missing-worker", "missing-cache"] as const) test(`online issuer registration with offline assets ${assets}`, async () => {
+  const branch = "af000000-0000-4000-8000-000000000001";
+  let effect: (() => void | (() => void)) | undefined;
+  const numbering = loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>(
+    "src/lib/rubber-bills/numbering-idb.ts", {
+      "@/lib/auth-fetch": {
+        authFetch: async () => Response.json({ version: 1, id: "af000000-0000-4000-8000-000000000002", code: "D01", locationId: branch }),
+        assertApiResponse: async () => {},
+      },
+    }, { window: { indexedDB: new IDBFactory() } },
+  );
+  const states: Array<{ ready?: boolean }> = [];
+  const component = loadSourceModule<typeof import("../src/components/lanflow/OfflineReadinessStatus")>(
+    "src/components/lanflow/OfflineReadinessStatus.tsx", {
+      react: { useState: (value: unknown) => [value, (next: { ready?: boolean }) => states.push(next)], useEffect: (callback: () => void) => { effect = callback; } },
+      "@/lib/lanflow/bootstrap-cache": { readBootstrapCache: () => ({ profile: { role: "admin" } }) },
+      "@/lib/rubber-bills/numbering-idb": numbering,
+      "@/lib/offline-readiness": {
+        readOfflineManifest: async () => { if (assets === "manifest-outage") throw new Error("manifest unavailable"); return manifest; },
+        inspectOfflineReadiness: async () => ({ ready: true, percent: 100, detail: "ready" }),
+      },
+    }, {
+      window: { ...(assets === "missing-cache" ? {} : { caches: {} }), addEventListener: () => {}, removeEventListener: () => {} },
+      navigator: assets === "missing-worker" ? {} : { serviceWorker: { addEventListener: () => {}, removeEventListener: () => {} } },
+      document: { hidden: false, addEventListener: () => {}, removeEventListener: () => {} },
+      setTimeout: () => 1, clearTimeout: () => {},
+    },
+  );
+  component.OfflineReadinessStatus({ userId: "user", locationId: branch, online: true });
+  const cleanup = effect!();
+  try {
+    await expect.poll(() => numbering.rubberNumberingReady(branch), { timeout: 1000 }).toBe(true);
+    expect(states.some(state => state.ready)).toBe(assets === "available");
+  } finally { if (typeof cleanup === "function") cleanup(); }
+});
+
+test("first issuer registration retries after a temporary outage without needing a tab change", async () => {
+  const branch = "af000000-0000-4000-8000-000000000003";
+  let effect: (() => void | (() => void)) | undefined;
+  const requests: string[] = [];
+  const timers = new Map<number, { callback: () => void; delay: number }>();
+  let timerId = 0;
+  const numbering = loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>(
+    "src/lib/rubber-bills/numbering-idb.ts", {
+      "@/lib/auth-fetch": {
+        authFetch: async (_url: string, init: RequestInit) => {
+          requests.push(String(init.body));
+          if (requests.length === 1) throw new Error("temporary registration outage");
+          return Response.json({ version: 1, id: "af000000-0000-4000-8000-000000000004", code: "D01", locationId: branch });
+        },
+        assertApiResponse: async () => {},
+      },
+    }, { window: { indexedDB: new IDBFactory() } },
+  );
+  const component = loadSourceModule<typeof import("../src/components/lanflow/OfflineReadinessStatus")>(
+    "src/components/lanflow/OfflineReadinessStatus.tsx", {
+      react: { useState: (value: unknown) => [value, () => {}], useEffect: (callback: () => void) => { effect = callback; } },
+      "@/lib/lanflow/bootstrap-cache": { readBootstrapCache: () => ({ profile: { role: "admin" } }) },
+      "@/lib/rubber-bills/numbering-idb": numbering,
+      "@/lib/offline-readiness": {
+        readOfflineManifest: async () => manifest,
+        inspectOfflineReadiness: async () => ({ ready: true, percent: 100, detail: "ready" }),
+      },
+    }, {
+      window: { caches: {}, addEventListener: () => {}, removeEventListener: () => {} },
+      navigator: { serviceWorker: { addEventListener: () => {}, removeEventListener: () => {} } },
+      document: { hidden: false, addEventListener: () => {}, removeEventListener: () => {} },
+      setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { callback, delay }); return timerId; },
+      clearTimeout: (id: number) => { timers.delete(id); },
+    },
+  );
+  component.OfflineReadinessStatus({ userId: "user", locationId: branch, online: true });
+  const cleanup = effect!();
+  try {
+    await expect.poll(() => timers.size, { timeout: 1000 }).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(await numbering.rubberNumberingReady(branch)).toBe(false);
+    const [id, retry] = [...timers][0];
+    expect(retry.delay).toBe(2000);
+    timers.delete(id); retry.callback();
+    await expect.poll(() => numbering.rubberNumberingReady(branch), { timeout: 1000 }).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toBe(requests[0]);
+  } finally { if (typeof cleanup === "function") cleanup(); }
+  expect(timers.size).toBe(0);
+});

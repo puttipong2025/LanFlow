@@ -85,6 +85,7 @@ export function rubberBillFromSyncEvent(event: SyncEvent & { centralAccepted?: b
     id: serverId ?? payload.clientTempId,
     clientTempId: payload.clientTempId,
     localBillNo: payload.localBillNo,
+    billNumbering: payload.billNumbering,
     syncStatus: event.status === "conflict" ? "conflict" : event.status === "failed" ? "failed" : "pending",
     serverSubmissionAttempted: event.operation === "create" && payload.centralQueue === true
       ? event.centralAccepted === true ? true : event.serverSubmissionAttempted

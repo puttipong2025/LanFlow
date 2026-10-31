@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { inspectOfflineReadiness, readOfflineManifest, type OfflineReadiness } from "@/lib/offline-readiness";
+import { prepareRubberBillIssuer } from "@/lib/rubber-bills/numbering-idb";
+import { readBootstrapCache } from "@/lib/lanflow/bootstrap-cache";
 import type { BusinessCacheStatus } from "@/hooks/useBusinessCacheStatus";
 import { BusinessCacheDetails, businessCacheSummary } from "./BusinessCacheDetails";
 import { BusinessCacheSettings } from "./BusinessCacheSettings";
@@ -17,6 +19,7 @@ export function OfflineReadinessStatus({ userId, locationId, online, businessCac
     let cancelled = false;
     let running = false;
     let generation = 0;
+    let issuerChecked = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let manifest: Awaited<ReturnType<typeof readOfflineManifest>> | undefined;
     let controller: AbortController | undefined;
@@ -26,7 +29,16 @@ export function OfflineReadinessStatus({ userId, locationId, online, businessCac
       running = true;
       const currentGeneration = generation;
       let ready = false;
+      let issuerRetryNeeded = false;
       try {
+        const profile = readBootstrapCache(userId)?.profile;
+        if (online && (profile?.role === "admin" || profile?.role === "super_admin")) {
+          issuerRetryNeeded = true;
+          await prepareRubberBillIssuer(locationId, !issuerChecked);
+          issuerRetryNeeded = false;
+          issuerChecked = true;
+        }
+        if (cancelled || currentGeneration !== generation) return;
         if (!("caches" in window) || !("serviceWorker" in navigator)) {
           throw new Error("อุปกรณ์นี้ยังไม่รองรับการเตรียมแอปออฟไลน์");
         }
@@ -48,7 +60,7 @@ export function OfflineReadinessStatus({ userId, locationId, online, businessCac
         if (!cancelled && currentGeneration === generation) setState({ percent: 0, ready: false, detail: error instanceof Error ? error.message : "ตรวจข้อมูลออฟไลน์ไม่สำเร็จ" });
       } finally {
         running = false;
-        if (!cancelled && (manifest || currentGeneration !== generation)) {
+        if (!cancelled && (manifest || issuerRetryNeeded || currentGeneration !== generation)) {
           clearTimeout(timer);
           timer = setTimeout(() => { if (!document.hidden) void check(); }, currentGeneration !== generation ? 0 : ready ? 30000 : 2000);
         }

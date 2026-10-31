@@ -8,7 +8,6 @@ import {
   makeClientRecordedAt,
   makeClientTempId,
   makeIdempotencyKey,
-  makeLocalBillNo,
   todayInputValue
 } from "@/lib/format";
 import { validateRubberBillDraft } from "@/lib/rubber-bill-validation";
@@ -70,7 +69,6 @@ export function RubberBillModal({
   onSave: (bill: RubberBill) => boolean | void | Promise<boolean | void>;
 }) {
   const [draftClientTempId] = useState(() => bill?.clientTempId ?? makeClientTempId("rubber"));
-  const initialLocalBillNo = bill?.localBillNo ?? makeLocalBillNo(selectedLocation.code, "R", draftClientTempId);
   const payerName = bill
     ? bill.createdByName?.trim() || "ไม่ระบุ"
     : profile.name?.trim() || "ไม่ระบุ";
@@ -363,11 +361,13 @@ export function RubberBillModal({
     const form = new FormData(formElement);
     const clientTempId = bill?.clientTempId ?? draftClientTempId;
     const clientRecordedAt = bill?.clientRecordedAt ?? makeClientRecordedAt();
-    const localBillNo = String(form.get("billNo") || initialLocalBillNo);
+    const localBillNo = bill?.localBillNo ?? "";
     const saved = await onSave({
       id: bill?.id ?? clientTempId,
       clientTempId,
       localBillNo,
+      billNumbering: bill?.billNumbering,
+      numberingRequested: !bill,
       serverBillNo: bill?.serverBillNo,
       syncStatus: bill?.syncStatus ?? "pending",
       idempotencyKey: bill?.idempotencyKey ?? makeIdempotencyKey("create", clientTempId),
@@ -498,7 +498,7 @@ export function RubberBillModal({
         <section className="bg-slate-50 p-3 sm:p-4">
           <h3 className="mb-4 font-bold text-ink">ข้อมูลลูกค้า</h3>
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="เลขบิลชั่วคราว" name="billNo" defaultValue={bill?.localBillNo ?? initialLocalBillNo} required readOnly />
+            <Field label="เลขที่บิล" name="billNo" defaultValue={bill?.serverBillNo ?? bill?.localBillNo ?? "ออกเลขเมื่อบันทึก"} required readOnly />
             <Field
               label="วันที่"
               name="billDate"

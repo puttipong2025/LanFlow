@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
+import { isIsoTimestamp } from "@/lib/validation/primitives";
 import type { DashboardOverview } from "@/types/dashboard";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +18,7 @@ function decodeCursor(cursor: string | null) {
     const separator = decoded.indexOf("|");
     const at = decoded.slice(0, separator);
     const key = decoded.slice(separator + 1);
-    if (separator < 1 || !key || Number.isNaN(Date.parse(at))) return null;
+    if (separator < 1 || !key || !isIsoTimestamp(at)) return null;
     return { at, key };
   } catch {
     return null;
@@ -25,6 +26,18 @@ function decodeCursor(cursor: string | null) {
 }
 
 export async function GET(request: NextRequest) {
+  try {
+    return await readOverview(request);
+  } catch {
+    console.error("Dashboard overview request failed");
+    return NextResponse.json(
+      { error: "โหลดข้อมูลภาพรวมไม่สำเร็จ" },
+      { status: 500, headers: { "Cache-Control": "private, no-store, max-age=0" } },
+    );
+  }
+}
+
+async function readOverview(request: NextRequest) {
   const result = await requireAuth(request);
   if (!result.ok) return result.response;
 

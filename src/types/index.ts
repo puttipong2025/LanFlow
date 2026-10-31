@@ -71,7 +71,7 @@ export type RubberBill = { canCorrectSyncFailure?: boolean; canRestartDelete?: b
   id: string;
   clientTempId: string;
   localBillNo: string;
-  serverBillNo?: string;
+  serverBillNo?: string; billNumbering?: import("@/lib/rubber-bills/numbering-contract").RubberBillNumbering; numberingRequested?: boolean;
   syncStatus: SyncStatus;
   serverSubmissionAttempted?: boolean;
   idempotencyKey: string;

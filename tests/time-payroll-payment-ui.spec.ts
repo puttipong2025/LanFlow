@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/lanflow/threshold-alert", (route) => route.fulfill({ json: {
+    config: { thresholdKg: 10000, intervalMinutes: 60 }, configuredCount: 0, checkedCount: 0, candidates: [], unavailable: [],
+  } }));
+});
 const branch = { id: "71000000-0000-4000-8000-000000000001", name: "สาขาผู้จ่าย A", code: "PAYA", active: true };
 const secondBranch = { id: "71000000-0000-4000-8000-000000000002", name: "สาขาผู้จ่าย B", code: "PAYB", active: true };
 const employee = { id: "72000000-0000-4000-8000-000000000001", name: "พนักงานวิธีจ่าย", role: "user", is_active: true, daily_wage: 500, primary_location_id: branch.id };

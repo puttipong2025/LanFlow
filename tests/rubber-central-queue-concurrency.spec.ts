@@ -214,7 +214,12 @@ test("concurrent workers and a report transaction cannot duplicate effects or cr
     if (results[4].status === "rejected") expect(String(results[4].reason)).toContain("QUEUE_CHANGED");
     expect(results[5].status).toBe("rejected");
     if (results[5].status === "rejected") expect(String(results[5].reason)).toMatch(/QUEUE_CHANGED|FORBIDDEN_ACTION/);
-    expect(sql(`select count(*) from private.rubber_queue_jobs where location_id='${branch}' and state='done'`)).toBe("8");
+    // A bounded worker may skip this branch while report/retry holds its lock.
+    // After the racing transactions finish, subsequent ticks must drain it once.
+    await expect.poll(async () => {
+      await worker();
+      return sql(`select count(*) from private.rubber_queue_jobs where location_id='${branch}' and state='done'`);
+    }, { timeout: 15_000 }).toBe("8");
     expect(sql(`select count(*) from public.report_batches where location_id='${branch}'`)).toBe("0");
     expect(sql(`select count(*) from private.rubber_bill_report_blockers('${branch}',clock_timestamp())`)).toBe("8");
     expect(Number(sql(`select count(*) from public.rubber_bills where location_id='${branch}'`))

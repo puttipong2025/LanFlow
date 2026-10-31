@@ -12,6 +12,12 @@ function cleanup(branch: string) {
     delete from public.rubber_bill_approval_requests where location_id='${branch}';
     delete from public.rubber_bill_items where bill_id in(select id from public.rubber_bills where location_id='${branch}');
     delete from public.rubber_bills where location_id='${branch}';set constraints all immediate;
+    delete from private.rubber_queue_jobs where location_id='${branch}';
+    delete from private.rubber_bill_number_bindings where location_id='${branch}';
+    delete from private.rubber_bill_suffix_counters where location_id='${branch}';
+    delete from private.rubber_bill_issuer_heads where location_id='${branch}';
+    delete from private.rubber_bill_issuers where location_id='${branch}';
+    delete from private.rubber_bill_issuer_counters where location_id='${branch}';
     delete from public.dashboard_money_events where location_id='${branch}';delete from public.dashboard_branch_snapshots where location_id='${branch}';
     delete from public.document_deletion_audits where location_id='${branch}';delete from public.user_locations where location_id='${branch}';
     delete from public.locations where id='${branch}';commit;`);
@@ -59,7 +65,8 @@ test("delete retains its row and disables actions before held context and feed r
   test.setTimeout(600000); assertSafeIntegrationTarget(process.env.NEXT_PUBLIC_SUPABASE_URL!);
   const branch = crypto.randomUUID(), marker = `DELETE-${branch.slice(0, 8)}`;
   const samples = Number(process.env.RUBBER_FEEDBACK_SAMPLES ?? 1), durations: number[] = [];
-  const context = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+  // Controlled page-level network gates must not be bypassed by service-worker-owned requests.
+  const context = await browser.newContext({ storageState: "playwright/.auth/super_admin.json", serviceWorkers: "block" });
   const release: Array<() => void> = [];
   try {
     sql(`insert into public.locations(id,name,code,is_active) values('${branch}','${marker}','D${branch.slice(0, 6)}',true)`);
@@ -83,7 +90,7 @@ test("delete retains its row and disables actions before held context and feed r
       await dialog.getByRole("button", { name: "ยืนยันลบ", exact: true }).click();
       await expect(dialog).toBeHidden({ timeout: 1000 });
       await expect(row.getByText("รอส่งจากเครื่อง", { exact: true })).toBeVisible({ timeout: 1000 });
-      await expect(row.getByRole("button", { name: /กำลังยืนยันผล/ }).first()).toBeDisabled();
+      await expect(row.getByRole("button", { name: /บิลนี้กำลังรอซิงก์/ }).first()).toBeDisabled();
       durations.push(Date.now() - started);
       expect(sql(`select count(*) from public.rubber_bills where location_id='${branch}' and record_status='active'`)).toBe(String(samples - i));
       await page.waitForTimeout(3000); // Controlled transport hold, outside measured local feedback.
@@ -99,7 +106,7 @@ test("delete retains its row and disables actions before held context and feed r
 
 test("create and edit share real PDFs before context and POST complete, while approval and sync do not duplicate sharing", async ({ browser }) => {
   test.setTimeout(600000); assertSafeIntegrationTarget(process.env.NEXT_PUBLIC_SUPABASE_URL!);
-  const context = await browser.newContext({ storageState: "playwright/.auth/super_admin.json" });
+  const context = await browser.newContext({ storageState: "playwright/.auth/super_admin.json", serviceWorkers: "block" });
   const branch = crypto.randomUUID(), marker = `PDF-${branch.slice(0, 8)}`;
   const release: Array<() => void> = [];
   try {
@@ -135,7 +142,7 @@ test("create and edit share real PDFs before context and POST complete, while ap
       if (stage === "edit") {
         const edited = page.getByRole("row").filter({ hasText: label }).first();
         await expect(edited).toBeVisible({ timeout: 1000 });
-        await expect(edited.getByRole("button", { name: "กำลังยืนยันผล", exact: false }).first()).toBeDisabled({ timeout: 1000 });
+        await expect(edited.getByRole("button", { name: /บิลนี้กำลังรอซิงก์/ }).first()).toBeDisabled({ timeout: 1000 });
         durations.push(Date.now() - started);
         await page.waitForTimeout(3000); // Feed remains held after local feedback is observed.
         resumeFeed();

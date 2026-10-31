@@ -59,6 +59,7 @@ export function buildRubberBillRpcPayload(
       locationId: calculatedBill.locationId,
       recordStatus: operation === "delete" ? "deleted" : calculatedBill.recordStatus,
       localBillNo: calculatedBill.localBillNo,
+      ...(calculatedBill.billNumbering ? { billNumbering: calculatedBill.billNumbering } : {}),
       billDate: calculatedBill.billDate,
       customerId: calculatedBill.customerId ?? null,
       customerName: calculatedBill.customerName,

@@ -5,6 +5,13 @@ verification ledger. No Cloud deployment is implied.
 
 ## Decision
 
+Numbering extension (2026-10-31): [ADR 0091](0091-stable-offline-rubber-bill-number.md) supersedes
+the local-reference presentation for new device-numbered bills. Their frozen immediate PDF shows one
+`เลขที่บิล` base and `รอเลขท้ายจากส่วนกลาง`; a manually printed confirmed copy shows the final number.
+An edit to an already-confirmed numbered bill retains its known final in the immediate proposal document.
+Legacy bills retain their existing references. IndexedDB is now version 9, preserving the version-7 staging
+and version-8 receipt stores; rollback must retain all supported stores and the version-9 opener.
+
 For new offline/online bills and online edits, a locally eligible receipt may be
 shared after the proposal is durably stored, before central command admission or
 business completion. Use the local reference and a frozen proposal document.

@@ -2,9 +2,10 @@ import { expect, test } from "@playwright/test";
 
 test("keeps public assets public and redirects anonymous pages to login", async ({
   playwright,
+  baseURL,
 }) => {
   const anonymous = await playwright.request.newContext({
-    baseURL: "http://127.0.0.1:3000",
+    baseURL,
   });
 
   try {
@@ -63,13 +64,13 @@ test("keeps public assets public and redirects anonymous pages to login", async 
     ]) {
       const response = await anonymous.get(protectedNearMissPath, { maxRedirects: 0 });
       expect(response.status(), protectedNearMissPath).toBe(307);
-      expect(new URL(response.headers().location, "http://127.0.0.1:3000").pathname)
+      expect(new URL(response.headers().location, baseURL).pathname)
         .toBe("/login");
     }
 
     const pageResponse = await anonymous.get("/", { maxRedirects: 0 });
     expect(pageResponse.status()).toBe(307);
-    expect(new URL(pageResponse.headers().location, "http://127.0.0.1:3000").pathname)
+    expect(new URL(pageResponse.headers().location, baseURL).pathname)
       .toBe("/login");
 
     const apiResponse = await anonymous.get("/api/auth/me", { maxRedirects: 0 });

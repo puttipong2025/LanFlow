@@ -196,7 +196,7 @@ test("aborting cleanup rolls back both queue removal and deferred notice", async
   expect(await storage.incomeExpenseNotices(owner, event.locationId)).toEqual([]);
 });
 
-test("blocked version-5 upgrade explains old tabs, then preserves work when upgrading to version 8", async () => {
+test("blocked version-5 upgrade explains old tabs, then preserves work when upgrading to version 9", async () => {
   setup();
   const previous = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("lanflow_sync_db", 5);
@@ -217,7 +217,7 @@ test("blocked version-5 upgrade explains old tabs, then preserves work when upgr
   previous.close();
   await new Promise((resolve) => setTimeout(resolve, 10));
   const upgraded = await core.getSyncDb();
-  expect(upgraded.version).toBe(8);
+  expect(upgraded.version).toBe(9);
   expect(upgraded.objectStoreNames.contains(core.INCOME_EXPENSE_OUTCOME_STORE)).toBe(true);
   upgraded.close();
   expect(await storage.incomeExpenseOwnerWork(owner)).toHaveLength(1);

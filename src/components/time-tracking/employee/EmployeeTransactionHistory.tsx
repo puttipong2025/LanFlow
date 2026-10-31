@@ -3,6 +3,7 @@ import { formatBangkokDateTime } from "@/lib/bangkok-date";
 import { formatCurrency } from "@/lib/format";
 import type { Location } from "@/types";
 import type { ApprovalType } from "../contracts";
+import { LazyWithdrawalAdjustmentDelete as WithdrawalAdjustmentDelete } from "../LazyWithdrawalAdjustmentDelete";
 import { paymentScopeReason, paymentSourceLabel, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 
 type PreviewSource = { type: "withdrawal" | "payroll"; id: string };
@@ -11,7 +12,7 @@ type Decision = (type: ApprovalType, item: any, refreshOwner: () => Promise<void
 export function EmployeeTransactionHistory({
   data, transactions, adjustmentSummaryByWithdrawal, adjustmentsByWithdrawal, online, saving,
   canDecideItems, canManageTime, isSelf, globalManager, expenseLocations, onApprove, onReject,
-  loadData, runApprovalAction, onPreview, onChangePayment, onAdjust, onDelete, onWithdrawAdjustment,
+  loadData, runApprovalAction, onPreview, onChangePayment, onAdjust, onDelete, onWithdrawAdjustment, ownerUserId,
 }: {
   data: any; transactions: any[]; adjustmentSummaryByWithdrawal: Map<any, any>; adjustmentsByWithdrawal: Map<string, any[]>;
   online: boolean; saving: boolean; canDecideItems: boolean; canManageTime: boolean; isSelf: boolean;
@@ -19,6 +20,7 @@ export function EmployeeTransactionHistory({
   loadData: () => Promise<void>; runApprovalAction: (action: () => Promise<boolean>) => Promise<void>;
   onPreview: (source: PreviewSource) => void; onChangePayment: (item: any) => Promise<void>;
   onAdjust: (item: any) => void; onDelete: (item: any) => Promise<void>; onWithdrawAdjustment: (id: string) => Promise<void>;
+  ownerUserId: string;
 }) {
   return (
       <div className="bg-white p-4 rounded-xl border border-clay/30 shadow-sm mt-4">
@@ -130,8 +132,16 @@ export function EmployeeTransactionHistory({
                                   </p>
                                   <p className="mt-1 text-pretty text-xs text-ink/60">ผู้สร้างรายการ: {adjustment.history_creator_name || 'ไม่ทราบผู้สร้างรายการ'}</p>
                                   {adjustment.description && <p className="mt-1 text-pretty text-xs text-ink/70">{adjustment.description}</p>}
+                                  {adjustment.status === 'APPROVED' && <p className="mt-1 text-pretty text-xs text-ink/60">{paymentSourceLabel(adjustment)}</p>}
                                 </div>
                                 <div className="flex shrink-0 gap-2">
+                                  {!cancelled && canManageTime && adjustment.id === summary?.latestApprovedAdjustmentId && adjustment.status === 'APPROVED' && (
+                                    <WithdrawalAdjustmentDelete adjustment={adjustment} online={online} saving={saving}
+                                      ownerUserId={ownerUserId} refresh={loadData}
+                                      reason={reportLockReason(adjustment) || paymentScopeReason(adjustment, globalManager, expenseLocations)
+                                        || (summary.pendingAdjustmentId ? "มีคำขอปรับยอดรออนุมัติ กรุณาถอนหรือปฏิเสธคำขอนั้นก่อน" : null)
+                                        || (summary.blockingSlip ? `เดือน ${summary.blockingSlip.month} มีสลิป ${summary.blockingSlip.id} ที่ใช้ยอดหลังปรับ กรุณาเปิดเดือนก่อนลบ` : null)} />
+                                  )}
                                   {!cancelled && canDecideItems && adjustment.status === 'PENDING' && onApprove && (
                                     <button type="button" onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT', source_expense_location_id: t.expense_location_id ?? null }, loadData))} disabled={saving || !online} className="rounded-md bg-success px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">อนุมัติ</button>
                                   )}

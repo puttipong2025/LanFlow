@@ -4,6 +4,12 @@ import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/lanflow/threshold-alert", (route) => route.fulfill({ json: {
+    config: { thresholdKg: 10000, intervalMinutes: 60 }, configuredCount: 0, checkedCount: 0, candidates: [], unavailable: [],
+  } }));
+});
+
 const branch = {
   id: "71000000-0000-4000-8000-000000000001",
   name: "สาขาปรับยอด",
@@ -40,6 +46,78 @@ const withdrawal = {
   expense_location_id: branch.id,
   expense_location_name: branch.name,
 };
+
+test("latest delete moves backward only after success and outside settlement is explicit", async ({ page }) => {
+  let adjustments = [
+    { id: "74000000-0000-4000-8000-000000000011", parent_debt_id: withdrawal.id, amount: 1500, adjustment_base_amount: 1000, status: "APPROVED", created_at: "2026-10-30T05:00:00Z", expense_location_id: null },
+    { id: "74000000-0000-4000-8000-000000000012", parent_debt_id: withdrawal.id, amount: 1200, adjustment_base_amount: 1500, status: "APPROVED", created_at: "2026-10-29T05:00:00Z", expense_location_id: null },
+  ];
+  let latestId: string | null = adjustments[1].id;
+  let target = 1200;
+  let rejectDelete = true;
+  await page.route("**/api/lanflow/time-tracking/admin", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: {
+      permissions: { canManage: true, canDecide: true, canConfigure: true }, users: [employee], paymentLocations: [branch], pendingSlips: [], pendingTransactions: [], admins: [],
+    } });
+    const { action, payload } = route.request().postDataJSON();
+    if (action === "DELETE_TRANSACTION") {
+      expect(payload.transaction_id).toBe(latestId);
+      if (rejectDelete) return route.fulfill({ status: 409, json: { error: "ล็อกโดยรายงาน RPT-TEST-31" } });
+      target = adjustments.find((item) => item.id === latestId)!.adjustment_base_amount;
+      adjustments = adjustments.filter((item) => item.id !== latestId);
+      latestId = adjustments[0]?.id ?? null;
+      return route.fulfill({ json: { success: true } });
+    }
+    if (action === "ADMIN_REQUEST_WITHDRAWAL_ADJUSTMENT") {
+      expect(payload.expense_location_id).toBeNull();
+      expect(payload.target_amount).toBe(1300);
+      return route.fulfill({ json: { success: true } });
+    }
+    await route.continue();
+  });
+  await page.route("**/api/lanflow/time-tracking/user?**", (route) => route.fulfill({ json: {
+    wageInfo: { totalDays: 0, grossPay: 0, remainingBalance: 0, totalDebt: target }, transactions: [withdrawal], debts: [], deductions: [], slips: [], adjustments,
+    adjustmentSummaries: [{ withdrawalId: withdrawal.id, latestTarget: target, latestApprovedAdjustmentId: latestId, closedSlipFloor: 0, pendingAdjustmentId: null }],
+  } }));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+  await page.getByRole("combobox", { name: /กรองสาขา/ }).selectOption("all");
+  await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
+  const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
+  const deleteButton = employeeDialog.getByRole("button", { name: "ลบการปรับยอด", exact: true });
+  await expect(deleteButton).toHaveCount(1);
+  await expect(deleteButton).toHaveAttribute("aria-label", "ลบการปรับยอด");
+  await expect(deleteButton).toHaveText("ลบ");
+  await page.screenshot({ path: "output/adjustment-delete-button-mobile.png" });
+  await deleteButton.click();
+  const confirm = page.getByRole("alertdialog", { name: "ลบการปรับยอดเบิกล่าสุด" });
+  await expect(confirm).toContainText("1,200.00");
+  await expect(confirm.getByRole("button", { name: "ยกเลิก", exact: true })).toBeFocused();
+  await page.screenshot({ path: "output/adjustment-delete-mobile.png" });
+  await confirm.getByRole("button", { name: "ยืนยันลบ", exact: true }).click();
+  await expect(confirm.getByRole("alert")).toContainText("RPT-TEST-31");
+  await confirm.getByRole("button", { name: "ยกเลิก", exact: true }).click();
+  await expect(deleteButton).toHaveCount(1);
+  rejectDelete = false;
+  for (const expectedTarget of ["1,200.00", "1,500.00"]) {
+    await deleteButton.click();
+    await expect(confirm).toContainText(expectedTarget);
+    await confirm.getByRole("button", { name: "ยืนยันลบ", exact: true }).click();
+    await expect(confirm).not.toBeVisible();
+  }
+  await expect(deleteButton).toHaveCount(0);
+  await employeeDialog.getByRole("button", { name: "ปรับยอดเบิก", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "ปรับยอดเบิกเงิน" });
+  await modal.getByLabel("ยอดเบิกใหม่ (บาท)").fill("1300");
+  await modal.getByLabel("สาขาที่รับ–จ่ายส่วนต่าง").selectOption("__central_outside_system__");
+  await expect(modal.getByText("จ่ายเพิ่มนอกระบบ ฿300.00")).toBeVisible();
+  await expect(modal.getByText("ชำระส่วนต่างนอกระบบ · ไม่เพิ่มรับ–จ่าย")).toBeVisible();
+  expect(await modal.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: "output/adjustment-outside-mobile.png" });
+  await modal.getByRole("button", { name: "บันทึกและอนุมัติ" }).click();
+  await expect(modal).toHaveCount(0);
+});
 
 test("manager adjusts a locked withdrawal with a clear signed preview and branch", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -108,6 +186,7 @@ test("manager adjusts a locked withdrawal with a clear signed preview and branch
 
   await page.goto("/");
   await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+  await page.getByRole("combobox", { name: /กรองสาขา/ }).selectOption("all");
   await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
   const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
   await expect(employeeDialog.getByText(
@@ -131,7 +210,7 @@ test("manager adjusts a locked withdrawal with a clear signed preview and branch
   await adjustmentDialog.getByLabel("ยอดเบิกใหม่ (บาท)").fill("600");
   await expect(adjustmentDialog.getByText("เพิ่มรายรับ (คืนเงิน) ฿400.00")).toBeVisible();
   await expect(adjustmentDialog.getByLabel("สาขาที่รับ–จ่ายส่วนต่าง")).toHaveValue(sourceBranch.id);
-  await expect(adjustmentDialog.getByLabel("สาขาที่รับ–จ่ายส่วนต่าง").locator('option[value="__central_outside_system__"]')).toHaveCount(0);
+  await expect(adjustmentDialog.getByLabel("สาขาที่รับ–จ่ายส่วนต่าง").locator('option[value="__central_outside_system__"]')).toHaveCount(1);
   await adjustmentDialog.getByLabel("รายละเอียดเพิ่มเติม (ไม่บังคับ)").fill("คืนส่วนที่เบิกเกิน");
   await adjustmentDialog.getByRole("button", { name: "บันทึกและอนุมัติ" }).click();
 
@@ -177,6 +256,7 @@ test("cancelled withdrawal remains audit history without active controls", async
 
   await page.goto("/");
   await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+  await page.getByRole("combobox", { name: /กรองสาขา/ }).selectOption("all");
   await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
   const historyRow = page.getByText(cancelledWithdrawal.description, { exact: true }).locator("xpath=ancestor::li");
   await expect(historyRow.getByText("ยกเลิก", { exact: true })).toBeVisible();
@@ -231,6 +311,7 @@ test("manager approval preselects the locked withdrawal source branch", async ({
 
   await page.goto("/");
   await page.getByRole("button", { name: "เวลาและเงินเดือน", exact: true }).click();
+  await page.getByRole("combobox", { name: /กรองสาขา/ }).selectOption("all");
   await page.getByRole("button", { name: `จัดการปฏิทินวันทำงานของ ${employee.name}` }).click();
   const employeeDialog = page.getByRole("dialog", { name: "ข้อมูลของพนักงาน" });
   await employeeDialog.getByRole("button", { name: "อนุมัติ", exact: true }).click();
@@ -238,11 +319,11 @@ test("manager approval preselects the locked withdrawal source branch", async ({
   await expect(approvalDialog.getByLabel("วิธีจ่าย")).toHaveValue(sourceBranch.id);
 });
 
-test("manager API rejects an adjustment without a branch before calling the RPC", async ({ request }) => {
+test("manager API rejects an omitted settlement before calling the RPC", async ({ request }) => {
   const response = await request.post("/api/lanflow/time-tracking/admin", {
     data: {
       action: "ADMIN_REQUEST_WITHDRAWAL_ADJUSTMENT",
-      payload: { withdrawal_id: withdrawal.id, target_amount: 600, expense_location_id: null },
+      payload: { withdrawal_id: withdrawal.id, target_amount: 600 },
     },
   });
   expect(response.status()).toBe(400);
