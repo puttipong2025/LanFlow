@@ -9,7 +9,6 @@ import { formatBangkokDateTime } from "@/lib/bangkok-date";
 export type RubberBillReceiptModel = {
   receiptKind: "offline" | "synced";
   referenceLabel: "เลขอ้างอิงบนเครื่อง" | "เลขบิล" | "เลขที่บิล";
-  finalNumberPending?: boolean;
   referenceNo: string;
   localReferenceNo?: string;
   billDate: string;
@@ -114,7 +113,6 @@ export function buildRubberBillReceiptModel(bill: RubberBill): RubberBillReceipt
 
   return {
     receiptKind,
-    finalNumberPending: bill.billNumbering ? getDisplayBillNo(bill) === bill.localBillNo : undefined,
     localReferenceNo: receiptKind === "synced" && !bill.billNumbering ? bill.localBillNo : undefined,
     referenceLabel: bill.billNumbering ? "เลขที่บิล" : receiptKind === "synced" ? "เลขบิล" : "เลขอ้างอิงบนเครื่อง",
     referenceNo: bill.billNumbering ? getDisplayBillNo(bill) : receiptKind === "synced"
@@ -152,7 +150,7 @@ export function resolveRubberBillReceiptForPrint(
   }
   if (snapshot?.revisionNo === bill.revisionNo) {
     if (bill.billNumbering) return { ...snapshot.receipt, referenceLabel: "เลขที่บิล" as const,
-      referenceNo: getDisplayBillNo(bill), localReferenceNo: undefined, finalNumberPending: false };
+      referenceNo: getDisplayBillNo(bill), localReferenceNo: undefined };
     return snapshot.receipt.localReferenceNo === bill.localBillNo
       ? snapshot.receipt
       : { ...snapshot.receipt, localReferenceNo: bill.localBillNo };
@@ -240,7 +238,6 @@ table { width: 100%; border-collapse: collapse; margin: 6px 0; } th, td { border
 <h1>${h(title)}</h1>
 ${model.hasZeroPrice ? '<div class="warning">ยังไม่กำหนดราคา — ห้ามจ่าย</div>' : ""}
 <div class="meta"><div class="row"><span>${h(model.referenceLabel)}</span><strong>${h(model.referenceNo)}</strong></div>${model.receiptKind === "synced" && model.localReferenceNo ? `<div class="row"><span>เลขอ้างอิงบนเครื่อง</span><strong>${h(model.localReferenceNo)}</strong></div>` : ""}<div class="row"><span>วันที่</span><span>${h(model.billDate)}</span></div></div>
-${model.finalNumberPending ? '<div class="muted">รอเลขท้ายจากส่วนกลาง</div>' : ""}
 <div><strong>ลูกค้า:</strong> ${h(model.customerName)}</div>
 ${isBranchReceipt ? `<div><strong>สถานะอนุมัติ:</strong> ${h(model.approvalLabel)}</div>` : ""}
 ${branchReceiptMeta}

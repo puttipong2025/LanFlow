@@ -182,7 +182,7 @@ for (const base of ["2610310001-D01", "0001-261031-D01"]) test(`PDF preserves ${
   expect(buildRubberBillReceiptModel(b)).toMatchObject({ referenceLabel: "เลขที่บิล", referenceNo: b.localBillNo, localReferenceNo: undefined });
   const synced = { ...b, syncStatus: "synced" as const, serverBillNo: `${b.localBillNo}-1`, billNo: `${b.localBillNo}-1`, revisionNo: 1, serverCreatedAt: new Date().toISOString() };
   const old = buildRubberBillReceiptModel(b);
-  expect(renderRubberBillReceiptHtml(old)).toContain("รอเลขท้ายจากส่วนกลาง");
+  expect(renderRubberBillReceiptHtml(old)).not.toContain("รอเลขท้ายจากส่วนกลาง");
   const confirmed = resolveRubberBillReceiptForPrint(synced, { revisionNo: 1, receipt: old }, false);
   expect(confirmed.referenceNo).toBe(synced.serverBillNo);
   expect(renderRubberBillReceiptHtml(confirmed)).not.toContain("รอเลขท้ายจากส่วนกลาง");
@@ -190,5 +190,4 @@ for (const base of ["2610310001-D01", "0001-261031-D01"]) test(`PDF preserves ${
     priceRuleRevision: 1, centralPrice: 40, priceAllowance: 0, ruleSource: "ungrouped", groupId: null, nonCurrentDateRequiresApproval: false });
   expect(edited).not.toBeNull();
   expect(buildRubberBillReceiptModel(edited!).referenceNo).toBe(synced.serverBillNo);
-  expect(buildRubberBillReceiptModel(edited!).finalNumberPending).toBe(false);
 });
