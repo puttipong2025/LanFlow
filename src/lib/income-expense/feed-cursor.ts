@@ -12,8 +12,9 @@ function isNonBlankString(value: unknown, maxLength: number): value is string {
 }
 
 export function isCanonicalDate(value: unknown): value is string {
-  if (typeof value !== "string" || !DATE_PATTERN.test(value)) return false;
-  return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+  if (typeof value !== "string" || value.startsWith("0000") || !DATE_PATTERN.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 export function isIsoTimestamp(value: unknown): value is string {

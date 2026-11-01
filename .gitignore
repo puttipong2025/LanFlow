@@ -18,6 +18,8 @@ supabase/backup_*.sql
 
 # Local Codex attachments and generated verification artifacts
 .codex-remote-attachments/
+.codex-attachments/
+output-*-vault-*.json
 output/
 
 

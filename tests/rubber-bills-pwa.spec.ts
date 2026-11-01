@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { installThresholdAlertHandler } from './helpers/dismiss-threshold-alert';
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createClient } from '@supabase/supabase-js';
@@ -125,6 +126,7 @@ test.describe('PWA Offline Reload', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await installThresholdAlertHandler(page);
     const resetApprovalSetting = await page.request.patch(
       `${localSupabaseUrl}/rest/v1/rubber_bill_approval_settings?id=eq.true`,
       {
@@ -162,7 +164,7 @@ test.describe('PWA Offline Reload', () => {
     await page.fill('input[type="tel"]', phone);
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
 
     // Visit rubber bills tab to trigger SW precaching of this view
     await page.click('button:has-text("บิลยาง")');
@@ -239,7 +241,7 @@ test.describe('PWA Offline Reload', () => {
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
 
     // The SW-cached page loaded (we can see "ออกจากระบบ" which is rendered client-side)
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: /^ออกจากระบบ/ }).first()).toBeVisible({ timeout: 15000 });
 
     // In full offline mode with bootstrap cache, we should be able to click tabs
     await page.click('button:has-text("บิลยาง")');
@@ -248,10 +250,10 @@ test.describe('PWA Offline Reload', () => {
     // And the bill created offline should be visible with "รอซิงก์" badge
     const offlineRow = page.locator('table tbody tr', { hasText: pwaMarker }).first();
     await expect(offlineRow).toBeVisible({ timeout: 10000 });
-    await expect(offlineRow.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeVisible();
+    await expect(offlineRow.getByText('รอส่งจากเครื่อง', { exact: true })).toBeVisible();
     const cachedSyncedRow = page.locator('table tbody tr', { hasText: syncedMarker }).first();
     await expect(cachedSyncedRow).toBeVisible({ timeout: 10000 });
-    await expect(cachedSyncedRow.locator('td').last().getByText('ซิงก์แล้ว', { exact: true })).toBeVisible();
+    await expect(cachedSyncedRow.getByText('ซิงก์แล้ว', { exact: true })).toBeVisible();
 
     // Verify IDB queue survived the offline reload
     const queueAfterReload = await readQueue(page);
@@ -320,7 +322,7 @@ test.describe('PWA Offline Reload', () => {
     // Workaround for Playwright ERR_ABORTED after offline state: navigate away then back
     await page.goto('about:blank');
     await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 15000 });
     await page.click('button:has-text("บิลยาง")');
 
     // Bill from queue should be visible and eventually sync
@@ -380,7 +382,7 @@ test.describe('PWA Offline Reload', () => {
       await page.fill('input[type="tel"]', phone);
       await page.fill('input[type="password"]', password);
       await page.click('button:has-text("เข้าสู่ระบบ")');
-      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("บิลยาง")');
       await expect(page.locator('button:has-text("เพิ่มบิลยาง")')).toBeVisible();
       const locationId = await selectedAppLocationId(page);
@@ -401,13 +403,8 @@ test.describe('PWA Offline Reload', () => {
       await weighRow.locator('input[type="number"]').nth(0).fill('1000');
       await weighRow.locator('input[type="number"]').nth(1).fill('200');
       await weighRow.locator('input[type="number"]').nth(3).fill('20');
-      let dialogMessage = '';
-      page.once('dialog', async (dialog) => {
-        dialogMessage = dialog.message();
-        await dialog.dismiss();
-      });
       await modal.getByRole('button', { name: 'ส่งขออนุมัติ' }).click();
-      expect(dialogMessage).toBe('บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ');
+      await expect(modal.getByRole('alert')).toContainText('บิลต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ');
 
       await expect(modal).toBeVisible();
       expect((await readQueue(page)).some((event) => event.payload?.customerName === marker)).toBe(false);

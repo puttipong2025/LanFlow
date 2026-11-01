@@ -1,3 +1,4 @@
+import { isRubberBillNumbering, isNumberedRubberFinal } from "@/lib/rubber-bills/numbering-contract";
 import {
   isCanonicalDate,
   isFeedTimestamp,
@@ -221,6 +222,7 @@ export function isIncomeExpenseSubmission(value: unknown): value is Record<strin
   const expectedKey = `${String(operation)}:${String(value.clientTempId)}:${String(revision)}`;
 
   return (operation === "create" || operation === "update" || operation === "delete")
+    && (value.billNumbering === undefined || (billOption !== "บิลขาย" && isRubberBillNumbering(value.billNumbering)))
     && isNonNegativePostgresInteger(revision)
     && (operation === "create" ? revision === 0 : revision > 0)
     && isNonBlankString(value.clientTempId, 200)
@@ -242,6 +244,13 @@ export function isIncomeExpenseSubmission(value: unknown): value is Record<strin
 
 export function isIncomeExpenseSyncResult(value: unknown, submission: Record<string, unknown>) {
   if (!isJsonObject(value)) return false;
+  if (submission.billNumbering !== undefined && (value.clientTempId !== submission.clientTempId
+    || value.locationId !== submission.locationId || value.operation !== submission.operation
+    || value.localBillNo !== submission.localBillNo
+    || JSON.stringify(value.billNumbering, Object.keys(submission.billNumbering as object).sort()) !== JSON.stringify(submission.billNumbering, Object.keys(submission.billNumbering as object).sort()))) return false;
+  if (submission.billNumbering && (value.status === "rejected" || value.status === "discarded")) {
+    return value.status === "discarded" || isUuid(value.requestId);
+  }
   if (value.status === "synced") {
     const expectedRevision = submission.expectedRevisionNo;
     const revisionMatches = submission.operation === "create"
@@ -250,6 +259,7 @@ export function isIncomeExpenseSyncResult(value: unknown, submission: Record<str
     return revisionMatches
       && isUuid(value.id)
       && isNonBlankString(value.serverBillNo, 200)
+      && (!submission.billNumbering || isNumberedRubberFinal(submission.localBillNo, value.serverBillNo))
       && isIsoTimestamp(value.serverReceivedAt);
   }
   if (value.status === "pending_approval") {
@@ -272,6 +282,7 @@ function isFeedRow(value: unknown, locationId: string, mode: IncomeExpenseServer
     ? value.syncStatus === "pending" && approvalIsValid
     : hasValidLatestFeedState(value, hasApprovalFields, approvalIsValid);
   return statusMatchesMode
+    && (value.billNumbering === undefined || isRubberBillNumbering(value.billNumbering))
     && hasValidFeedDisplayMetadata(value)
     && isNonBlankString(value.id, 300)
     && isNonBlankString(value.clientTempId, 300)
@@ -292,6 +303,10 @@ function isFeedRow(value: unknown, locationId: string, mode: IncomeExpenseServer
     && isFeedTimestamp(value.clientRecordedAt)
     && isFeedTimestamp(value.clientCreatedAt)
     && isNonNegativePostgresInteger(value.revisionNo);
+}
+
+export function isIncomeExpenseHistoryRow(value: unknown, locationId: string) {
+  return isFeedRow(value, locationId, "latest") && isJsonObject(value) && value.syncStatus === "synced";
 }
 
 export function isIncomeExpenseFeedPayload(

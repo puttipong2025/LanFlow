@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const auth = await requireAuth(request);
     if (!auth.ok) return auth.response;
     if (!hasSystemManagerAccess(auth.auth)) return NextResponse.json({ error: "ไม่มีสิทธิ์" }, { status: 403 });
-    const params = new URL(request.url).searchParams, location = params.get("locationId") || null, search = params.get("search") ?? "", status = params.get("status") ?? "all";
+    const params = new URL(request.url).searchParams, location = params.get("locationId") || null, search = params.get("search") ?? "", status = params.get("status") ?? "active";
     const offset = Number(params.get("offset") ?? 0);
     if ((location && !isUuid(location)) || !["all", "active", "retired"].includes(status) || search.length > 160 || !Number.isSafeInteger(offset) || offset < 0 || offset > 2147483647) {
       return NextResponse.json({ error: "ตัวกรองไม่ถูกต้อง" }, { status: 400 });

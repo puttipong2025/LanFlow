@@ -1,35 +1,29 @@
 import { incomeExpenseFromSyncEvent as payloadToOptimisticRow } from "@/lib/income-expense/operational-list";
-import { useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { enqueueNumberedIncomeCreate, readIncomeSubmission } from "@/lib/income-expense/numbering-idb";
+import { confirmIncomeNumberedEvent } from "@/lib/income-expense/numbering-receipts";
+import { cancelUnsubmittedIncomeCreate } from "@/lib/income-expense/cancel-local-create";
+import { isIncomeExpenseSyncResult } from "@/lib/income-expense/contracts";
+import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { IncomeExpense } from "@/types";
-import { enqueueSyncEvent, getPendingEvents, removeSyncEvent, removeSyncEvents, reconcileSyncEventsIfCurrent, updateSyncEvent, type SyncEvent } from "@/lib/idb-queue";
+import { enqueueSyncEvent, getPendingEvents, removeSyncEventIfCurrent, reconcileSyncEventsIfCurrent, updateSyncEventIfCurrent, type SyncEvent } from "@/lib/idb-queue";
 import { coalesceQueueGroup } from "@/lib/coalesceQueueGroup";
 import { isIncomeExpenseBackgroundCommand } from "@/lib/income-expense/background-command";
 import { acceptIncomeExpenseBackground, runIncomeExpenseBackground } from "@/lib/income-expense/background-sync";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
 import { OFFLINE_SYNCED_ACTION_MESSAGE, PENDING_SERVER_ACTION_MESSAGE } from "@/lib/record-action-locks";
-import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { authFetch, canSyncCurrentSession } from "@/lib/auth-fetch";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { useIncomeExpenseOperationalList } from "@/hooks/useIncomeExpenseOperationalList";
-import type { IncomeExpenseOperationalFeedPage, IncomeExpenseOperationalMode } from "@/lib/income-expense/operational-list";
+import type { IncomeExpenseOperationalMode } from "@/lib/income-expense/operational-list";
+import { incomeExpenseOperationalQueryKeys } from "@/lib/income-expense/query-keys";
+
+import { cacheConfirmedIncomeExpense, removeFromFeedCache, type IncomeExpenseSyncReceipt } from "@/lib/income-expense/feed-cache";
 
 const ENTITY = "income_expense" as const;
-const FEED_QUERY_KEY = INCOME_EXPENSE_FEED_QUERY_KEY;
 
-type FeedPage = IncomeExpenseOperationalFeedPage;
-type IncomeExpenseSyncReceipt = {
-  id: string;
-  serverBillNo: string;
-  revisionNo: number;
-  serverReceivedAt?: string;
-  title?: string;
-  cost?: number;
-  saleLineCount?: number;
-  saleLines?: IncomeExpense["saleLines"];
-};
 export type IncomeExpenseStockShortage = {
   productId: string;
   productName: string;
@@ -55,81 +49,8 @@ type IncomeExpenseSyncResult = {
   attemptedIds: Set<string>;
 };
 
-type IncomeExpenseTransactionSyncResult =
-  | { status: "synced"; transaction: IncomeExpense }
-  | { status: "pending_approval" };
-
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: ENTITY, ownerUserId, locationId };
-}
-
-function removeFromFeedCache(
-  queryClient: ReturnType<typeof useQueryClient>,
-  ownerUserId: string,
-  locationId: string,
-  clientTempId: string
-) {
-  queryClient.setQueriesData<InfiniteData<FeedPage>>(
-    { queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] },
-    (cached) => cached ? {
-      ...cached,
-      pages: cached.pages.map((page) => ({
-        ...page,
-        rows: page.rows.filter((row) => row.clientTempId !== clientTempId),
-      })),
-    } : cached
-  );
-}
-
-function upsertSyncedIntoFeedCache(
-  queryClient: ReturnType<typeof useQueryClient>,
-  ownerUserId: string,
-  locationId: string,
-  event: SyncEvent,
-  receipt: IncomeExpenseSyncReceipt
-) {
-  const optimistic = payloadToOptimisticRow(event);
-  queryClient.setQueriesData<InfiniteData<FeedPage>>(
-    { queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] },
-    (cached) => {
-      const existing = cached?.pages
-        .flatMap((page) => page.rows)
-        .find((row) => row.clientTempId === event.id);
-      const synced: IncomeExpense = {
-        ...existing,
-        ...optimistic,
-        id: receipt.id,
-        serverBillNo: receipt.serverBillNo,
-        number: receipt.serverBillNo,
-        syncStatus: "synced",
-        revisionNo: receipt.revisionNo,
-        serverReceivedAt: receipt.serverReceivedAt,
-        title: receipt.title ?? optimistic.title,
-        cost: receipt.cost ?? optimistic.cost,
-        saleLineCount: receipt.saleLineCount ?? optimistic.saleLineCount,
-        saleLines: receipt.saleLines ?? optimistic.saleLines,
-        syncErrorMessage: undefined,
-      };
-
-      if (!cached || cached.pages.length === 0) {
-        return {
-          pages: [{ rows: [synced], nextCursor: null, hasMore: false, pendingApprovalCount: 0 }],
-          pageParams: [null],
-        };
-      }
-
-      return {
-        ...cached,
-        pages: cached.pages.map((page, index) => {
-          const rows = page.rows.filter((row) => row.clientTempId !== event.id);
-          return {
-            ...page,
-            rows: index === 0 ? [synced, ...rows] : rows,
-          };
-        }),
-      };
-    }
-  );
 }
 
 async function normalizeQueue(ownerUserId: string, locationId: string) {
@@ -145,12 +66,7 @@ async function normalizeQueue(ownerUserId: string, locationId: string) {
       event.status !== "pending" || event.serverSubmissionAttempted === true
     ))) continue;
     const result = coalesceQueueGroup(events);
-    if (result.action === "noop") {
-      for (const event of events) await removeSyncEvent(event.queueId!);
-    } else {
-      await updateSyncEvent(result.keeper);
-      for (const event of result.remove) await removeSyncEvent(event.queueId!);
-    }
+    await reconcileSyncEventsIfCurrent(events, result.action === "noop" ? undefined : result.keeper, true);
   }
 }
 
@@ -175,8 +91,10 @@ async function runPendingIncomeExpenseSync(
     try {
       attemptedIds.add(event.id);
       if (event.serverSubmissionAttempted !== true) {
-        event.serverSubmissionAttempted = true;
-        await updateSyncEvent(event);
+        const marked = { ...event, serverSubmissionAttempted: true };
+        if (!await reconcileSyncEventsIfCurrent([event], marked)) continue;
+        Object.assign(event, marked);
+        await queryClient.invalidateQueries({ queryKey: incomeExpenseOperationalQueryKeys.pending(ownerUserId, locationId) });
       }
       const response = await authFetch("/api/lanflow/income-expense", {
         method: "POST",
@@ -184,15 +102,19 @@ async function runPendingIncomeExpenseSync(
         body: JSON.stringify(event.payload),
       });
       const data = await response.json();
+      if (response.ok && (!isIncomeExpenseSyncResult(data, event.payload)
+        || data.status === "failed" || data.status === "conflict")) continue;
       if (response.ok) {
+        if (event.payload.billNumbering && (data.status === "rejected" || data.status === "discarded")) {
+          await confirmIncomeNumberedEvent(event, data); continue;
+        }
         if (data.status === "pending_approval") {
           pendingApprovalIds.add(event.id);
-          await removeSyncEvent(event.queueId!);
+          if (event.payload.billNumbering) await confirmIncomeNumberedEvent(event, data); else await removeSyncEventIfCurrent(event);
           continue;
         }
         if (event.operation === "delete") {
-          await queryClient.cancelQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
-          removeFromFeedCache(queryClient, ownerUserId, locationId, event.id);
+          await cacheConfirmedIncomeExpense(queryClient, ownerUserId, locationId, event);
         } else if (
           typeof data.id === "string"
           && typeof data.serverBillNo === "string"
@@ -213,16 +135,15 @@ async function runPendingIncomeExpenseSync(
             saleLines: Array.isArray(data.saleLines) ? data.saleLines : undefined,
           };
           receipts.set(event.id, receipt);
-          await queryClient.cancelQueries({ queryKey: [FEED_QUERY_KEY, ownerUserId, locationId] });
-          upsertSyncedIntoFeedCache(queryClient, ownerUserId, locationId, event, receipt);
+          await cacheConfirmedIncomeExpense(queryClient, ownerUserId, locationId, event, receipt);
         }
-        await removeSyncEvent(event.queueId!);
+        if (event.payload.billNumbering) await confirmIncomeNumberedEvent(event, data); else await removeSyncEventIfCurrent(event);
       }
       else if (isRetryableSyncResponse(response.status, data)) {
         break;
       }
       else {
-        event.serverSubmissionAttempted = false;
+        if (!event.payload.billNumbering) event.serverSubmissionAttempted = false;
         if (
           data.errorCode === "STOCK_SHORTAGE"
           && event.payload.billOption === "บิลขาย"
@@ -239,12 +160,12 @@ async function runPendingIncomeExpenseSync(
               })
             : [];
           rejections.set(event.id, { errorCode: "STOCK_SHORTAGE", shortages });
-          await removeSyncEvent(event.queueId!);
+          await removeSyncEventIfCurrent(event);
           continue;
         }
         event.status = data.status === "conflict" ? "conflict" : "failed";
         event.errorMessage = data.errorMessage || (event.status === "conflict" ? "ข้อมูลชนกัน" : "ซิงก์ไม่สำเร็จ");
-        await updateSyncEvent(event);
+        await updateSyncEventIfCurrent(event);
         blockedIds.add(event.id);
       }
     } catch {
@@ -299,7 +220,7 @@ export function useIncomeExpense(
 
   async function syncTransaction(
     submittedTransaction: IncomeExpense
-  ): Promise<IncomeExpenseTransactionSyncResult> {
+  ): Promise<{ status: "synced" | "pending_approval" }> {
     if (!navigator.onLine) throw new Error("บิลขายต้องออนไลน์จนกว่าจะซิงก์สำเร็จ");
 
     let syncResult: IncomeExpenseSyncResult | undefined;
@@ -332,26 +253,10 @@ export function useIncomeExpense(
       );
     }
 
-    const receipt = syncResult?.receipts.get(submittedTransaction.clientTempId);
-    if (!receipt) {
+    if (!syncResult?.receipts.has(submittedTransaction.clientTempId)) {
       throw new Error("ไม่พบผลการซิงก์หรือเลขบิลส่วนกลางของบิลขาย");
     }
-    return {
-      status: "synced",
-      transaction: {
-        ...submittedTransaction,
-        id: receipt.id,
-        serverBillNo: receipt.serverBillNo,
-        number: receipt.serverBillNo,
-        syncStatus: "synced",
-        revisionNo: receipt.revisionNo,
-        serverReceivedAt: receipt.serverReceivedAt,
-        title: receipt.title ?? submittedTransaction.title,
-        cost: receipt.cost ?? submittedTransaction.cost,
-        saleLineCount: receipt.saleLineCount ?? submittedTransaction.saleLineCount,
-        saleLines: receipt.saleLines ?? submittedTransaction.saleLines,
-      },
-    };
+    return { status: "synced" };
   }
 
   const saveTransaction = useMutation({
@@ -369,19 +274,33 @@ export function useIncomeExpense(
       const payload = buildIncomeExpensePayload(transaction, operation);
       const events = await getPendingEvents(queuePartition(ownerUserId, locationId));
       const sameRecord = events.filter((event) => event.id === transaction.clientTempId);
+      if (operation === "create" && transaction.billOption !== "บิลขาย") {
+        const accepted = await readIncomeSubmission(ownerUserId, locationId, transaction.clientTempId);
+        if (accepted?.cancelled) throw new Error("รายการนี้ยกเลิกแล้ว กรุณาเพิ่มแถวใหม่");
+        if (accepted && (!transaction.billNumbering || !sameRecord.length)) return enqueueNumberedIncomeCreate(transaction, ownerUserId);
+      }
+      if (operation === "create" && transaction.billOption !== "บิลขาย" && sameRecord.length) {
+        throw new Error("บิลนี้กำลังรอซิงก์ จึงยังแก้ไขไม่ได้");
+      }
       if (sameRecord.some((event) => event.status !== "pending")) throw new Error("ไม่สามารถบันทึกได้ กรุณาแก้ไขข้อมูลที่ขัดแย้ง หรือลองซิงก์ใหม่อีกครั้ง");
       if (sameRecord.some((event) => event.operation === "delete")) throw new Error("ไม่สามารถบันทึกได้ รายการนี้กำลังถูกลบ");
       if (sameRecord.some((event) => event.serverSubmissionAttempted === true)) throw new Error(PENDING_SERVER_ACTION_MESSAGE);
 
+      if (operation === "create" && transaction.billOption !== "บิลขาย" && !transaction.billNumbering
+        && !sameRecord.length) {
+        return enqueueNumberedIncomeCreate(transaction, ownerUserId);
+      }
+
       const keeper = sameRecord.find((event) => event.operation === "create") ?? sameRecord.find((event) => event.operation === "update");
       if (keeper) {
         const revision = keeper.operation === "create" ? 0 : keeper.payload.expectedRevisionNo;
-        keeper.payload = { ...payload, operation: keeper.operation, expectedRevisionNo: revision, idempotencyKey: `${keeper.operation}:${transaction.clientTempId}:${revision}` };
-        keeper.timestamp = Date.now();
-        await updateSyncEvent(keeper);
-        for (const event of sameRecord) if (event !== keeper) await removeSyncEvent(event.queueId!);
+        const replacement = { ...keeper,
+          payload: { ...payload, operation: keeper.operation, expectedRevisionNo: revision, idempotencyKey: `${keeper.operation}:${transaction.clientTempId}:${revision}` },
+          timestamp: Date.now() };
+        if (!await reconcileSyncEventsIfCurrent(sameRecord, replacement, true)) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
       } else {
-        await enqueueSyncEvent({ id: transaction.clientTempId, entity: ENTITY, ownerUserId, locationId, operation, payload, timestamp: Date.now(), status: "pending" });
+        const queued = await enqueueSyncEvent({ id: transaction.clientTempId, entity: ENTITY, ownerUserId, locationId, operation, payload, timestamp: Date.now(), status: "pending" }, sameRecord);
+        if (queued === null) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
       }
       return transaction;
     },
@@ -406,7 +325,9 @@ export function useIncomeExpense(
 
       const pendingCreates = sameRecord.filter((event) => event.operation === "create");
       if (pendingCreates.length) {
-        for (const event of sameRecord) await removeSyncEvent(event.queueId!);
+        if (pendingCreates.some(event => event.payload.billOption === "บิลขาย")) {
+          if (!await reconcileSyncEventsIfCurrent(sameRecord, undefined, true)) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
+        } else await cancelUnsubmittedIncomeCreate(sameRecord);
         return;
       }
       if (!navigator.onLine) throw new Error(OFFLINE_SYNCED_ACTION_MESSAGE);
@@ -423,8 +344,10 @@ export function useIncomeExpense(
       const payload = buildIncomeExpensePayload(transaction, "delete", { name: deletedByName, phone: deletedByPhone });
       payload.expectedRevisionNo = revision;
       payload.idempotencyKey = `delete:${clientTempId}:${revision}`;
-      await enqueueSyncEvent({ id: clientTempId, entity: ENTITY, ownerUserId, locationId, operation: "delete", payload, timestamp: Date.now(), status: "pending" });
-      for (const event of pendingUpdates) await removeSyncEvent(event.queueId!);
+      const deletion: SyncEvent = { id: clientTempId, entity: ENTITY, ownerUserId, locationId, operation: "delete", payload, timestamp: Date.now(), status: "pending" };
+      if (pendingUpdates.length) {
+        if (!await reconcileSyncEventsIfCurrent(sameRecord, { ...deletion, queueId: pendingUpdates[0].queueId }, true)) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
+      } else if (await enqueueSyncEvent(deletion, sameRecord) === null) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
     },
     onSuccess: () => {
       refresh();
@@ -445,19 +368,15 @@ export function useIncomeExpense(
     if (discardable.length === 0) {
       throw new Error("รายการนี้ไม่มีปัญหาการซิงก์ที่ทิ้งได้");
     }
-    if (recordEvents.some(isIncomeExpenseBackgroundCommand)) {
-      if (!await reconcileSyncEventsIfCurrent(recordEvents, undefined, true)) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
-      await operationalList.refresh();
-      return;
-    }
-    await removeSyncEvents(recordEvents.flatMap((event) => event.queueId == null ? [] : [event.queueId]));
-    removeFromFeedCache(queryClient, ownerUserId, locationId, clientTempId);
+    if (!await reconcileSyncEventsIfCurrent(recordEvents, undefined, true)) throw new Error("คิวเปลี่ยนแล้ว กรุณาตรวจรายการอีกครั้ง");
+    if (!recordEvents.some(isIncomeExpenseBackgroundCommand)) removeFromFeedCache(queryClient, ownerUserId, locationId, clientTempId);
     await operationalList.refresh();
   }
 
   return {
     transactions,
     pendingApprovalCount: operationalList.pendingApprovalCount,
+    offlineHistory: operationalList.offlineHistory,
     isLoading: operationalList.isLoading,
     isError: operationalList.isError,
     hasMore: operationalList.hasMore,

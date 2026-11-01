@@ -1,10 +1,11 @@
 export type RubberBillNumbering = { version: 1; issuerId: string; date: string; sequence: number };
-export type RubberBillIssuer = { version: 1; id: string; code: string; locationId: string };
+export type RubberBillIssuer = { version: 1; id: string; code: string; locationId: string; deviceId?: string };
 const uuid = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 export function isRubberBillIssuer(v: unknown): v is RubberBillIssuer {
   if (!v || typeof v !== "object") return false;
   const x = v as RubberBillIssuer;
-  return x.version === 1 && uuid(x.id) && uuid(x.locationId) && /^D\d{2,18}$/.test(x.code);
+  return x.version === 1 && uuid(x.id) && uuid(x.locationId) && typeof x.code === "string" && /^D\d{2,18}$/.test(x.code)
+    && (x.deviceId === undefined || uuid(x.deviceId));
 }
 export function isRubberBillNumbering(v: unknown): v is RubberBillNumbering {
   if (!v || typeof v !== "object") return false;

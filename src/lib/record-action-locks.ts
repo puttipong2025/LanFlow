@@ -27,14 +27,23 @@ export function getPendingServerActionBlockReason(record: SyncableRecord) {
     : null;
 }
 
-export function canDeleteUnsubmittedRubberBill(record: SyncableRecord) {
+export function canDeleteUnsubmittedRecord(record: SyncableRecord) {
   return record.syncStatus === "pending" && !isSyncedServerRecord(record)
     && record.serverSubmissionAttempted === false;
 }
 
-export function getRubberBillSyncActionBlockReason(record: SyncableRecord, action: "edit" | "delete" = "edit") {
-  if (canDeleteUnsubmittedRubberBill(record)) return action === "delete" ? null : "บิลนี้กำลังรอซิงก์ จึงยังแก้ไขไม่ได้";
+export const canDeleteUnsubmittedRubberBill = canDeleteUnsubmittedRecord;
+
+export function getPendingSyncActionBlockReason(record: SyncableRecord, action: "edit" | "delete" = "edit") {
+  if (canDeleteUnsubmittedRecord(record)) return action === "delete" ? null : "บิลนี้กำลังรอซิงก์ จึงยังแก้ไขไม่ได้";
   return record.syncStatus === "pending"
     ? "บิลนี้กำลังรอซิงก์ กรุณารอจนซิงก์แล้วก่อนแก้ไขหรือลบ"
     : getPendingServerActionBlockReason(record);
+}
+
+export const getRubberBillSyncActionBlockReason = getPendingSyncActionBlockReason;
+
+export function getIncomeExpenseSyncActionBlockReason(record: IncomeExpense, action: "edit" | "delete" = "edit") {
+  return record.billOption !== "บิลขาย" && !record.relationSourceType
+    ? getPendingSyncActionBlockReason(record, action) : getPendingServerActionBlockReason(record);
 }

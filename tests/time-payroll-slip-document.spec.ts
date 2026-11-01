@@ -114,13 +114,12 @@ test("payroll keeps snapshot amounts and produces a Thai filename", () => {
   expect(document.summary.map((row) => row.value)).toEqual([
     "5,001.23 บาท",
     "3,500.23 บาท",
-    "2,000.23 บาท",
     "1,500.00 บาท",
     "3,001.00 บาท",
   ]);
   expect(document).not.toHaveProperty("deductionRows");
   expect(document.summary.map((row) => row.label)).toEqual([
-    "ค่าแรงรวม", "หนี้และเงินเบิกก่อนหักรวม", "หักรวมเดือนนี้",
+    "ค่าแรงรวม", "หนี้และเงินเบิกก่อนหักรวม",
     "ยอดค้างยกไปเดือนถัดไป", "เงินเดือนสุทธิที่ต้องจ่าย",
   ]);
   expect(document.filename).toBe("LanFlow-เงินเดือน-2026-07-a1b2c3d4-อนุมัติแล้ว-80mm.pdf");
@@ -243,7 +242,6 @@ for (const status of ["PENDING", "APPROVED"] as const) {
     expect(document.summary).toEqual([
       { label: "ค่าแรงรวม", value: "5,000.00 บาท" },
       { label: "หนี้และเงินเบิกก่อนหักรวม", value: "9,000.00 บาท" },
-      { label: "หักรวมเดือนนี้", value: "5,000.00 บาท" },
       { label: "ยอดค้างยกไปเดือนถัดไป", value: "4,000.00 บาท" },
       { label: "เงินเดือนสุทธิที่ต้องจ่าย", value: "0.00 บาท" },
     ]);
@@ -271,7 +269,7 @@ for (const malformed of [{}, [null], "stale-metadata"]) {
   });
 }
 
-test("payroll without debt keeps only gross, zero deduction and net pay in its summary", () => {
+test("payroll without debt keeps only gross and net pay in its summary", () => {
   const document = buildPayrollSlipDocument({
     source: {
       id: SOURCE_ID, month: "2026-10", status: "APPROVED", total_days: 20, daily_wage: 500,
@@ -284,7 +282,6 @@ test("payroll without debt keeps only gross, zero deduction and net pay in its s
   });
   expect(document.summary).toEqual([
     { label: "ค่าแรงรวม", value: "10,000.00 บาท" },
-    { label: "หักรวมเดือนนี้", value: "0.00 บาท" },
     { label: "เงินเดือนสุทธิที่ต้องจ่าย", value: "10,000.00 บาท" },
   ]);
   expect(document.sourceRows).toEqual([]);
@@ -313,7 +310,7 @@ for (const [cancelledAt, expectedRows] of [
     }));
     const document = buildPayrollSlipDocument({ source, employeeName: "พนักงาน", generatedAt: GENERATED_AT });
     expect(document.sourceRows).toHaveLength(expectedRows);
-    expect(document.summary).toHaveLength(expectedRows ? 5 : 3);
+    expect(document.summary).toHaveLength(expectedRows ? 4 : 2);
   });
 }
 

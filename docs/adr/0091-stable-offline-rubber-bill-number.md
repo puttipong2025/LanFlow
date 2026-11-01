@@ -14,6 +14,10 @@ The user explicitly accepted that an offline PDF contains the base, and a later 
 
 ## Issuer and local allocation
 
+Latest identity amendment (2026-11-01): [ADR0096](0096-branch-independent-bill-device-identity.md) uses one browser/profile installation/generation and code across branches. Branch remains an authorized usage link and bill-counter scope, not part of device identity.
+
+Issuer scope amendment (2026-11-01): [ADR 0095](0095-global-shared-bill-issuer-codes.md) changes new code allocation to one global server counter shared by every branch and both bill modules. Historical branch-local issuers rotate to global codes on their next successful registration; frozen bills and queued proposals retain their original codes.
+
 One browser/profile and branch is one issuer scope, independent of accounts using that profile. Tabs and account switches share a durable counter, while bill authors, permissions, drafts and queued commands remain account-scoped. The central registry allocates nonrecycled codes `D01`, `D02`, through `D100` and beyond. Registration uses full UUID installation/generation identities, not the older four-digit local device label.
 
 Local counters are keyed by the bill date selected at first save. That date is formatted `YYMMDD` using the Gregorian year, and is frozen in the number even if the business date is later edited. A single IndexedDB transaction commits the counter, bill-number reservation and outbox event before local acceptance or a frozen PDF is handed off. Issued bases are not recycled after cancellation or deletion; gaps are allowed. Missing or inconsistent required allocator state requires a fresh online registration rather than resetting an old code. IndexedDB version 9 retains existing queue and receipt stores and fences older uploaders.

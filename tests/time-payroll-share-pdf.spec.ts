@@ -173,7 +173,7 @@ test("previews an 80mm receipt with both signatures and shares the payroll PDF F
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("3,000.00 บาท", { exact: true })).toBeVisible();
   await expect(dialog.getByText("หนี้และเงินเบิกก่อนหักรวม", { exact: true })).toHaveCount(1);
-  await expect(dialog.getByText("หักรวมเดือนนี้", { exact: true })).toHaveCount(1);
+  await expect(dialog.getByText("หักรวมเดือนนี้", { exact: true })).toHaveCount(0);
   await expect(dialog.getByText("ยอดค้างยกไปเดือนถัดไป", { exact: true })).toHaveCount(1);
   await expect(dialog.getByText("1,176.00 บาท", { exact: true })).toBeVisible();
   await expect(dialog.getByText("หนี้ยกมา", { exact: true })).toBeVisible();
@@ -288,7 +288,7 @@ test("keeps every payroll transaction row on one long 80mm PDF page", async ({ p
   expect(pdfText).toContain("ค่าซ่อมรถ CARRIED-BALANCE");
   expect(pdfText).toContain("หนี้และเงินเบิกก่อนหักรวม");
   expect(pdfText).toContain("ยอดค้างยกไปเดือนถัดไป");
-  expect(pdfText.match(/หักรวมเดือนนี้/g)).toHaveLength(1);
+  expect(pdfText).not.toContain("หักรวมเดือนนี้");
   expect(pdfText.match(/ยอดค้างยกไปเดือนถัดไป/g)).toHaveLength(1);
   expect(pdfText.indexOf("สรุปยอด")).toBeGreaterThan(pdfText.indexOf("ROW-END-048"));
   for (let index = 1; index <= longPayrollTransactions.length; index += 1) {
@@ -388,8 +388,8 @@ test("normal payroll hides empty debt details and zero balances in Preview and P
   for (const label of ["รายละเอียดหนี้และเงินเบิก", "หนี้และเงินเบิกก่อนหักรวม", "ยอดค้างยกไปเดือนถัดไป", "ไม่มีรายการ"]) {
     await expect(dialog.getByText(label, { exact: true })).toHaveCount(0);
   }
-  await expect(dialog.getByText("หักรวมเดือนนี้", { exact: true })).toHaveCount(1);
-  await expect(dialog.getByText("0.00 บาท", { exact: true })).toHaveCount(1);
+  await expect(dialog.getByText("หักรวมเดือนนี้", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByText("0.00 บาท", { exact: true })).toHaveCount(0);
   await expect(dialog.getByText("10,000.00 บาท", { exact: true })).toHaveCount(2);
   const preview = dialog.getByTestId("time-payroll-receipt-preview");
   expect(await preview.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
@@ -407,8 +407,8 @@ test("normal payroll hides empty debt details and zero balances in Preview and P
     "reader=PdfReader(sys.argv[1]); assert len(reader.pages)==1",
     "print('\\n'.join(str(args[1].get('/ActualText')) for args,op in ContentStream(reader.pages[0].get_contents(),reader).operations if op==b'BDC' and len(args)>1 and hasattr(args[1],'get') and args[1].get('/ActualText') is not None))",
   ].join("\n"), normalPdf], { encoding: "utf8" });
-  expect(pdfText).toContain("หักรวมเดือนนี้");
-  expect(pdfText).toContain("0.00 บาท");
+  expect(pdfText).not.toContain("หักรวมเดือนนี้");
+  expect(pdfText).not.toMatch(/(?<![\d,])0\.00 บาท/);
   expect(pdfText).toContain("เงินเดือนสุทธิที่ต้องจ่าย");
   expect(pdfText).not.toMatch(/รายละเอียดหนี้และเงินเบิก|หนี้และเงินเบิกก่อนหักรวม|ยอดค้างยกไปเดือนถัดไป|ไม่มีรายการ/);
   await dialog.getByRole("heading", { name: "สรุปยอด", exact: true }).scrollIntoViewIfNeeded();

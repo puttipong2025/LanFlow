@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 import { confirmCurrentBranchIfRequired, selectedAppLocationId } from "./helpers/select-app-location";
 import { assertSafeIntegrationTarget } from "./support/integration-target";
+import { waitForBillIssuer } from "./helpers/wait-bill-issuer";
 
 const sql = (query: string) => execFileSync("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", query], { encoding: "utf8", windowsHide: true }).trim();
 function cleanup(branch: string) {
@@ -27,6 +28,28 @@ async function openBranch(page: Page, branch: string) {
     await option.click({ timeout: 5000 }); expect(await selectedAppLocationId(page)).toBe(branch);
   }).toPass({ timeout: 30000 });
 }
+
+test("one browser keeps one device code when switching branches", async ({ browser }) => {
+  test.setTimeout(180000); assertSafeIntegrationTarget(process.env.NEXT_PUBLIC_SUPABASE_URL!);
+  const branches=[crypto.randomUUID(),crypto.randomUUID()];
+  const context=await browser.newContext({storageState:"playwright/.auth/super_admin.json"});
+  try {
+    sql(`insert into public.locations(id,name,code,is_active) values ${branches.map(id=>`('${id}','Shared device ${id}','SD${id.slice(0,6)}',true)`).join(",")}`);
+    const page=await context.newPage();
+    for (const branch of branches) { await openBranch(page,branch); await waitForBillIssuer(page,branch); }
+    const rows=await page.evaluate(ids=>new Promise<Array<{installationId:string;generationId:string;issuer:{id:string;code:string}}>>(resolve=>{
+      const request=indexedDB.open("lanflow_sync_db"); request.onsuccess=()=>{const db=request.result,tx=db.transaction("rubber_bill_numbers");
+        const read=tx.objectStore("rubber_bill_numbers").getAll();
+        tx.oncomplete=()=>{db.close();resolve(read.result.filter(row=>ids.includes(row.key)));};};
+    }),branches);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map(row=>row.installationId)).size).toBe(1);
+    expect(new Set(rows.map(row=>row.generationId)).size).toBe(1);
+    expect(new Set(rows.map(row=>row.issuer.code)).size).toBe(1);
+    expect(new Set(rows.map(row=>row.issuer.id)).size).toBe(2);
+    await openBranch(page,branches[0]); await waitForBillIssuer(page,branches[0]);
+  } finally { await context.close(); for(const branch of branches) cleanup(branch); }
+});
 test("Admin manages real issuer registration and retirement at desktop and mobile widths", async ({ browser }, info) => {
   test.setTimeout(180000); assertSafeIntegrationTarget(process.env.NEXT_PUBLIC_SUPABASE_URL!);
   const branch = crypto.randomUUID(), marker = `ISS-${branch.slice(0, 6)}`;
@@ -45,6 +68,7 @@ test("Admin manages real issuer registration and retirement at desktop and mobil
     const page = await context.newPage(); await installThresholdAlertHandler(page); await page.goto("/");
     await page.getByRole("button", { name: "Admin", exact: true }).click();
     await page.getByRole("button", { name: "เครื่องออกบิล", exact: true }).click();
+    await expect(page.getByLabel("กรองสถานะรหัสเครื่อง")).toHaveValue("active");
     await page.getByLabel("กรองสาขาเครื่องออกบิล").selectOption(branch);
     const row = page.getByRole("row").filter({ has: page.getByText(issuer.code, { exact: true }) });
     await expect(row).toContainText(marker);
@@ -62,8 +86,8 @@ test("Admin manages real issuer registration and retirement at desktop and mobil
     await expect(row.getByRole("button", { name: "เลิกใช้งาน", exact: true })).toBeFocused();
     await row.getByRole("button", { name: "เลิกใช้งาน", exact: true }).click();
     await dialog.getByRole("button", { name: "ยืนยันเลิกใช้งาน" }).click();
-    await expect(dialog).toBeHidden(); await expect(row).toContainText("เลิกใช้งานแล้ว");
-    await page.getByLabel("กรองสถานะรหัสเครื่อง").selectOption("retired"); await expect(row).toBeVisible();
+    await expect(dialog).toBeHidden(); await expect(row).toBeHidden();
+    await page.getByLabel("กรองสถานะรหัสเครื่อง").selectOption("retired"); await expect(row).toContainText("เลิกใช้งานแล้ว");
     expect((await context.request.patch("/api/lanflow/admin/rubber-bill-issuers", {
       headers: { origin }, data: { id: issuer.id.toUpperCase() },
     })).status()).toBe(200);

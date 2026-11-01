@@ -8,16 +8,18 @@ import type { RubberBill } from "../src/types";
 
 const branch = "af000000-0000-4000-8000-000000000001";
 function harness(gate: (call: number) => Promise<void> = async () => {}) {
-  const browser = { indexedDB: new IDBFactory() }, registrations = new Map<string, { version: 1; id: string; code: string; locationId: string }>();
+  const browser = { indexedDB: new IDBFactory() }, registrations = new Map<string, { version: 1; id: string; code: string; locationId: string; deviceId: string }>();
+  const devices = new Map<string, string>();
   let calls = 0, replace = false;
   const newTab = (oldFormat = false) => loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>("src/lib/rubber-bills/numbering-idb.ts", {
     ...(oldFormat ? { "./numbering-contract": { ...numberingContract,
       rubberBaseNumber: (date: string, sequence: number, code: string) => `${date.slice(2).replaceAll("-", "")}${String(sequence).padStart(4, "0")}-${code}` } } : {}),
     "@/lib/auth-fetch": { assertApiResponse: async (r: Response) => { if (!r.ok) throw new Error("Unavailable"); },
       authFetch: async (_url: string, init: RequestInit) => {
-        calls++; const body = JSON.parse(String(init.body)), key = `${body.locationId}:${body.installationId}:${body.generationId}`;
-        if (!registrations.has(key) || replace) { replace = false;
-          registrations.set(key, { version: 1, id: crypto.randomUUID(), code: `D${String(calls).padStart(2, "0")}`, locationId: body.locationId }); }
+        calls++; const body = JSON.parse(String(init.body)), device = `${body.installationId}:${body.generationId}`, key = `${body.locationId}:${device}`;
+        if (!devices.has(device) || replace) { replace = false; devices.set(device, `D${String(calls).padStart(2, "0")}`); }
+        if (!registrations.has(key) || registrations.get(key)?.code !== devices.get(device)) {
+          registrations.set(key, { version: 1, id: crypto.randomUUID(), code: devices.get(device)!, locationId: body.locationId, deviceId: body.generationId }); }
         const result = registrations.get(key); await gate(calls); return Response.json(result);
       } },
   }, { window: browser });
@@ -36,6 +38,45 @@ test("unregistered devices cannot create a base or claim readiness", async () =>
   expect(await h.module.rubberNumberingReady(branch)).toBe(false);
   expect(await h.module.enqueueNumberedRubberCreate(event(b), b).then(() => "unexpected success", e => String(e.message))).toContain("เชื่อมต่ออินเทอร์เน็ต");
   expect(h.calls()).toBe(0);
+});
+
+for(const invalid of [false,true]) test(`registration ${invalid?"rejects malformed shared identity":"allows a legacy backend during deployment"}`, async () => {
+  const browser={indexedDB:new IDBFactory()};
+  const module=loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>("src/lib/rubber-bills/numbering-idb.ts",{
+    "@/lib/auth-fetch":{assertApiResponse:async()=>{},authFetch:async()=>Response.json({
+      version:1,id:crypto.randomUUID(),code:"D01",locationId:branch,...(invalid?{deviceId:"invalid"}:{}),
+    })},
+  },{window:browser});
+  expect(await module.prepareRubberBillIssuer(branch).then(()=>false,()=>true)).toBe(invalid);
+  expect(await module.rubberNumberingReady(branch)).toBe(!invalid);
+  const b=bill(); expect(await module.enqueueNumberedRubberCreate(event(b),b).then(()=>false,()=>true)).toBe(invalid);
+});
+
+test("an array device code is rejected before the browser persistence transaction", async () => {
+  const browser = { indexedDB: new IDBFactory() };
+  const module = loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>("src/lib/rubber-bills/numbering-idb.ts", {
+    "@/lib/auth-fetch": { assertApiResponse: async () => {}, authFetch: async () => Response.json({
+      version: 1, id: crypto.randomUUID(), code: ["D01"], locationId: branch,
+    }) },
+  }, { window: browser });
+  expect(await module.prepareRubberBillIssuer(branch).then(() => false, () => true)).toBe(true);
+  expect(await module.rubberNumberingReady(branch)).toBe(false);
+  const b = bill();
+  expect(await module.enqueueNumberedRubberCreate(event(b), b).then(() => false, () => true)).toBe(true);
+});
+
+test("a retained issuer without shared-device metadata can still issue offline without resetting counters", async () => {
+  const h=harness(); await h.module.prepareRubberBillIssuer(branch);
+  const first=bill(); await h.module.enqueueNumberedRubberCreate(event(first),first);
+  await new Promise<void>((resolve,reject)=>{
+    const request=h.browser.indexedDB.open("lanflow_sync_db");
+    request.onsuccess=()=>{const db=request.result,tx=db.transaction("rubber_bill_numbers","readwrite"),store=tx.objectStore("rubber_bill_numbers");
+      const read=store.get(branch);read.onsuccess=()=>{const value=read.result;delete value.issuer.deviceId;store.put(value);};
+      tx.oncomplete=()=>{db.close();resolve();};tx.onabort=()=>reject(tx.error);};
+  });
+  expect(await h.module.rubberNumberingReady(branch)).toBe(true);
+  const next=bill();expect((await h.module.enqueueNumberedRubberCreate(event(next),next)).bill.localBillNo).toBe("0002-261031-D01");
+  expect(h.calls()).toBe(1);
 });
 test("parallel saves and account changes share one durable counter without network", async () => {
   const h = harness(); await Promise.all([h.module.prepareRubberBillIssuer(branch), h.module.prepareRubberBillIssuer(branch)]);
@@ -87,9 +128,9 @@ for (const damage of ["base", "missing-issuer", "invalid-issuer", "wrong-branch"
   });
   expect(queued[0]).toEqual(saved.event);
 });
-test("date counters resume independently and a different branch requires its own registration", async () => {
+test("date and branch counters remain separate while branches share one installation code", async () => {
   const h = harness(); await h.module.prepareRubberBillIssuer(branch);
-  const first = bill(); await h.module.enqueueNumberedRubberCreate(event(first), first);
+  const first = bill(), firstSaved = await h.module.enqueueNumberedRubberCreate(event(first), first);
   const yesterday = { ...bill(), billDate: "2026-10-30" };
   expect((await h.module.enqueueNumberedRubberCreate(event(yesterday), yesterday)).bill.localBillNo).toBe("0001-261030-D01");
   const next = bill(); expect((await h.module.enqueueNumberedRubberCreate(event(next), next)).bill.localBillNo).toBe("0002-261031-D01");
@@ -97,7 +138,36 @@ test("date counters resume independently and a different branch requires its own
   expect(await h.module.rubberNumberingReady(otherBranch)).toBe(false);
   await h.module.prepareRubberBillIssuer(otherBranch);
   const other = { ...bill(), locationId: otherBranch };
-  expect((await h.module.enqueueNumberedRubberCreate({ ...event(other), locationId: otherBranch }, other)).bill.billNumbering?.sequence).toBe(1);
+  const second = await h.module.enqueueNumberedRubberCreate({ ...event(other), locationId: otherBranch }, other);
+  expect(second.bill.billNumbering?.sequence).toBe(1);
+  expect(second.bill.localBillNo).toBe("0001-261031-D01");
+  expect(second.bill.billNumbering?.issuerId).not.toBe(firstSaved.bill.billNumbering?.issuerId);
+});
+
+test("parallel branch preparation shares one durable installation across tabs", async () => {
+  const h = harness(), otherBranch = crypto.randomUUID(), secondTab = h.newTab();
+  await Promise.all([h.module.prepareRubberBillIssuer(branch), secondTab.prepareRubberBillIssuer(otherBranch)]);
+  const first = bill(), second = { ...bill(), locationId: otherBranch };
+  const [a,b] = await Promise.all([h.module.enqueueNumberedRubberCreate(event(first), first),
+    secondTab.enqueueNumberedRubberCreate({ ...event(second), locationId: otherBranch }, second)]);
+  expect(a.bill.localBillNo).toBe(b.bill.localBillNo);
+  expect(a.bill.billNumbering?.issuerId).not.toBe(b.bill.billNumbering?.issuerId);
+});
+
+for (const missing of ["branch", "installation"] as const) test(`lost shared ${missing} cannot restart a used code`, async () => {
+  const h = harness(); await h.module.prepareRubberBillIssuer(branch);
+  const first = bill(), saved = await h.module.enqueueNumberedRubberCreate(event(first), first);
+  await new Promise<void>((resolve, reject) => {
+    const request = h.browser.indexedDB.open("lanflow_sync_db");
+    request.onsuccess = () => { const db=request.result, tx=db.transaction("rubber_bill_numbers","readwrite");
+      tx.objectStore("rubber_bill_numbers").delete(missing === "branch" ? branch : "bill-issuer-installation");
+      tx.oncomplete=()=>{db.close();resolve();}; tx.onabort=()=>reject(tx.error); };
+  });
+  await h.module.prepareRubberBillIssuer(branch);
+  const next=bill(), result=await h.module.enqueueNumberedRubberCreate(event(next),next);
+  expect(result.bill.localBillNo).toBe("0001-261031-D02");
+  const queue=loadSourceModule<typeof import("../src/lib/idb-queue")>("src/lib/idb-queue.ts",{},{window:h.browser});
+  expect((await queue.getPendingEvents({entity:"rubber_bills",ownerUserId:"first",locationId:branch})).find(row=>row.id===first.id)).toEqual(saved.event);
 });
 test("replacement changes only new bills, preserving queued old numbers", async () => {
   const h = harness(); await h.module.prepareRubberBillIssuer(branch);

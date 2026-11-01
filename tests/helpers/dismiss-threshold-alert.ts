@@ -1,7 +1,8 @@
 import type { Page } from "@playwright/test";
 export async function installThresholdAlertHandler(page: Page) {
   await page.addLocatorHandler(page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }), async (dialog) => {
-    await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();
+    try { await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click({ timeout: 2000 }); }
+    catch (error) { if (await dialog.isVisible()) throw error; }
   });
 }
 export async function dismissRubberWeightAlertIfVisible(page: Page) {

@@ -1,16 +1,45 @@
 import { expect, test } from "@playwright/test";
 import { loadSourceModule } from "./helpers/load-source-module";
 const uuid = "af000000-0000-4000-8000-000000000001";
+for(const capability of ["missing","invalid","shared"] as const) test(`registration keeps legacy compatibility and validates an advertised device identity: ${capability}`,async()=>{
+  const result={version:1,id:uuid,code:"D01",locationId:uuid,
+    ...(capability==="missing"?{}:{deviceId:capability==="shared"?uuid:"invalid"})};
+  const module=loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/issuers/route")>("src/app/api/lanflow/rubber-bills/issuers/route.ts",{
+    "@/lib/server/auth":{requireAuth:async()=>({ok:true,auth:{sub:uuid},supabase:{rpc:async()=>({data:result,error:null})}})},
+    "@/lib/server/sms-otp":{isSmsMutationAllowed:()=>true,SMS_HEADERS:{"Cache-Control":"no-store"}},
+  });
+  const response=await module.POST(new Request("http://localhost/api/issuers",{method:"POST",body:JSON.stringify({locationId:uuid,installationId:uuid,generationId:uuid})}));
+  expect(response.status).toBe(capability==="invalid"?503:200);
+});
+test("registration rejects an array masquerading as a device code", async () => {
+  const module = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/issuers/route")>("src/app/api/lanflow/rubber-bills/issuers/route.ts", {
+    "@/lib/server/auth": { requireAuth: async () => ({ ok: true, auth: { sub: uuid }, supabase: {
+      rpc: async () => ({ data: { version: 1, id: uuid, code: ["D01"], locationId: uuid }, error: null }),
+    } }) },
+    "@/lib/server/sms-otp": { isSmsMutationAllowed: () => true, SMS_HEADERS: { "Cache-Control": "no-store" } },
+  });
+  const response = await module.POST(new Request("http://localhost/api/issuers", { method: "POST",
+    body: JSON.stringify({ locationId: uuid, installationId: uuid, generationId: uuid }),
+  }));
+  expect(response.status).toBe(503);
+});
 function route(manager = true, allowed = true, result: unknown = { total: 0, rows: [] }) {
   let calls = 0;
+  const requests: Record<string, unknown>[]=[];
   const module = loadSourceModule<typeof import("../src/app/api/lanflow/admin/rubber-bill-issuers/route")>("src/app/api/lanflow/admin/rubber-bill-issuers/route.ts", {
     "@/lib/server/auth": { hasSystemManagerAccess: () => manager, requireAuth: async () => ({ ok: true, auth: { sub: uuid },
-      supabase: { rpc: async (_name: string, args: Record<string, unknown>) => { calls++;
+      supabase: { rpc: async (_name: string, args: Record<string, unknown>) => { calls++; requests.push(args);
         return args.p_location_id === "" ? { data: null, error: { code: "22P02" } } : { data: result, error: null }; } } }) },
     "@/lib/server/sms-otp": { isSmsMutationAllowed: () => allowed, SMS_HEADERS: { "Cache-Control": "no-store" } },
   });
-  return { module, calls: () => calls };
+  return { module, calls: () => calls, requests };
 }
+test("issuer list hides retired registrations by default but retains explicit history access",async()=>{
+  const h=route();await h.module.GET(new Request("http://localhost/api/issuers"));
+  expect(h.requests[0].p_status).toBe("active");
+  await h.module.GET(new Request("http://localhost/api/issuers?status=retired"));
+  expect(h.requests[1].p_status).toBe("retired");
+});
 test("issuer management denies ordinary admins before invoking RPC", async () => {
   const h = route(false);
   expect((await h.module.GET(new Request("http://localhost/api/issuers"))).status).toBe(403);

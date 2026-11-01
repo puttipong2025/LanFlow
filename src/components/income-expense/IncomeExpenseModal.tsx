@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { ArrowDown, ArrowUp, ReceiptText, WalletCards, WifiOff } from "lucide-react";
-import { FormEvent, useMemo, useRef, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 
 import {
   makeClientRecordedAt,
@@ -17,7 +17,6 @@ import {
 } from "@/lib/income-expense/calculations";
 import { useIncomeSaleItems } from "@/hooks/useIncomeSaleItems";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { usePersistentFormDraft } from "@/hooks/usePersistentFormDraft";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { Field } from "@/components/shared/Field";
 import { InlineNumber } from "@/components/shared/InlineNumber";
@@ -32,12 +31,12 @@ export function IncomeExpenseModal({
   nextLocalSequence,
   nonCurrentDateRequiresApproval = false,
   onClose,
-  onSave, acceptedLineIds = [], saveError,
+  onSave, saveError,
 }: {
   selectedLocation: Location;
   profile: Profile;
   type: "income" | "expense";
-  transaction: IncomeExpense | null; acceptedLineIds?: readonly string[]; saveError?: string | null;
+  transaction: IncomeExpense | null; saveError?: string | null;
   nextNumber: string;
   nextLocalSequence: number;
   nonCurrentDateRequiresApproval?: boolean;
@@ -117,33 +116,12 @@ export function IncomeExpenseModal({
           icon: WalletCards
         }
       ];
-  const draftValue = useMemo(() => ({
-    txDate,
-    billOption,
-    lines,
-  }), [billOption, lines, txDate]);
-  const { clearDraft } = usePersistentFormDraft({
-    partition: {
-      ownerUserId: profile.id,
-      locationId: selectedLocation.id,
-      formType: type,
-    },
-    enabled: !transaction,
-    value: draftValue,
-    onRestore: (draft) => {
-      setTxDate(todayInputValue());
-      setBillOption(draft.billOption || (type === "income" ? "รายรับ" : "ค่าใช้จ่าย"));
-      if (Array.isArray(draft.lines) && draft.lines.length > 0) {
-        setLines(draft.lines);
-      }
-    },
-  });
-
   function updateLine(id: string, patch: Partial<Omit<CashLine, "id">>) {
     setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)));
   }
 
   function addLine() {
+    if (transaction && billOption !== "บิลขาย") return;
     if (billOption === "บิลขาย" && lines.length >= 50) {
       toast.error("บิลขายเพิ่มได้สูงสุด 50 รายการ");
       return;
@@ -217,12 +195,15 @@ export function IncomeExpenseModal({
       return;
     }
 
-    const filledLines = lines.filter((line) => {
-      if (billOption === "บิลขาย") {
-        return line.title.trim() && line.incomeSaleItemId && line.stockProductId && line.unit > 0 && line.price >= 0;
-      }
-      return line.title.trim() && line.cost > 0;
-    });
+    if (billOption !== "บิลขาย" && lines.some(line => (line.title.trim() || line.cost !== 0)
+      && (!line.title.trim() || !Number.isFinite(line.cost) || line.cost <= 0))) {
+      toast.error("กรุณากรอกรายการและจำนวนเงินมากกว่า 0 ให้ครบทุกแถวที่ใช้งาน");
+      return;
+    }
+
+    const filledLines = lines.filter(line => billOption === "บิลขาย"
+      ? line.title.trim() && line.incomeSaleItemId && line.stockProductId && line.unit > 0 && line.price >= 0
+      : line.title.trim() && line.cost > 0);
 
     if (filledLines.length === 0) {
       toast.error("กรุณาเพิ่มรายการและจำนวนเงิน/ราคาให้ถูกต้องอย่างน้อย 1 รายการ");
@@ -280,13 +261,13 @@ export function IncomeExpenseModal({
         revisionNo: transaction?.revisionNo ?? 0,
         recordStatus: transaction?.recordStatus ?? "active",
       }]);
-      if (saved !== false && !transaction) await clearDraft();
+      if (saved === false && !transaction) onClose();
       return;
     }
 
     const saved = await onSave(
       filledLines.map((line, index) => {
-        const clientTempId = index === 0 && transaction ? transaction.clientTempId : transaction ? line.id : makeClientTempId("cash");
+        const clientTempId = index === 0 && transaction ? transaction.clientTempId : line.id;
         const clientRecordedAt = index === 0 && transaction ? transaction.clientRecordedAt : makeClientRecordedAt();
         const localBillNo = index === 0 && transaction
           ? transaction.localBillNo
@@ -295,14 +276,14 @@ export function IncomeExpenseModal({
           id: index === 0 && transaction ? transaction.id : clientTempId,
           clientTempId,
           localBillNo,
-          serverBillNo: index === 0 && transaction ? transaction.serverBillNo : undefined,
+          serverBillNo: index === 0 && transaction ? transaction.serverBillNo : undefined, billNumbering: index === 0 ? transaction?.billNumbering : undefined,
           syncStatus: index === 0 && transaction ? transaction.syncStatus : "pending",
           idempotencyKey: index === 0 && transaction ? transaction.idempotencyKey : makeIdempotencyKey("create", clientTempId),
           locationId: selectedLocation.id,
           type,
           number: String(form.get("number") || nextNumber),
           txDate,
-          title: line.title.trim() || `${label} ${index + 1}`,
+          title: line.title.trim(),
           cost: getLineCost(line),
           billOption: billOption as any,
           unit: line.unit ? String(line.unit) : undefined,
@@ -319,7 +300,7 @@ export function IncomeExpenseModal({
         };
       })
     );
-    if (saved !== false && !transaction) await clearDraft();
+    if (saved === false && !transaction) onClose();
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -330,35 +311,12 @@ export function IncomeExpenseModal({
     try {
       await submitForm(new FormData(event.currentTarget));
     } finally {
-      submitLockRef.current = false;
-      setIsSubmitting(false);
+      submitLockRef.current = false; setIsSubmitting(false);
     }
   }
 
-  async function handleClose() {
+  function handleClose() {
     if (submitLockRef.current) return;
-    if (transaction) {
-      onClose();
-      return;
-    }
-    const defaultOption = type === "income" ? "รายรับ" : "ค่าใช้จ่าย";
-    const hasDraftContent = Boolean(
-      txDate !== todayInputValue()
-      || billOption !== defaultOption
-      || lines.some((line) =>
-        line.title.trim()
-        || line.incomeSaleItemId
-        || line.stockProductId
-        || line.unit
-        || line.price
-        || line.cost
-      )
-    );
-    if (
-      hasDraftContent
-      && !confirm(`ยกเลิกและลบแบบร่าง${type === "income" ? "รายรับ" : "รายจ่าย"}นี้ใช่หรือไม่?`)
-    ) return;
-    await clearDraft();
     onClose();
   }
 
@@ -375,13 +333,12 @@ export function IncomeExpenseModal({
         <section className="bg-slate-50 p-3 sm:p-4">
           <h3 className="mb-4 font-bold text-ink">ข้อมูลบิล</h3>
           <div className="grid gap-4 md:grid-cols-3">
-            <Field label="เลขบิลชั่วคราว" name="localBillNo" defaultValue={transaction?.localBillNo ?? initialLocalBillNo} required readOnly />
-            <Field label="เลขที่" name="number" defaultValue={transaction?.number ?? nextNumber} required readOnly />
+            {billOption !== "บิลขาย" ? <Field label="เลขที่บิล" name="number" value={transaction?.serverBillNo ?? transaction?.localBillNo ?? "ออกเลขเมื่อบันทึก"} readOnly /> : <><Field label="เลขบิลชั่วคราว" name="localBillNo" defaultValue={transaction?.localBillNo ?? initialLocalBillNo} required readOnly /><Field label="เลขที่" name="number" defaultValue={transaction?.number ?? nextNumber} required readOnly /></>}
             <Field
               label="วันที่"
               name="txDate"
               type="date"
-              value={txDate} readOnly={acceptedLineIds.length > 0}
+              value={txDate}
               onChange={(event) => setTxDate(event.target.value)}
               required
             />
@@ -441,7 +398,7 @@ export function IncomeExpenseModal({
 
         <section className="bg-mint/45 p-3 sm:p-4">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] border-collapse text-sm">
+            <table className={`w-full border-collapse text-sm ${billOption === "บิลขาย" ? "min-w-[820px]" : "table-fixed"}`}>
               <thead>
                 <tr className="border-b border-black/80 text-left text-base font-bold text-ink">
                   <th className="px-2 py-2">รายการ</th>
@@ -452,7 +409,7 @@ export function IncomeExpenseModal({
                 </tr>
               </thead>
               <tbody>
-                {lines.map((line, index) => acceptedLineIds.includes(line.id) ? <tr key={line.id}><td colSpan={3} className="px-2 py-3 text-pretty text-sm text-ink/70">{line.title} — รับรายการไว้แล้ว</td></tr> : (
+                {lines.map((line, index) => (
                   <tr key={line.id} className="border-b border-black/10">
                     <td className="px-2 py-2">
                       {billOption === "บิลขาย" ? (
@@ -544,9 +501,9 @@ export function IncomeExpenseModal({
             </table>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" onClick={addLine} className="rounded-md bg-leaf px-4 py-2 text-sm font-bold text-white">
+            {(!transaction || billOption === "บิลขาย") && <button type="button" onClick={addLine} className="rounded-md bg-leaf px-4 py-2 text-sm font-bold text-white">
               เพิ่มรายการ
-            </button>
+            </button>}
             <button
               disabled={isSubmitting}
               className="focus-ring rounded-md bg-commit px-4 py-2 text-sm font-bold text-white hover:bg-commit/90 disabled:cursor-not-allowed disabled:opacity-45"
@@ -562,7 +519,7 @@ export function IncomeExpenseModal({
             <div className="flex items-center gap-3">
               <span className="text-sm font-semibold text-ink/70">สถานะ Sync:</span>
               <SyncStatusBadge status={transaction.syncStatus} />
-              <span className="text-xs text-ink/50">{transaction.localBillNo}</span>
+              {!transaction.billNumbering && <span className="text-xs text-ink/50">{transaction.localBillNo}</span>}
             </div>
           </section>
         )}

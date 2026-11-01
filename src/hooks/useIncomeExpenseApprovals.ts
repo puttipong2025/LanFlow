@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { incomeApprovalBillNumber } from "@/lib/income-expense/numbering-contract";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
@@ -130,7 +131,7 @@ export function useIncomeExpenseApprovals(options: {
       const pendingRows = await readAllSupabaseRows((from, to) => {
         let query = supabase
           .from("income_expense_approval_requests")
-          .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+          .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at, approvedBill:income_expense!approved_income_expense_id(server_bill_no)")
           .eq("request_status", "pending");
         if (requestsLocationId) query = query.eq("location_id", requestsLocationId);
         return query
@@ -140,7 +141,7 @@ export function useIncomeExpenseApprovals(options: {
       });
       let historyQuery = supabase
         .from("income_expense_approval_requests")
-        .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
+        .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at, approvedBill:income_expense!approved_income_expense_id(server_bill_no)")
         .neq("request_status", "pending");
       if (requestsLocationId) historyQuery = historyQuery.eq("location_id", requestsLocationId);
       const historyResult = await historyQuery
@@ -155,7 +156,7 @@ export function useIncomeExpenseApprovals(options: {
         [...pendingRows, ...(historyResult.data || [])].map((row) => [row.id, row]),
       );
       return [...rowsById.values()].map((row: any): IncomeExpenseApprovalRequest => ({
-        id: row.id,
+        id: row.id, billNumber: incomeApprovalBillNumber(row.requested_payload, row.approvedBill?.server_bill_no),
         requestStatus: row.request_status,
         requestedOperation: row.requested_operation,
         matchedKeyword: row.matched_keyword,
@@ -331,6 +332,14 @@ export function useIncomeExpenseApprovals(options: {
     },
   });
 
+  function validateLocalCreate(transaction: IncomeExpense) {
+    if (typeof navigator === "undefined" || navigator.onLine) return;
+    assertOfflineIncomeExpenseDateAllowed(transaction.txDate, loadIncomeExpenseApprovalSettingsCache(), false);
+    if (getIncomeExpenseApprovalReasons(keywordsQuery.data ?? [], settingsQuery.data, transaction).length) {
+      throw new Error("รายการนี้ต้องรออนุมัติ ต้องออนไลน์ก่อนบันทึก");
+    }
+  }
+
   async function submitForApprovalIfNeeded(
     transaction: IncomeExpense,
     operation: QueueOperation
@@ -432,5 +441,6 @@ export function useIncomeExpenseApprovals(options: {
     decideBranchDeleteRequest: decideBranchDeleteRequestMutation.mutateAsync,
     retryRequestLoads,
     submitForApprovalIfNeeded,
+    validateLocalCreate,
   };
 }

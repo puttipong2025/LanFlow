@@ -88,7 +88,6 @@ test("document Route keeps cancelled legacy debt out of an otherwise normal slip
   expect(body.sourceRows).toEqual([]);
   expect(body.summary).toEqual([
     { label: "ค่าแรงรวม", value: "10,000.00 บาท" },
-    { label: "หักรวมเดือนนี้", value: "0.00 บาท" },
     { label: "เงินเดือนสุทธิที่ต้องจ่าย", value: "10,000.00 บาท" },
   ]);
 });

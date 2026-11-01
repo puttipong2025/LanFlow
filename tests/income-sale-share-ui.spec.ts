@@ -4,6 +4,8 @@ import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert"
 test.beforeEach(async ({ page }) => installThresholdAlertHandler(page));
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { assertSafeIntegrationTarget } from "./support/integration-target";
 
 import { selectAppLocation } from "./helpers/select-app-location";
 import { bangkokDateString } from "../src/lib/bangkok-date";
@@ -12,6 +14,19 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+
+// Seed only this Local read-only document fixture as postgres: service_role cannot
+// directly insert a business row whose triggers use the private schema.
+function fixtureSql(query: string) {
+  assertSafeIntegrationTarget(supabaseUrl);
+  return execFileSync("docker", ["exec", "-i", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres"],
+    { input: query, encoding: "utf8", windowsHide: true }).trim();
+}
+function insertFixture(table: "income_expense" | "income_expense_sale_lines", rows: Array<Record<string, string | number | undefined>>) {
+  const literal = (value: string | number | undefined) => value === undefined ? "null" : typeof value === "number" ? String(value) : `'${value.replaceAll("'", "''")}'`;
+  const columns = Object.keys(rows[0]);
+  return fixtureSql(`insert into public.${table} (${columns.join(",")}) values ${rows.map(row => `(${columns.map(column => literal(row[column])).join(",")})`).join(",")} returning id;`);
+}
 
 test("shows one read-only share action for one synced sale parent", async ({ page }) => {
   test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required");
@@ -62,7 +77,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
   const today = bangkokDateString();
 
   try {
-    const inserted = await service.from("income_expense").insert({
+    const parentId = insertFixture("income_expense", [{
       client_temp_id: clientTempId,
       local_bill_no: `LOCAL-${clientTempId.slice(0, 8)}`,
       server_bill_no: referenceNo,
@@ -83,12 +98,12 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
       created_by_user_id: me.profile.id,
       created_by_name: me.profile.name,
       created_by_phone: me.profile.phone,
-    }).select("id").single();
-    expect(inserted.error).toBeNull();
+    }]);
+    expect(parentId).toMatch(/^[0-9a-f-]{36}$/);
 
-    const insertedLines = await service.from("income_expense_sale_lines").insert([
+    insertFixture("income_expense_sale_lines", [
       {
-        income_expense_id: inserted.data!.id,
+        income_expense_id: parentId,
         income_sale_item_id: saleItem.data!.id,
         stock_product_id: saleItem.data!.stock_product_id,
         title: saleItem.data!.name,
@@ -98,7 +113,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
         sequence_no: 1,
       },
       {
-        income_expense_id: inserted.data!.id,
+        income_expense_id: parentId,
         income_sale_item_id: saleItem.data!.id,
         stock_product_id: saleItem.data!.stock_product_id,
         title: saleItem.data!.name,
@@ -108,7 +123,6 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
         sequence_no: 2,
       },
     ]);
-    expect(insertedLines.error).toBeNull();
 
     await page.goto("/");
     await selectAppLocation(page, locationId);
@@ -178,6 +192,6 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
       .single();
     expect(after.data).toEqual(before.data);
   } finally {
-    await service.from("income_expense").delete().eq("client_temp_id", clientTempId);
+    fixtureSql(`begin; set local app.history_retention_cleanup='on'; delete from public.income_expense_sale_lines where income_expense_id in (select id from public.income_expense where client_temp_id='${clientTempId}'); delete from public.income_expense where client_temp_id='${clientTempId}'; commit;`);
   }
 });

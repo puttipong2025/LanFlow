@@ -1,6 +1,9 @@
 import { notifyRubberBackgroundFailure } from "@/lib/rubber-bills/background-notifications";
 import { isIncomeExpenseBackgroundCommand } from "@/lib/income-expense/background-command";
 import { runIncomeExpenseBackground } from "@/lib/income-expense/background-sync";
+import { syncPendingIncomeExpense } from "@/hooks/useIncomeExpense";
+import { cacheConfirmedIncomeExpense, type IncomeExpenseSyncReceipt } from "@/lib/income-expense/feed-cache";
+import { isIncomeExpenseSyncResult } from "@/lib/income-expense/contracts";
 import { isCentralRubberEvent, runRubberCentralQueue } from "@/lib/rubber-bills/central-sync";
 import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
 import { sendRubberBillCommand, isConfirmedRubberSyncResult, recordRubberSyncFailure, acknowledgeRubberCommand } from "@/lib/rubber-bills/command";
@@ -10,7 +13,6 @@ import {
   getPendingEvents,
   removeSyncEventIfCurrent,
   reconcileSyncEventsIfCurrent,
-  updateSyncEvent,
   updateSyncEventIfCurrent,
   type SyncEntity,
 } from "@/lib/idb-queue";
@@ -47,6 +49,11 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
           candidate.status === "failed" || candidate.status === "conflict"
         ));
       if (!event) throw new Error("ไม่พบรายการที่ซิงก์ไม่สำเร็จ");
+      if (entity === "income_expense" && event.payload.billNumbering && !isIncomeExpenseBackgroundCommand(event)) {
+        if (!await reconcileSyncEventsIfCurrent([event], { ...event, status: "pending", errorMessage: undefined })) throw new Error("คิวเปลี่ยนแล้ว กรุณาลองใหม่");
+        await syncPendingIncomeExpense(queryClient, submissionOwnerUserId, submissionLocationId);
+        return "silent";
+      }
       if (isCentralRubberEvent(event)) {
         if (isUnsubmittedRubberPreparationFailure(event) || event.failureCode === "NUMBERING_REJECTED") {
           const retry = { ...event, status: "pending" as const, failureCode: undefined,
@@ -62,15 +69,9 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
       }
 
       try {
-        if (entity === "rubber_bills") {
-          const marked = { ...event, serverSubmissionAttempted: true };
-          if (!await reconcileSyncEventsIfCurrent([event], marked)) throw new Error("คิวเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่");
-          Object.assign(event, marked);
-        }
-        if (entity === "income_expense") {
-          event.serverSubmissionAttempted = true;
-          await updateSyncEvent(event);
-        }
+        const marked = { ...event, serverSubmissionAttempted: true };
+        if (!await reconcileSyncEventsIfCurrent([event], marked)) throw new Error("คิวเปลี่ยนจากอีกหน้าต่าง กรุณาลองใหม่");
+        Object.assign(event, marked);
         const submission = entity === "rubber_bills"
           ? {
             ...event.payload,
@@ -89,6 +90,11 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
           throw error;
         });
         const data = await response.json().catch(() => ({}));
+
+        if (entity === "income_expense" && response.ok && (!isIncomeExpenseSyncResult(data, event.payload)
+          || data.status === "failed" || data.status === "conflict")) {
+          throw new Error("ยังยืนยันผลการซิงก์รับ-จ่ายไม่ได้ กรุณาลองอีกครั้ง");
+        }
 
         if (entity === "rubber_bills" && (isRetryableSyncResponse(response.status, data)
             || (response.ok && !isConfirmedRubberSyncResult(data, event)))) {
@@ -113,7 +119,10 @@ export function usePerRecordSyncRetry(locationId: string, ownerUserId: string) {
               console.warn("Unable to remove confirmed Rubber Bill retry queue event", error);
             }
           } else {
-            await removeSyncEventIfCurrent(event);
+            if (await removeSyncEventIfCurrent(event) && data.status === "synced") {
+              await cacheConfirmedIncomeExpense(queryClient, submissionOwnerUserId, submissionLocationId,
+                event, event.operation === "delete" ? undefined : data as IncomeExpenseSyncReceipt);
+            }
           }
           return data.silent ? "silent" : data.status;
         }

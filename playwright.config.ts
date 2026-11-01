@@ -43,6 +43,9 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
       testMatch: [
+        '**/income-expense-fresh-form-browser.spec.ts',
+        '**/income-expense-scan-browser.spec.ts',
+        '**/income-expense-numbering-browser.spec.ts',
         '**/rubber-device-numbering-browser.spec.ts',
         '**/business-cache-browser.spec.ts',
         '**/rubber-immediate-pdf-browser.spec.ts',
@@ -65,6 +68,8 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
       testIgnore: [
+        '**/income-expense-fresh-form-browser.spec.ts',
+        '**/income-expense-numbering-browser.spec.ts',
         '**/rubber-bills-pwa.spec.ts',
         '**/income-expense-pwa.spec.ts',
         '**/pwa-connectivity-matrix.spec.ts',

@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data, error } = await supabase.rpc("sync_income_expense", { payload });
+    const { data, error } = await supabase.rpc(payload.billNumbering ? "sync_numbered_income_expense" : "sync_income_expense", { payload });
     const locked = cashCountLockResponse(error?.message ?? (data?.status === "failed" ? data.errorMessage : null));
     if (locked) return locked;
 
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
       ? { ...data, errorMessage: publicIncomeExpenseErrorMessage(data.errorMessage, "บันทึกรายการรับ-จ่ายไม่สำเร็จ") }
       : data;
 
-    if (status === "synced") {
+    if (status === "synced" || status === "rejected" || status === "discarded") {
       return NextResponse.json(responsePayload, { status: 200 });
     } else if (status === "pending_approval") {
       return NextResponse.json(responsePayload, { status: 202 });

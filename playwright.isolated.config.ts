@@ -3,6 +3,15 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/income-expense-fifth-scan.spec.ts',
+    '**/income-expense-fourth-scan.spec.ts',
+    '**/income-expense-third-scan.spec.ts',
+    '**/income-expense-second-scan.spec.ts',
+    '**/income-expense-scan.spec.ts',
+    '**/income-expense-actions.spec.ts',
+    '**/income-expense-cache.spec.ts',
+    '**/income-expense-history.spec.ts',
+    '**/income-expense-numbering.spec.ts',
     '**/income-expense-approval-keyword-scope.spec.ts',
     '**/income-expense-approval-cache-scrutiny.spec.ts',
     '**/income-expense-approval-scrutiny.spec.ts',

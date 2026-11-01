@@ -15,4 +15,6 @@ export const incomeExpenseOperationalQueryKeys = {
     [INCOME_EXPENSE_FEED_QUERY_KEY, ownerUserId, locationId, "operational", mode, normalizedSearch] as const,
   pending: (ownerUserId: string, locationId: string) =>
     ["incomeExpensePending", ownerUserId, locationId] as const,
+  history: (ownerUserId: string, locationId: string) =>
+    ["incomeExpenseHistory", ownerUserId, locationId] as const,
 };

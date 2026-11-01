@@ -175,7 +175,7 @@ for (const assets of ["available", "manifest-outage", "missing-worker", "missing
   const numbering = loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>(
     "src/lib/rubber-bills/numbering-idb.ts", {
       "@/lib/auth-fetch": {
-        authFetch: async () => Response.json({ version: 1, id: "af000000-0000-4000-8000-000000000002", code: "D01", locationId: branch }),
+        authFetch: async () => Response.json({ version: 1, id: "af000000-0000-4000-8000-000000000002", code: "D01", locationId: branch, deviceId: "af000000-0000-4000-8000-000000000002" }),
         assertApiResponse: async () => {},
       },
     }, { window: { indexedDB: new IDBFactory() } },
@@ -217,7 +217,7 @@ test("first issuer registration retries after a temporary outage without needing
         authFetch: async (_url: string, init: RequestInit) => {
           requests.push(String(init.body));
           if (requests.length === 1) throw new Error("temporary registration outage");
-          return Response.json({ version: 1, id: "af000000-0000-4000-8000-000000000004", code: "D01", locationId: branch });
+          return Response.json({ version: 1, id: "af000000-0000-4000-8000-000000000004", code: "D01", locationId: branch, deviceId: "af000000-0000-4000-8000-000000000004" });
         },
         assertApiResponse: async () => {},
       },

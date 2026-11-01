@@ -1222,11 +1222,13 @@ test("income/expense queue protects an uncertain server commit and online state 
   const moduleSource = readFileSync(resolve("src/components/income-expense/IncomeExpenseModule.tsx"), "utf8");
   const locksSource = readFileSync(resolve("src/lib/record-action-locks.ts"), "utf8");
 
-  expect(syncSource).toContain("event.serverSubmissionAttempted = true");
+  expect(syncSource).toContain("const marked = { ...event, serverSubmissionAttempted: true }");
+  expect(syncSource).toContain("reconcileSyncEventsIfCurrent([event], marked)");
   expect(syncSource).toContain("event.serverSubmissionAttempted = false");
   expect(syncSource.match(/serverSubmissionAttempted === true/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
   expect(retrySource).toContain('entity === "income_expense"');
-  expect(retrySource).toContain("event.serverSubmissionAttempted = true");
+  expect(retrySource).toContain("const marked = { ...event, serverSubmissionAttempted: true }");
+  expect(retrySource).toContain("reconcileSyncEventsIfCurrent([event], marked)");
   expect(retrySource).toMatch(/candidate\.status === "failed"\s*\|\|\s*candidate\.status === "conflict"/);
   expect(listSource).toContain('import { useOnlineStatus } from "@/hooks/useOnlineStatus"');
   expect(listSource).toContain("const online = useOnlineStatus();");
@@ -1237,7 +1239,7 @@ test("income/expense queue protects an uncertain server commit and online state 
   expect(listSource).toContain(
     "isIncomeExpenseFeedPayload(data, canonicalLocationId, serverMode, normalizedSearch)",
   );
-  expect(moduleSource).toContain("getPendingServerActionBlockReason(transaction)");
+  expect(moduleSource).toContain("getIncomeExpenseSyncActionBlockReason(transaction, action)");
   expect(moduleSource).toContain("&& !transaction.serverSubmissionAttempted");
   expect(locksSource).toContain("record.serverSubmissionAttempted === true");
 });

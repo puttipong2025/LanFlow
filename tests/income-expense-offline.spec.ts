@@ -8,6 +8,7 @@ import {
   selectedAppLocationId,
 } from './helpers/select-app-location';
 import { bangkokDateString } from '../src/lib/bangkok-date';
+import { waitForBillIssuer } from './helpers/wait-bill-issuer';
 import { createTransferLocationFixture } from './helpers/transfer-location-fixture';
 
 /** Read all events from IndexedDB sync_queue */
@@ -151,6 +152,7 @@ async function loginAndGoToIncomeExpense(page: Page, loginPhone = phone) {
   // Navigate to income/expense tab
   await page.click('button:has-text("รับ-จ่าย")');
   await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });
+  await waitForBillIssuer(page, (await selectedAppLocationId(page)) ?? undefined);
 }
 
 /** Create an income transaction online and wait for sync */
@@ -223,6 +225,7 @@ async function buildIncomeExpensePayload(page: Page, overrides: Record<string, a
     locationId: overrides.locationId ?? await getPrimaryLocationId(page),
     recordStatus: operation === 'delete' ? 'deleted' : 'active',
     localBillNo: overrides.localBillNo ?? `LOCAL-${clientTempId.slice(0, 8)}`,
+    ...(overrides.billNumbering ? { billNumbering: overrides.billNumbering } : {}),
     txDate,
     type,
     title: overrides.title ?? `E2E-DIRECT-${Date.now()}`,
@@ -441,7 +444,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     }
   });
 
-  test('offline view keeps no synced-history snapshot and restores server actions after reconnect', async ({ page, context }) => {
+  test('offline view retains a bounded synced-history copy and restores server actions after reconnect', async ({ page, context }) => {
     test.setTimeout(90000);
     await loginAndGoToIncomeExpense(page);
 
@@ -455,8 +458,12 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     await context.setOffline(true);
 
-    // Offline is deliberately a local sync-queue view, never a cached server-history snapshot.
-    await expect(page.locator('table tbody tr', { hasText: marker })).toHaveCount(0);
+    const offlineRow = page.locator('table tbody tr', { hasText: marker }).first();
+    await expect(offlineRow).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'สำเนาในเครื่อง' })).toBeVisible();
+    const lockedActions = offlineRow.getByRole('button', { name: 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ', exact: true });
+    await expect(lockedActions).toHaveCount(2);
+    for (const action of await lockedActions.all()) await expect(action).toBeDisabled();
     expect((await readQueue(page)).filter(event => event.id === before.client_temp_id)).toHaveLength(0);
 
     await context.setOffline(false);
@@ -514,6 +521,9 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
 
     // Delete while still offline
     await row.locator('button[title="ลบ"]').click();
+    const cancellation = page.getByRole('alertdialog', { name: 'ยืนยันลบรายการ' });
+    await expect(cancellation).toContainText('จะไม่ส่งเมื่อกลับมาออนไลน์');
+    await cancellation.getByRole('button', { name: 'ยืนยันลบ', exact: true }).click();
     await expect(row).toBeHidden({ timeout: 5000 });
 
     // Queue: no events for this id (create + delete = noop)
@@ -535,12 +545,11 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     }, { timeout: 15000 }).toBe(0);
   });
 
-  test('offline local draft edit coalesces into create and delete remains a no-op', async ({ page, context }) => {
+  test('offline pending row blocks edit, allows the next create and can cancel only unsent work', async ({ page, context }) => {
     test.setTimeout(90000);
     await loginAndGoToIncomeExpense(page);
 
     const marker = `E2E-DRAFTEDIT-${Date.now()}`;
-    const editedMarker = `${marker}-EDITED`;
 
     await context.setOffline(true);
     await page.click('button:has-text("เพิ่มรายรับ")');
@@ -555,23 +564,24 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     const createEvent = (await readQueue(page)).find(e => e.entity === 'income_expense' && e.payload?.title === marker);
     expect(createEvent).toBeDefined();
 
-    await row.locator('button[title="แก้ไข"]').click();
-    const editModal = page.locator('.fixed.inset-0').last();
-    await editModal.locator('table tbody tr').first().locator('input').first().fill(editedMarker);
-    await editModal.locator('table tbody tr').first().locator('input[type="number"]').first().fill('750');
-    await editModal.locator('button:has-text("บันทึกบิล")').click();
-
-    const editedRow = page.locator('table tbody tr', { hasText: editedMarker }).first();
-    await expect(editedRow).toBeVisible({ timeout: 5000 });
-    const eventsAfterEdit = (await readQueue(page)).filter(e => e.id === createEvent.id);
-    expect(eventsAfterEdit).toHaveLength(1);
-    expect(eventsAfterEdit[0]).toMatchObject({
-      operation: 'create',
-      payload: { title: editedMarker, cost: 750 },
-    });
-
-    await editedRow.locator('button[title="ลบ"]').click();
-    await expect(editedRow).toBeHidden({ timeout: 5000 });
+    const edit = row.getByRole('button', { name: 'บิลนี้กำลังรอซิงก์ จึงยังแก้ไขไม่ได้', exact: true });
+    await expect(edit).toBeDisabled();
+    await expect(edit).toHaveText('แก้');
+    await expect(edit.locator('svg')).toHaveCount(0);
+    const remove = row.getByRole('button', { name: 'ลบ', exact: true });
+    await expect(remove).toBeEnabled();
+    await expect(remove).toHaveText('');
+    await expect(remove.locator('svg')).toHaveCount(1);
+    const table = row.locator('xpath=ancestor::table');
+    expect((await table.getByRole('columnheader').allTextContents()).slice(0, 3)).toEqual(['จัดการ', 'Sync', 'เลขที่']);
+    await page.getByRole('button', { name: 'เพิ่มรายรับ', exact: true }).click();
+    const nextForm = page.getByRole('dialog', { name: 'เพิ่ม/แก้ไข บิลเงินสด' });
+    await expect(nextForm).toBeVisible();
+    await nextForm.getByRole('button', { name: 'ยกเลิก', exact: true }).click();
+    expect((await readQueue(page)).find(e => e.id === createEvent.id)?.payload).toEqual(createEvent.payload);
+    await remove.click();
+    await page.getByRole('alertdialog', { name: 'ยืนยันลบรายการ' }).getByRole('button', { name: 'ยืนยันลบ', exact: true }).click();
+    await expect(row).toBeHidden({ timeout: 5000 });
     expect((await readQueue(page)).filter(e => e.id === createEvent.id)).toHaveLength(0);
 
     await context.setOffline(false);
@@ -645,7 +655,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
     await createIncomeOnline(page, marker, 1000);
 
     const dbRows = await page.request.fetch(
-      `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id,location_id,local_bill_no,tx_date,revision_no`,
+      `${supabaseUrl}/rest/v1/income_expense?title=eq.${marker}&select=client_temp_id,location_id,local_bill_no,tx_date,revision_no,numbering_metadata`,
       { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } }
     ).then(res => res.json());
     const serverRow = dbRows[0];
@@ -659,6 +669,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       idempotencyKey: `update:${clientTempId}:${initialRev}`,
       locationId: serverRow.location_id,
       localBillNo: serverRow.local_bill_no,
+      billNumbering: serverRow.numbering_metadata,
       txDate: serverRow.tx_date,
       title: `${marker}-SERVER`,
       cost: 1100,
@@ -677,6 +688,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       idempotencyKey: `update:${clientTempId}:${initialRev}`,
       locationId: serverRow.location_id,
       localBillNo: serverRow.local_bill_no,
+      billNumbering: serverRow.numbering_metadata,
       txDate: serverRow.tx_date,
       title: `${marker}-LOCAL`,
       cost: 1200,
@@ -1032,6 +1044,8 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
       let createCompleted = false;
       let createPostCount = 0;
       let createPayload: any;
+      let releaseCreate!: () => void;
+      const createGate = new Promise<void>(resolve => { releaseCreate = resolve; });
 
       await page.route('**/api/lanflow/income-expense', async (route) => {
         if (route.request().method() !== 'POST') {
@@ -1040,6 +1054,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
         }
         createPostCount += 1;
         createPayload = route.request().postDataJSON();
+        await createGate;
         const response = await route.fetch();
         createCompleted = true;
         await route.fulfill({ response });
@@ -1076,6 +1091,13 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
         submitStarted = true;
         await modal.getByRole('button', { name: 'บันทึกบิล' }).click();
         await expect(modal).toBeHidden({ timeout: 10000 });
+        await expect.poll(() => createPostCount).toBe(1);
+        const sendingRow = page.locator('table tbody tr', { hasText: marker }).first();
+        const lockedActions = sendingRow.getByRole('button', { name: 'บิลนี้กำลังรอซิงก์ กรุณารอจนซิงก์แล้วก่อนแก้ไขหรือลบ', exact: true });
+        await expect(lockedActions).toHaveCount(2);
+        for (const action of await lockedActions.all()) await expect(action).toBeDisabled();
+        await expect(page.getByRole('button', { name: addLabel, exact: true })).toBeEnabled();
+        releaseCreate();
         await expect.poll(() => createCompleted, { timeout: 10000 }).toBe(true);
 
         const row = page.locator('table tbody tr', { hasText: marker }).first();
@@ -1094,6 +1116,7 @@ test.describe('Income/Expense Offline Sync @income-expense-entry', () => {
           return state.values;
         });
       } finally {
+        releaseCreate();
         await page.evaluate(() => {
           const state = (window as typeof window & {
             __createFlicker?: { timer: number };

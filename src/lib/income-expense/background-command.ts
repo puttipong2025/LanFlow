@@ -1,4 +1,5 @@
 import type { SyncEvent } from "@/lib/idb-queue";
+import { isIncomeExpenseSyncResult } from "@/lib/income-expense/contracts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -37,6 +38,11 @@ export function confirmedIncomeExpenseBackgroundOutcome(
     || receipt.clientTempId !== event.id
     || receipt.operation !== event.operation) return null;
   const outcome = receipt.outcome;
+  if (outcome === "synced" || outcome === "pending_approval") {
+    if (!isIncomeExpenseSyncResult(receipt, event.payload)) return null;
+    // Approved replay retains its original pending-approval status in the saved receipt.
+    if (receipt.status !== "pending_approval" && !(outcome === "synced" && receipt.status === "synced")) return null;
+  }
   if (outcome !== "synced" && outcome !== "pending_approval" && outcome !== "rejected"
     && outcome !== "deleted" && outcome !== "revision_conflict") return null;
   return outcome;

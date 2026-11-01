@@ -9,6 +9,8 @@ import { isRetryableSyncResponse } from "@/lib/sync-response";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
 import { incomeExpenseOperationalQueryKeys } from "./query-keys";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
+import { cacheConfirmedIncomeExpense, type IncomeExpenseSyncReceipt } from "./feed-cache";
+import { isIncomeExpenseSyncResult } from "./contracts";
 
 const endpoint = "/api/lanflow/income-expense/background";
 const flight = createScopedSingleFlight();
@@ -84,6 +86,11 @@ export async function runIncomeExpenseBackground(queryClient: QueryClient, owner
           const message = outcome === "revision_conflict" ? "รายการเปลี่ยนแล้ว ยกเลิกการแก้ไข/ลบที่ค้างไว้ กรุณาตรวจข้อมูลล่าสุด"
             : outcome === "rejected" ? "คำขอไม่ได้รับอนุมัติ" : undefined;
           if (await completeIncomeExpenseBackground(event, message)) {
+            if (outcome === "synced" && data.status === "synced" && event.operation === "update" && isIncomeExpenseSyncResult(data, event.payload)) {
+              await cacheConfirmedIncomeExpense(queryClient, ownerUserId, event.locationId, event, data as IncomeExpenseSyncReceipt);
+            } else if (outcome !== "pending_approval" && outcome !== "rejected") {
+              await cacheConfirmedIncomeExpense(queryClient, ownerUserId, event.locationId, event);
+            }
             changed.add(event.locationId);
             completedBranches.add(event.locationId);
           }

@@ -3,10 +3,13 @@ import type { SyncEvent } from "@/lib/idb-queue";
 import type { RubberBill } from "@/types";
 import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
 import { isRubberBillIssuer, isRubberBillNumbering, rubberBaseNumber, type RubberBillIssuer, type RubberBillNumbering } from "./numbering-contract";
+import { validIncomeNumberState, type IncomeNumberState } from "@/lib/income-expense/numbering-contract";
+import { prepareBillInstallation } from "./issuer-installation";
 
 type Reservation = { base: string; metadata: RubberBillNumbering };
 type NumberState = { key: string; version: 1; installationId: string; generationId: string;
-  issuer?: RubberBillIssuer; counters: Record<string, number>; reservations: Record<string, Reservation>; checkedAt: number };
+  issuer?: RubberBillIssuer; counters: Record<string, number>; reservations: Record<string, Reservation>; checkedAt: number;
+  incomeExpenseStarted?: boolean; incomeExpense?: IncomeNumberState };
 const flights = new Map<string, Promise<void>>();
 const message = "เชื่อมต่ออินเทอร์เน็ตเพื่อเตรียมรหัสเครื่องออกบิลก่อน";
 function validState(x: NumberState | undefined): x is NumberState {
@@ -18,6 +21,7 @@ function validState(x: NumberState | undefined): x is NumberState {
     && ((isRubberBillIssuer(x.issuer) && x.issuer.locationId === x.key) || (x.issuer === undefined && x.checkedAt === 0
       && Object.keys(x.counters).length === 0 && Object.keys(x.reservations).length === 0))
     && Object.values(x.counters).every(v => Number.isSafeInteger(v) && v >= 0)
+    && (x.incomeExpense === undefined ? x.incomeExpenseStarted !== true : validIncomeNumberState(x.incomeExpense, x.issuer?.id, x.issuer?.code))
     && Object.values(x.reservations).every(v => {
       if (!v || typeof v.base !== "string" || !isRubberBillNumbering(v.metadata)) return false;
       const { date, sequence, issuerId } = v.metadata, parsed = new Date(`${date}T00:00:00Z`);
@@ -36,12 +40,16 @@ async function state(locationId: string, initialize = false): Promise<NumberStat
     const tx = db.transaction(RUBBER_NUMBER_STORE, initialize ? "readwrite" : "readonly");
     const store = tx.objectStore(RUBBER_NUMBER_STORE), request = store.get(locationId);
     request.onsuccess = () => {
-      if (validState(request.result)) result = request.result;
-      else if (initialize) {
-        result = { key: locationId, version: 1, installationId: crypto.randomUUID(), generationId: crypto.randomUUID(),
-          counters: {}, reservations: {}, checkedAt: 0 };
+      const current = validState(request.result) ? request.result as NumberState : null;
+      if (!initialize) { result = current; return; }
+      prepareBillInstallation(store, locationId, current !== null, identity => {
+        const same = current?.installationId === identity.installationId && current.generationId === identity.generationId;
+        result = current ? { ...current, installationId: identity.installationId, generationId: identity.generationId,
+          checkedAt: same ? current.checkedAt : 0 }
+          : { key: locationId, version: 1, installationId: identity.installationId, generationId: identity.generationId,
+            counters: {}, reservations: {}, checkedAt: 0 };
         store.put(result);
-      }
+      });
     };
     tx.oncomplete = () => { db.close(); resolve(result); };
     tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };
@@ -49,14 +57,15 @@ async function state(locationId: string, initialize = false): Promise<NumberStat
 }
 export async function rubberNumberingReady(locationId: string) {
   const current = await state(locationId);
-  return Boolean(current?.issuer && isRubberBillIssuer(current.issuer) && current.issuer.locationId === locationId);
+  return Boolean(current?.issuer && isRubberBillIssuer(current.issuer) && current.issuer.locationId === locationId
+    && current.incomeExpense && validIncomeNumberState(current.incomeExpense, current.issuer.id, current.issuer.code));
 }
 export async function prepareRubberBillIssuer(locationId: string, refresh = false) {
   const running = flights.get(locationId);
   if (running) return running;
   const promise = (async () => {
     const before = await state(locationId, true);
-    if (!before || (!refresh && before.issuer && Date.now() - before.checkedAt < 60000)) return;
+    if (!before || (!refresh && before.issuer && before.incomeExpense && Date.now() - before.checkedAt < 60000)) return;
     const response = await authFetch("/api/lanflow/rubber-bills/issuers", { method: "POST",
       headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(10000),
       body: JSON.stringify({ locationId, installationId: before.installationId, generationId: before.generationId }) });
@@ -73,7 +82,9 @@ export async function prepareRubberBillIssuer(locationId: string, refresh = fals
         const old = current.issuer?.code.slice(1).replace(/^0+/, "") ?? "";
         const next = issuer.code.slice(1).replace(/^0+/, "");
         if (old.length > next.length || (old.length === next.length && old > next)) return;
-        store.put({ ...current, issuer, checkedAt: Date.now(), counters: current.issuer?.id === issuer.id ? current.counters : {} });
+        const same = current.issuer?.id === issuer.id;
+        store.put({ ...current, issuer, checkedAt: Date.now(), counters: same ? current.counters : {},
+          incomeExpenseStarted: true, incomeExpense: same && current.incomeExpense ? current.incomeExpense : { version: 1, hasIssued: false, counters: {}, reservations: {} } });
       };
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };

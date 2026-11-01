@@ -1,7 +1,9 @@
 import { test, expect, Page } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
 import { bangkokDateString } from '../src/lib/bangkok-date';
+import { waitForBillIssuer } from './helpers/wait-bill-issuer';
 import { confirmCurrentBranchIfRequired } from './helpers/select-app-location';
+import { installThresholdAlertHandler } from './helpers/dismiss-threshold-alert';
 
 async function readQueue(page: Page): Promise<any[]> {
   await page.waitForLoadState('domcontentloaded');
@@ -90,6 +92,7 @@ test.describe('Income/Expense PWA Offline Reload', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await installThresholdAlertHandler(page);
     approvalSettingLoaded = false;
     const original = await approvalAdmin.from('income_expense_approval_settings').select('*').eq('id', true).maybeSingle();
     expect(original.error).toBeNull();
@@ -114,7 +117,7 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     });
   });
 
-  test('keeps income/expense pending row visible after offline reload and syncs on reconnect', async ({ page, context }) => {
+  test('keeps income/expense pending row visible after offline reload and syncs on reconnect', async ({ page, context }, info) => {
     test.setTimeout(120000);
     page.on('dialog', dialog => dialog.accept());
 
@@ -122,10 +125,11 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     await page.fill('input[type="tel"]', phone);
     await page.fill('input[type="password"]', password);
     await page.click('button:has-text("เข้าสู่ระบบ")');
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
 
     await page.click('button:has-text("รับ-จ่าย")');
     await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });
+    await waitForBillIssuer(page);
 
     await expect.poll(async () => {
       return page.evaluate(async () => !!navigator.serviceWorker?.controller);
@@ -155,10 +159,12 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     expect(eventBeforeReload).toBeDefined();
     expect(eventBeforeReload.operation).toBe('create');
     expect(eventBeforeReload.status).toBe('pending');
+    expect(eventBeforeReload.payload.localBillNo).toMatch(/^I-\d{4,}-\d{6}-D\d+$/);
+    expect(eventBeforeReload.payload.billNumbering.version).toBe(1);
 
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
 
-    await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: /^ออกจากระบบ/ }).first()).toBeVisible({ timeout: 15000 });
     await page.click('button:has-text("รับ-จ่าย")');
     await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });
 
@@ -166,6 +172,8 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     const eventAfterReload = queueAfterReload.find(e => e.id === eventBeforeReload.id);
     expect(eventAfterReload).toBeDefined();
     expect(eventAfterReload.status).toBe('pending');
+    expect(eventAfterReload.payload.localBillNo).toBe(eventBeforeReload.payload.localBillNo);
+    expect(eventAfterReload.payload.billNumbering).toEqual(eventBeforeReload.payload.billNumbering);
 
     const offlineReloadRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(offlineReloadRow).toBeVisible({ timeout: 10000 });
@@ -187,6 +195,30 @@ test.describe('Income/Expense PWA Offline Reload', () => {
     const dbRows = await dbCheck.json();
     expect(dbRows.length).toBe(1);
 
+    // A confirmed row survives a second offline reload after its outbox is gone.
+    await context.setOffline(true);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.click('button:has-text("รับ-จ่าย")');
+    const historyRow = page.locator('table tbody tr', { hasText: marker }).first();
+    await expect(historyRow).toBeVisible({ timeout: 15000 });
+    const historyTable = historyRow.locator('xpath=ancestor::table');
+    expect((await historyTable.getByRole('columnheader').allTextContents()).slice(0, 3)).toEqual(['จัดการ', 'Sync', 'เลขที่']);
+    await expect(page.getByRole('status').filter({ hasText: 'สำเนาในเครื่อง' })).toBeVisible();
+    const lockedActions = historyRow.getByRole('button', { name: 'รายการนี้ซิงก์แล้ว ต้องออนไลน์เพื่อแก้ไขหรือลบ', exact: true });
+    await expect(lockedActions).toHaveCount(2);
+    for (const action of await lockedActions.all()) await expect(action).toBeDisabled();
+    await expect(lockedActions.first()).toHaveText('แก้');
+    await expect(lockedActions.first().locator('svg')).toHaveCount(0);
+    await expect(lockedActions.last()).toHaveText('');
+    await expect(lockedActions.last().locator('svg')).toHaveCount(1);
+    for (const pdfButton of await historyTable.getByRole('button', { name: /^แชร์ PDF/ }).all()) {
+      await expect(pdfButton).toHaveText('PDF');
+      await expect(pdfButton.locator('svg')).toHaveCount(0);
+    }
+    expect((await readQueue(page)).filter(event => event.id === eventBeforeReload.id)).toHaveLength(0);
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.screenshot({ path: info.outputPath('income-expense-offline-history.png'), fullPage: true });
+    await context.setOffline(false);
     await cleanupIncomeExpense(page, eventBeforeReload.payload, eventBeforeReload.id, dbRows[0].revision_no);
   });
 
@@ -211,7 +243,7 @@ test.describe('Income/Expense PWA Offline Reload', () => {
       await page.fill('input[type="tel"]', phone);
       await page.fill('input[type="password"]', password);
       await page.click('button:has-text("เข้าสู่ระบบ")');
-      await expect(page.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+      await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
       await page.click('button:has-text("รับ-จ่าย")');
       await expect(page.locator('button:has-text("เพิ่มรายรับ")')).toBeVisible({ timeout: 10000 });
       await expect.poll(() => page.evaluate(() => {
@@ -229,7 +261,7 @@ test.describe('Income/Expense PWA Offline Reload', () => {
       await modal.getByRole('button', { name: 'ส่งขออนุมัติ' }).click();
 
       await expect(page.getByText('รายการต่างจากวันปัจจุบัน ต้องออนไลน์เพื่อส่งคำขออนุมัติ')).toBeVisible();
-      await expect(modal).toBeVisible();
+      await expect(modal).toBeHidden();
       expect((await readQueue(page)).some((event) => event.payload?.title === marker)).toBe(false);
     } finally {
       await context.setOffline(false).catch(() => {});

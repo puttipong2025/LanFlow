@@ -5,7 +5,7 @@ import * as storage from "../src/lib/income-expense/background-idb";
 import { loadSourceModule } from "./helpers/load-source-module";
 import { persistIncomeExpenseSubmissions } from "../src/lib/income-expense/persist-submissions";
 import type { IncomeExpense } from "../src/types";
-import type { QueryClient } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import * as core from "../src/lib/idb-core";
 import * as serviceHealth from "../src/lib/service-health";
 
@@ -20,12 +20,14 @@ function command(locationId = "branch-a"): queue.SyncEvent {
   return { entity: "income_expense", id: `local-${locationId}`, ownerUserId: owner, locationId,
     operation: "update", serverId, timestamp: 1, status: "pending", payload: {
       contractVersion: 2, background: true, commandId, actorUserId: owner, expectedServerId: serverId,
-      operation: "update", locationId, clientTempId: `local-${locationId}`, localBillNo: "LOCAL", billOption: "ค่าใช้จ่าย",
+      operation: "update", expectedRevisionNo: 1, locationId, clientTempId: `local-${locationId}`, localBillNo: "LOCAL", billOption: "ค่าใช้จ่าย",
     } };
 }
 function receipt(event: queue.SyncEvent, outcome = "synced") {
   return { commandId: event.payload.commandId, actorUserId: owner, serverId, locationId: event.locationId,
-    clientTempId: event.id, operation: event.operation, outcome };
+    clientTempId: event.id, operation: event.operation, outcome,
+    ...(outcome === "synced" ? { status: "synced", id: event.serverId, serverBillNo: "FINAL-BG",
+      revisionNo: event.payload.expectedRevisionNo + 1, serverReceivedAt: "2026-11-01T00:00:00Z" } : {}) };
 }
 function worker(fetch: (url: string, init?: RequestInit) => Promise<Response>, session = async () => true, globals: Record<string, unknown> = {}) {
   return loadSourceModule<typeof import("../src/lib/income-expense/background-sync")>("src/lib/income-expense/background-sync.ts", {
@@ -34,7 +36,7 @@ function worker(fetch: (url: string, init?: RequestInit) => Promise<Response>, s
     "./background-idb": storage,
   }, { navigator: { onLine: true }, window: globalThis, indexedDB: globalThis.indexedDB, ...globals });
 }
-const client = { invalidateQueries: async () => {} } as unknown as QueryClient;
+const client = new QueryClient();
 
 test("permission loss during POST retains uncertain work and does not stop another authorized branch", async () => {
   setup();
@@ -196,7 +198,7 @@ test("aborting cleanup rolls back both queue removal and deferred notice", async
   expect(await storage.incomeExpenseNotices(owner, event.locationId)).toEqual([]);
 });
 
-test("blocked version-5 upgrade explains old tabs, then preserves work when upgrading to version 9", async () => {
+test("blocked version-5 upgrade explains old tabs, then preserves work when upgrading to version 11", async () => {
   setup();
   const previous = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open("lanflow_sync_db", 5);
@@ -217,7 +219,7 @@ test("blocked version-5 upgrade explains old tabs, then preserves work when upgr
   previous.close();
   await new Promise((resolve) => setTimeout(resolve, 10));
   const upgraded = await core.getSyncDb();
-  expect(upgraded.version).toBe(9);
+  expect(upgraded.version).toBe(11);
   expect(upgraded.objectStoreNames.contains(core.INCOME_EXPENSE_OUTCOME_STORE)).toBe(true);
   upgraded.close();
   expect(await storage.incomeExpenseOwnerWork(owner)).toHaveLength(1);
@@ -336,7 +338,8 @@ test("shared badge and overview refresh once per completed owner round, never on
   setup();
   for (const branch of ["branch-a", "branch-b"]) await queue.enqueueSyncEvent(command(branch));
   const invalidations: unknown[] = [];
-  const queryClient = { invalidateQueries: async ({ queryKey }: { queryKey: unknown }) => { invalidations.push(queryKey); } } as unknown as QueryClient;
+  const queryClient = new QueryClient();
+  queryClient.invalidateQueries = async (filters) => { invalidations.push(filters?.queryKey); };
   const module = worker(async (_url, init) => Response.json(receipt(command(JSON.parse(String(init?.body)).locationId))));
   await module.runIncomeExpenseBackground(queryClient, owner);
   expect(invalidations.filter((key) => JSON.stringify(key) === '["actionableBadges"]')).toHaveLength(1);
@@ -405,16 +408,18 @@ test("failed branch does not block a second branch; conflict draft is retired wi
   expect(await storage.incomeExpenseNotices(owner, "branch-b")).toHaveLength(1);
 });
 
-test("partial mixed submission retry does not repeat already accepted update or create", async () => {
+test("edit rejects mixed submissions before any update, create or approval", async () => {
   const transactions = ["existing", "new-a", "new-b"].map((id, index) => ({ id: index ? id : serverId,
     clientTempId: id, billOption: "ค่าใช้จ่าย", serverBillNo: index ? undefined : "IE-1" }) as IncomeExpense);
-  const accepted = new Map<string, "persisted" | "approval">();
-  const calls: string[] = []; let fail = true;
-  const actions = { editing: transactions[0], accepted, approve: async () => ({ requiresApproval: false }),
+  const calls: string[] = [];
+  const actions = { editing: transactions[0], approve: async () => { calls.push("approval"); return { requiresApproval: false }; },
     update: async (transaction: IncomeExpense) => { calls.push(transaction.clientTempId); return transaction; },
-    create: async (transaction: IncomeExpense) => { if (transaction.clientTempId === "new-b" && fail) throw new Error("storage"); calls.push(transaction.clientTempId); return transaction; } };
+    create: async (transaction: IncomeExpense) => { calls.push(transaction.clientTempId); return transaction; } };
   expect((await persistIncomeExpenseSubmissions(transactions, actions)).persistError).toBeTruthy();
-  fail = false;
-  expect((await persistIncomeExpenseSubmissions(transactions, actions)).persistError).toBeUndefined();
-  expect(calls).toEqual(["existing", "new-a", "new-b"]);
+  expect(calls).toEqual([]);
+  expect((await persistIncomeExpenseSubmissions([transactions[0]], actions)).persistError).toBeUndefined();
+  expect(calls).toEqual(["existing"]);
+  calls.length = 0;
+  expect((await persistIncomeExpenseSubmissions([transactions[1]], actions)).persistError).toBeTruthy();
+  expect(calls).toEqual([]);
 });

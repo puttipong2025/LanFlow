@@ -5,8 +5,9 @@ import {
   selectAppLocation,
 } from "./helpers/select-app-location";
 import { bangkokDateString } from "../src/lib/bangkok-date";
+import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: { cookies: [], origins: [] }, serviceWorkers: "block" });
 
 const phone = process.env.TEST_PHONE ?? "0800000000";
 const password = process.env.TEST_PASSWORD ?? "password123";
@@ -84,11 +85,12 @@ async function readQueue(page: Page) {
 }
 
 async function loginAndOpenIncomeExpense(page: Page) {
+  await installThresholdAlertHandler(page);
   await page.goto("/login");
   await page.locator("#phone").fill(phone);
   await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
-  await expect(page.getByText("ออกจากระบบ")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "ออกจากระบบ", exact: true }).first()).toBeVisible({ timeout: 30_000 });
 
   const response = await page.request.get("/api/auth/me");
   expect(response.ok()).toBeTruthy();
@@ -198,7 +200,7 @@ test("accepts a zero-priced sale and keeps one command in flight until sync succ
   await expect(modal).toBeHidden();
 });
 
-test("opens the PDF window only after one whole-bill sync succeeds", async ({ page }) => {
+test("saves a whole sale without opening or sharing a PDF", async ({ page }) => {
   await installShareMock(page);
 
   let releaseSync!: () => void;
@@ -264,18 +266,14 @@ test("opens the PDF window only after one whole-bill sync succeeds", async ({ pa
   expect(await sharedReceipts(page)).toEqual([]);
 
   releaseSync();
-  await expect.poll(() => sharedReceipts(page), { timeout: 20_000 }).toHaveLength(1);
-  const [receipt] = await sharedReceipts(page);
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("บันทึกบิลขายแล้ว", { exact: true })).toBeVisible();
   expect(syncCount).toBe(1);
-  expect(receipt).toMatchObject({
-    name: "LanFlow-sale-bill-SERVER-SALE-1-80mm.pdf",
-    type: "application/pdf",
-  });
-  expect(receipt.size).toBeGreaterThan(1_000);
+  expect(await sharedReceipts(page)).toEqual([]);
   await expect(waiting).toBeHidden();
 });
 
-test("waits for an edited sale line to sync and keeps the server bill number on the PDF", async ({ page }) => {
+test("waits for an edited sale to sync without automatically sharing a PDF", async ({ page }) => {
   await installShareMock(page);
 
   const serverBillNo = "SERVER-EDIT-1001";
@@ -298,7 +296,7 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
           serverBillNo,
           syncStatus: "synced",
           idempotencyKey: `create:${clientTempId}:0`,
-          locationId: "placeholder",
+          locationId: new URL(route.request().url()).searchParams.get("locationId"),
           type: "income",
           number: serverBillNo,
           txDate: today,
@@ -314,7 +312,7 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
           revisionNo: 1,
           recordStatus: "active",
         }],
-        nextCursor: null,
+        nextCursor: null, hasMore: false, pendingApprovalCount: 0,
       },
     });
   });
@@ -380,10 +378,9 @@ test("waits for an edited sale line to sync and keeps the server bill number on 
   expect(await sharedReceipts(page)).toEqual([]);
 
   releaseSync();
-  await expect.poll(() => sharedReceipts(page), { timeout: 20_000 }).toHaveLength(1);
-  expect((await sharedReceipts(page))[0].name).toBe(
-    `LanFlow-sale-bill-${serverBillNo}-80mm.pdf`
-  );
+  await expect(modal).toBeHidden();
+  await expect(page.getByText("บันทึกบิลขายแล้ว", { exact: true })).toBeVisible();
+  expect(await sharedReceipts(page)).toEqual([]);
 });
 
 test("treats a server-side pending approval race as queued instead of a failed sale sync", async ({ page }) => {
@@ -405,7 +402,7 @@ test("treats a server-side pending approval race as queued instead of a failed s
           serverBillNo,
           syncStatus: "synced",
           idempotencyKey: `create:${clientTempId}:0`,
-          locationId: "placeholder",
+          locationId: new URL(route.request().url()).searchParams.get("locationId"),
           type: "income",
           number: serverBillNo,
           txDate: today,
@@ -421,7 +418,7 @@ test("treats a server-side pending approval race as queued instead of a failed s
           revisionNo: 1,
           recordStatus: "active",
         }],
-        nextCursor: null,
+        nextCursor: null, hasMore: false, pendingApprovalCount: 0,
       },
     });
   });
@@ -491,7 +488,7 @@ test("closes an edited sale after approval is queued without syncing or printing
           serverBillNo,
           syncStatus: "synced",
           idempotencyKey: `create:${clientTempId}:0`,
-          locationId: "placeholder",
+          locationId: new URL(route.request().url()).searchParams.get("locationId"),
           type: "income",
           number: serverBillNo,
           txDate: today,
@@ -507,7 +504,7 @@ test("closes an edited sale after approval is queued without syncing or printing
           revisionNo: 1,
           recordStatus: "active",
         }],
-        nextCursor: null,
+        nextCursor: null, hasMore: false, pendingApprovalCount: 0,
       },
     });
   });
@@ -573,7 +570,7 @@ test("locks edit delete and print actions for a pending sale update", async ({ p
           serverBillNo,
           syncStatus: "synced",
           idempotencyKey: `create:${clientTempId}:0`,
-          locationId: "placeholder",
+          locationId: new URL(route.request().url()).searchParams.get("locationId"),
           type: "income",
           number: serverBillNo,
           txDate: bangkokDateString(),
@@ -590,10 +587,11 @@ test("locks edit delete and print actions for a pending sale update", async ({ p
           recordStatus: "active",
           approvalPending: true,
           approvalRequestId: crypto.randomUUID(),
+          approvalRequestType: "income_expense",
           approvalOperation: "update",
           approvalReasons: ["amount_threshold"],
         }],
-        nextCursor: null,
+        nextCursor: null, hasMore: false, pendingApprovalCount: 1,
       },
     });
   });
@@ -613,7 +611,7 @@ test("locks edit delete and print actions for a pending sale update", async ({ p
   expect(await sharedReceipts(page)).toEqual([]);
 });
 
-test("shows every stock shortage, preserves the modal, and removes the rejected queue event", async ({ page }) => {
+test("shows every stock shortage, resets the create form, and removes the rejected queue event", async ({ page }) => {
   await installShareMock(page);
   const submittedClientIds: string[] = [];
 
@@ -674,14 +672,18 @@ test("shows every stock shortage, preserves the modal, and removes the rejected 
   expect(await sharedReceipts(page)).toEqual([]);
   await expect.poll(async () => (await readQueue(page)).length).toBe(0);
   await shortageAlert.getByRole("button", { name: "ตกลง" }).click();
-  await expect(modal).toBeVisible();
+  await expect(modal).toBeHidden();
+  await page.getByRole("button", { name: "เพิ่มรายรับ" }).click();
+  await confirmCurrentBranchIfRequired(page);
+  await modal.getByRole("button", { name: /บิลขาย/ }).click();
+  await fillSaleLine(modal, 0, "2", "25");
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
   await expect(modal).toBeHidden();
   expect(submittedClientIds).toHaveLength(2);
-  expect(submittedClientIds[1]).toBe(submittedClientIds[0]);
+  expect(submittedClientIds[1]).not.toBe(submittedClientIds[0]);
 });
 
-test("closes the saved bill after the post-save PDF is shared", async ({ page }) => {
+test("closes the saved sale without invoking the PDF service", async ({ page }) => {
   test.setTimeout(60_000);
   await installShareMock(page);
 
@@ -732,8 +734,9 @@ test("closes the saved bill after the post-save PDF is shared", async ({ page })
   await expect(modal).toBeVisible();
 
   releaseSync();
-  await expect(page.getByText("แชร์ PDF บิลขายแล้ว")).toBeVisible();
+  await expect(page.getByText("บันทึกบิลขายแล้ว", { exact: true })).toBeVisible();
   await expect(modal).toBeHidden();
+  expect(await sharedReceipts(page)).toEqual([]);
   await expect.poll(async () => (await readQueue(page)).length).toBe(0);
 });
 
@@ -754,16 +757,12 @@ test("lets the user remove a legacy failed sale that never reached the server", 
   await fillSaleLine(modal, 0, "1", "25");
   await modal.getByRole("button", { name: "บันทึกบิล" }).click();
   await expect.poll(async () => (await readQueue(page))[0]?.status).toBe("failed");
-  await expect(modal).toBeVisible();
-
-  page.once("dialog", (dialog) => dialog.accept());
-  await modal.getByRole("button", { name: /ปิด/ }).click();
   await expect(modal).toBeHidden();
 
   const discardButton = page.getByRole("button", { name: "ลบรายการค้าง" });
   await expect(discardButton).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
   await discardButton.click();
+  await page.getByRole("alertdialog", { name: "ทิ้งรายการค้าง", exact: true }).getByRole("button", { name: "ทิ้งรายการค้าง", exact: true }).click();
   await expect.poll(async () => (await readQueue(page)).length).toBe(0);
   await expect(discardButton).toBeHidden();
 });

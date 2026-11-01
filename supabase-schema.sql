@@ -171,6 +171,27 @@ $$;
 ALTER FUNCTION "private"."active_transfer_report_no"("p_transfer_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."allocate_income_expense_suffix"("payload" "jsonb") RETURNS "text"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+declare b private.income_expense_number_bindings; n bigint; loc uuid:=(payload->>'locationId')::uuid;
+  base text:=payload->>'localBillNo'; client text:=payload->>'clientTempId';
+begin
+  perform private.assert_income_expense_numbering(payload);
+  select * into b from private.income_expense_number_bindings where client_temp_id=client;
+  if found then return b.final_number; end if;
+  insert into private.income_expense_suffix_counters values(loc,base,1)
+    on conflict(location_id,base_number) do update set last_suffix=income_expense_suffix_counters.last_suffix+1
+    returning last_suffix into n;
+  insert into private.income_expense_number_bindings values(client,loc,base,base||'-'||n::text,payload->'billNumbering');
+  return base||'-'||n::text;
+end $$;
+
+
+ALTER FUNCTION "private"."allocate_income_expense_suffix"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."allocate_rubber_bill_suffix"("payload" "jsonb") RETURNS "text"
     LANGUAGE "plpgsql"
     SET "search_path" TO ''
@@ -731,6 +752,42 @@ $$;
 ALTER FUNCTION "private"."assert_cash_alert_group_row_not_empty"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."assert_income_expense_numbering"("payload" "jsonb") RETURNS "void"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $_$
+declare m jsonb:=payload->'billNumbering'; i record; d date; n bigint;
+  b private.income_expense_number_bindings; prefix text;
+begin
+  select * into b from private.income_expense_number_bindings where client_temp_id=payload->>'clientTempId';
+  if b.client_temp_id is not null and (m is distinct from b.metadata
+    or payload->>'localBillNo' is distinct from b.base_number
+    or payload->>'locationId' is distinct from b.location_id::text) then raise exception 'BILL_NUMBER_CHANGED'; end if;
+  if m is null then return; end if;
+  if jsonb_typeof(m)<>'object' or m->>'version' is distinct from '1'
+    or jsonb_typeof(m->'sequence') is distinct from 'number'
+    or (m->>'date') is null or (m->>'date') !~ '^\d{4}-\d{2}-\d{2}$'
+    or payload->>'billOption' not in ('รายรับ','ค่าใช้จ่าย') then raise exception 'INVALID_BILL_NUMBER'; end if;
+  d:=(m->>'date')::date; n:=(m->>'sequence')::bigint;
+  prefix:=case payload->>'type' when 'income' then 'I' when 'expense' then 'E' end;
+  select id,location_id,code into i from (
+select id,location_id,code from private.rubber_bill_issuers union all
+select id,location_id,code from private.legacy_bill_issuer_refs) refs where id=(m->>'issuerId')::uuid;
+  if i.id is null or i.location_id is distinct from (payload->>'locationId')::uuid
+    or n<1 or n>9007199254740991 or (m->>'sequence')::numeric<>n or d::text is distinct from m->>'date'
+    or prefix is null or (prefix='I' and payload->>'billOption'<>'รายรับ')
+    or (prefix='E' and payload->>'billOption'<>'ค่าใช้จ่าย')
+
+    or payload->>'localBillNo' is distinct from prefix||'-'||lpad(n::text,greatest(4,length(n::text)),'0')||'-'||to_char(d,'YYMMDD')||'-'||i.code
+    then raise exception 'INVALID_BILL_NUMBER'; end if;
+exception when invalid_text_representation or datetime_field_overflow or numeric_value_out_of_range then
+  raise exception 'INVALID_BILL_NUMBER';
+end $_$;
+
+
+ALTER FUNCTION "private"."assert_income_expense_numbering"("payload" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."assert_report_creation_unblocked"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -809,7 +866,7 @@ CREATE OR REPLACE FUNCTION "private"."assert_rubber_bill_numbering"("payload" "j
     LANGUAGE "plpgsql"
     SET "search_path" TO ''
     AS $_$
-declare m jsonb:=payload->'billNumbering'; i private.rubber_bill_issuers; d date; seq bigint;
+declare m jsonb:=payload->'billNumbering'; i record; d date; seq bigint;
   existing public.rubber_bills; date_part text; sequence_part text;
 begin
   select * into existing from public.rubber_bills where client_temp_id=payload->>'clientTempId';
@@ -822,7 +879,9 @@ begin
     or (m->>'date') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'INVALID_BILL_NUMBER'; end if;
   d:=(m->>'date')::date; seq:=(m->>'sequence')::bigint;
   date_part:=to_char(d,'YYMMDD'); sequence_part:=lpad(seq::text,greatest(4,length(seq::text)),'0');
-  select * into i from private.rubber_bill_issuers where id=(m->>'issuerId')::uuid;
+  select id,location_id,code into i from (
+select id,location_id,code from private.rubber_bill_issuers union all
+select id,location_id,code from private.legacy_bill_issuer_refs) refs where id=(m->>'issuerId')::uuid;
   if i.id is null or i.location_id is distinct from (payload->>'locationId')::uuid or seq<1
     or (m->>'sequence')::numeric<>seq or seq>9007199254740991 or d::text is distinct from m->>'date'
     or (payload->>'localBillNo' is distinct from date_part||sequence_part||'-'||i.code
@@ -1971,6 +2030,28 @@ end $$;
 
 
 ALTER FUNCTION "private"."capture_income_background_approval_outcome"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."capture_income_create_approval_outcome"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+declare client text:=new.requested_payload->>'clientTempId'; row public.income_expense; r jsonb;
+begin
+  if new.requested_operation='create' and new.requested_payload ? 'billNumbering' and new.request_status in ('approved','rejected') then
+    if new.request_status='rejected' then r:=jsonb_build_object('status','rejected','requestId',new.id);
+    else
+      select * into row from public.income_expense where id=new.approved_income_expense_id;
+      r:=jsonb_build_object('status','synced','id',row.id,'serverBillNo',row.server_bill_no,
+        'revisionNo',row.revision_no,'serverReceivedAt',row.server_received_at);
+    end if;
+    update private.income_expense_create_receipts set result=result||r where client_temp_id=client;
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."capture_income_create_approval_outcome"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."capture_money_history_creator"() RETURNS "trigger"
@@ -4386,6 +4467,59 @@ $$;
 
 
 ALTER FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."get_income_expense_feed_before_numbering_20261101"("p_location_id" "uuid", "p_mode" "text" DEFAULT 'latest'::"text", "p_search" "text" DEFAULT ''::"text", "p_cursor" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_result jsonb;
+  v_rows jsonb := '[]'::jsonb;
+  v_row jsonb;
+  v_amount numeric;
+  v_transfer_amount numeric;
+begin
+  v_result := public.get_income_expense_operational_feed_before_time_payroll_payment(
+    p_location_id, p_mode, p_search, p_cursor
+  );
+  for v_row in select value from jsonb_array_elements(coalesce(v_result -> 'rows', '[]'::jsonb))
+  loop
+    if v_row ->> 'relationSourceType' = 'time_tracking_withdrawal' then
+      select private.time_payroll_branch_paid_amount(
+        source.amount, source.payment_contract_version, source.payment_channel,
+        source.payment_transfer_amount, source.expense_location_id
+      ), coalesce(source.payment_transfer_amount, 0)
+      into v_amount, v_transfer_amount
+      from public.financial_transactions source
+      where source.id = (v_row ->> 'relationSourceId')::uuid;
+      if coalesce(v_amount, 0) <= 0 then continue; end if;
+      v_row := jsonb_set(v_row, '{cost}', to_jsonb(v_amount), true);
+      v_row := jsonb_set(v_row, '{title}', to_jsonb(
+        case when v_transfer_amount > 0 then 'สาขาจ่ายส่วนต่าง — ' else 'สาขาจ่าย — ' end || (v_row ->> 'title')
+      ), true);
+    elsif v_row ->> 'relationSourceType' = 'payroll_slip' then
+      select private.time_payroll_branch_paid_amount(
+        source.net_pay, source.payment_contract_version, source.payment_channel,
+        source.payment_transfer_amount, source.expense_location_id
+      ), coalesce(source.payment_transfer_amount, 0)
+      into v_amount, v_transfer_amount
+      from public.payroll_slips source
+      where source.id = (v_row ->> 'relationSourceId')::uuid;
+      if coalesce(v_amount, 0) <= 0 then continue; end if;
+      v_row := jsonb_set(v_row, '{cost}', to_jsonb(v_amount), true);
+      v_row := jsonb_set(v_row, '{title}', to_jsonb(
+        case when v_transfer_amount > 0 then 'สาขาจ่ายส่วนต่าง — ' else 'สาขาจ่าย — ' end || (v_row ->> 'title')
+      ), true);
+    end if;
+    v_rows := v_rows || jsonb_build_array(v_row);
+  end loop;
+  return jsonb_set(v_result, '{rows}', v_rows, true);
+end;
+$$;
+
+
+ALTER FUNCTION "private"."get_income_expense_feed_before_numbering_20261101"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."get_money_weight_threshold_alert_check"() RETURNS "jsonb"
@@ -7102,6 +7236,32 @@ $$;
 
 
 ALTER FUNCTION "private"."prepare_payroll_slip_source_snapshot"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."preserve_income_expense_number"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+declare b private.income_expense_number_bindings;
+begin
+  if tg_op='INSERT' then
+    select * into b from private.income_expense_number_bindings where client_temp_id=new.client_temp_id;
+    if found then
+      if new.location_id<>b.location_id or new.local_bill_no<>b.base_number or new.server_bill_no<>b.final_number
+        then raise exception 'BILL_NUMBER_CHANGED'; end if;
+      new.numbering_metadata:=b.metadata; new.number:=b.final_number;
+    elsif new.numbering_metadata is not null then raise exception 'UNBOUND_BILL_NUMBER'; end if;
+  elsif old.numbering_metadata is not null and
+    (new.local_bill_no is distinct from old.local_bill_no or new.server_bill_no is distinct from old.server_bill_no
+      or new.number is distinct from old.number or new.numbering_metadata is distinct from old.numbering_metadata
+      or new.location_id<>old.location_id or new.type<>old.type or new.bill_option<>old.bill_option) then
+    raise exception 'BILL_NUMBER_CHANGED';
+  end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."preserve_income_expense_number"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."preserve_rubber_bill_number"() RETURNS "trigger"
@@ -10061,6 +10221,161 @@ end $$;
 
 
 ALTER FUNCTION "private"."stamp_rubber_command_resolution"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."sync_income_expense_before_numbering_20261101"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_approval jsonb;
+  v_stock_result jsonb;
+  v_result jsonb;
+  v_operation text := coalesce(payload ->> 'operation', '');
+  v_title text := btrim(coalesce(payload ->> 'title', ''));
+  v_client_temp_id text := nullif(btrim(payload ->> 'clientTempId'), '');
+  v_idempotency_key text := nullif(btrim(payload ->> 'idempotencyKey'), '');
+  v_fingerprint text := private.income_expense_submission_fingerprint(payload);
+  v_saved_fingerprint text;
+  v_internal_bypass boolean := coalesce(
+    current_setting('app.bypass_income_expense_approval', true),
+    'false'
+  ) = 'true';
+  v_existing_request record;
+  v_existing_row record;
+begin
+  if v_operation = 'create'
+     and (
+       v_title like 'รับโอนจาก%'
+       or v_title like 'โยกเงินไป%'
+       or v_title like 'สาขาจ่ายส่วนต่างให้%'
+       or lower(v_title) = 'branch transfer'
+     ) then
+    return jsonb_build_object(
+      'status', 'conflict',
+      'errorMessage', 'ไม่สามารถซิงก์รายการโยกเงินโดยตรงได้ ต้องทำผ่านระบบโยกเงินเท่านั้น'
+    );
+  end if;
+
+  if v_idempotency_key is not null then
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended('income-expense-submission:' || v_idempotency_key, 0)
+    );
+
+    select client_temp_id, last_submission_fingerprint
+      into v_existing_row
+    from public.income_expense
+    where idempotency_key = v_idempotency_key;
+
+    if v_existing_row.client_temp_id is not null then
+      if v_existing_row.client_temp_id is distinct from v_client_temp_id
+         or (
+           v_existing_row.last_submission_fingerprint is not null
+           and v_existing_row.last_submission_fingerprint is distinct from v_fingerprint
+         ) then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลคำขอไม่ตรงกับรายการที่บันทึกไว้ก่อนหน้า'
+        );
+      end if;
+    elsif not v_internal_bypass then
+      select
+        request.id,
+        request.request_idempotency_key,
+        request.requested_payload,
+        request.submission_fingerprint
+        into v_existing_request
+      from public.income_expense_approval_requests request
+      where request.request_status in ('pending', 'approved')
+        and (
+          request.request_idempotency_key = v_idempotency_key
+          or request.requested_payload ->> 'idempotencyKey' = v_idempotency_key
+        )
+      order by request.created_at desc, request.id desc
+      limit 1;
+
+      if v_existing_request.id is not null
+         and coalesce(
+           v_existing_request.submission_fingerprint,
+           private.income_expense_submission_fingerprint(v_existing_request.requested_payload)
+         ) is distinct from v_fingerprint then
+        return jsonb_build_object(
+          'status', 'conflict',
+          'errorMessage', 'ข้อมูลคำขอไม่ตรงกับรายการที่ส่งไว้ก่อนหน้า'
+        );
+      end if;
+    end if;
+  end if;
+
+  if v_internal_bypass then
+    v_result := private.sync_income_expense_dispatch_20260805020000(payload);
+  elsif payload ->> 'billOption' = 'บิลขาย'
+     and v_operation in ('create', 'update') then
+    v_approval := public.create_income_expense_approval_request(payload);
+    if v_approval ->> 'status' = 'pending' then
+      v_result := jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_approval ->> 'requestId',
+        'matchedReasons', coalesce(v_approval -> 'matchedReasons', '[]'::jsonb),
+        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
+      );
+    elsif v_approval ->> 'status' <> 'no_approval' then
+      v_result := v_approval;
+    else
+      v_stock_result := private.preflight_income_sale_stock(payload);
+      if v_stock_result ->> 'status' <> 'ok' then
+        v_result := v_stock_result;
+      else
+        perform set_config('app.bypass_income_expense_approval', 'true', true);
+        v_result := private.sync_income_expense_dispatch_20260805020000(payload);
+      end if;
+    end if;
+  else
+    v_approval := public.create_income_expense_approval_request(payload);
+    if v_approval ->> 'status' = 'no_approval' then
+      v_result := private.sync_income_expense_dispatch_20260805020000(payload);
+    elsif v_approval ->> 'status' = 'pending' then
+      v_result := jsonb_build_object(
+        'status', 'pending_approval',
+        'requestId', v_approval ->> 'requestId',
+        'matchedReasons', coalesce(v_approval -> 'matchedReasons', '[]'::jsonb),
+        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
+      );
+    else
+      v_result := v_approval;
+    end if;
+  end if;
+
+  if v_result ->> 'status' = 'pending_approval' then
+    update public.income_expense_approval_requests
+    set submission_fingerprint = v_fingerprint
+    where id = (v_result ->> 'requestId')::uuid
+      and submission_fingerprint is null;
+  elsif v_result ->> 'status' = 'synced' then
+    select request.submission_fingerprint
+      into v_saved_fingerprint
+    from public.income_expense_approval_requests request
+    where request.request_status in ('pending', 'approved')
+      and request.requested_payload ->> 'idempotencyKey' = v_idempotency_key
+    order by request.created_at desc, request.id desc
+    limit 1;
+
+    update public.income_expense
+    set last_submission_fingerprint = coalesce(v_saved_fingerprint, v_fingerprint)
+    where id = (v_result ->> 'id')::uuid
+      and idempotency_key = v_idempotency_key;
+  end if;
+
+  return v_result;
+end;
+$$;
+
+
+ALTER FUNCTION "private"."sync_income_expense_before_numbering_20261101"("payload" "jsonb") OWNER TO "postgres";
+
+
+COMMENT ON FUNCTION "private"."sync_income_expense_before_numbering_20261101"("payload" "jsonb") IS 'Synchronizes Income/Expense writes. Original client payload fingerprints survive approval normalization and reject changed replays.';
+
 
 
 CREATE OR REPLACE FUNCTION "private"."sync_income_expense_dispatch_20260805020000"("payload" "jsonb") RETURNS "jsonb"
@@ -19362,50 +19677,19 @@ CREATE OR REPLACE FUNCTION "public"."get_income_expense_operational_feed"("p_loc
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare
-  v_result jsonb;
-  v_rows jsonb := '[]'::jsonb;
-  v_row jsonb;
-  v_amount numeric;
-  v_transfer_amount numeric;
+declare r jsonb; rows jsonb;
 begin
-  v_result := public.get_income_expense_operational_feed_before_time_payroll_payment(
-    p_location_id, p_mode, p_search, p_cursor
-  );
-  for v_row in select value from jsonb_array_elements(coalesce(v_result -> 'rows', '[]'::jsonb))
-  loop
-    if v_row ->> 'relationSourceType' = 'time_tracking_withdrawal' then
-      select private.time_payroll_branch_paid_amount(
-        source.amount, source.payment_contract_version, source.payment_channel,
-        source.payment_transfer_amount, source.expense_location_id
-      ), coalesce(source.payment_transfer_amount, 0)
-      into v_amount, v_transfer_amount
-      from public.financial_transactions source
-      where source.id = (v_row ->> 'relationSourceId')::uuid;
-      if coalesce(v_amount, 0) <= 0 then continue; end if;
-      v_row := jsonb_set(v_row, '{cost}', to_jsonb(v_amount), true);
-      v_row := jsonb_set(v_row, '{title}', to_jsonb(
-        case when v_transfer_amount > 0 then 'สาขาจ่ายส่วนต่าง — ' else 'สาขาจ่าย — ' end || (v_row ->> 'title')
-      ), true);
-    elsif v_row ->> 'relationSourceType' = 'payroll_slip' then
-      select private.time_payroll_branch_paid_amount(
-        source.net_pay, source.payment_contract_version, source.payment_channel,
-        source.payment_transfer_amount, source.expense_location_id
-      ), coalesce(source.payment_transfer_amount, 0)
-      into v_amount, v_transfer_amount
-      from public.payroll_slips source
-      where source.id = (v_row ->> 'relationSourceId')::uuid;
-      if coalesce(v_amount, 0) <= 0 then continue; end if;
-      v_row := jsonb_set(v_row, '{cost}', to_jsonb(v_amount), true);
-      v_row := jsonb_set(v_row, '{title}', to_jsonb(
-        case when v_transfer_amount > 0 then 'สาขาจ่ายส่วนต่าง — ' else 'สาขาจ่าย — ' end || (v_row ->> 'title')
-      ), true);
-    end if;
-    v_rows := v_rows || jsonb_build_array(v_row);
-  end loop;
-  return jsonb_set(v_result, '{rows}', v_rows, true);
-end;
-$$;
+  r:=private.get_income_expense_feed_before_numbering_20261101(p_location_id,p_mode,p_search,p_cursor);
+  select coalesce(jsonb_agg(item.value || case when metadata.m is not null then jsonb_build_object('billNumbering',metadata.m) else '{}'::jsonb end order by item.ordinality),'[]'::jsonb)
+    into rows from jsonb_array_elements(r->'rows') with ordinality item(value,ordinality)
+    left join lateral (
+      select coalesce((select numbering_metadata from public.income_expense where client_temp_id=item.value->>'clientTempId'),
+        (select requested_payload->'billNumbering' from public.income_expense_approval_requests
+          where requested_payload ? 'billNumbering' and requested_payload->>'clientTempId'=item.value->>'clientTempId' and location_id=p_location_id
+          order by created_at desc limit 1)) m
+    ) metadata on true;
+  return jsonb_set(r,'{rows}',rows);
+end $$;
 
 
 ALTER FUNCTION "public"."get_income_expense_operational_feed"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") OWNER TO "postgres";
@@ -23528,17 +23812,24 @@ CREATE OR REPLACE FUNCTION "public"."list_rubber_bill_issuers"("p_location_id" "
     AS $$
 declare result jsonb;
 begin
-  if not private.rubber_actor_active() or not private.rubber_actor_manager() then
-    raise exception 'FORBIDDEN' using errcode='42501'; end if;
-  if p_limit is null or p_offset is null or p_status is null or p_search is null or p_status not in ('all','active','retired') or p_offset<0 or p_limit not between 1 and 100 or length(p_search)>160 then raise exception 'INVALID_INPUT'; end if;
-  with filtered as (
-    select i.id,i.code,i.location_id as "locationId",l.name as "locationName",i.browser,i.platform,
-      p.name as "lastUserName",i.created_at as "createdAt",i.last_seen_at as "lastSeenAt",
-      i.retired_at as "retiredAt",r.name as "retiredByName"
+  if not private.rubber_actor_active() or not private.rubber_actor_manager() then raise exception 'FORBIDDEN' using errcode='42501'; end if;
+  if p_limit is null or p_offset is null or p_status is null or p_search is null or p_status not in ('all','active','retired')
+    or p_offset<0 or p_limit not between 1 and 100 or length(p_search)>160 then raise exception 'INVALID_INPUT'; end if;
+  with candidates as (
+    select i.*,coalesce(i.device_id,i.id) device_key,
+      case when i.device_id is null then l.name else (select string_agg(distinct loc.name,', ' order by loc.name)
+        from private.rubber_bill_issuers link join public.locations loc on loc.id=link.location_id where link.device_id=i.device_id) end location_names
     from private.rubber_bill_issuers i left join public.locations l on l.id=i.location_id
-      left join public.profiles p on p.id=i.last_user_id left join public.profiles r on r.id=i.retired_by
-    where (p_location_id is null or i.location_id=p_location_id) and (p_status='all' or (p_status='active' and i.retired_at is null) or (p_status='retired' and i.retired_at is not null))
-      and (p_search='' or concat_ws(' ',i.code,l.name,i.browser,i.platform,p.name) ilike '%'||p_search||'%')
+    where (p_location_id is null or i.location_id=p_location_id)
+      and (p_status='all' or (p_status='active' and i.retired_at is null) or (p_status='retired' and i.retired_at is not null))
+  ), chosen as (
+    select distinct on(c.device_key) c.* from candidates c left join public.profiles p on p.id=c.last_user_id
+    where p_search='' or concat_ws(' ',c.code,c.location_names,c.browser,c.platform,p.name) ilike '%'||p_search||'%'
+    order by c.device_key,c.last_seen_at desc,c.id
+  ), filtered as (
+    select c.id,c.code,c.location_id as "locationId",c.location_names as "locationName",c.browser,c.platform,
+      p.name as "lastUserName",c.created_at as "createdAt",c.last_seen_at as "lastSeenAt",c.retired_at as "retiredAt",r.name as "retiredByName"
+    from chosen c left join public.profiles p on p.id=c.last_user_id left join public.profiles r on r.id=c.retired_by
   ), page as (select * from filtered order by "createdAt" desc,id limit p_limit offset p_offset)
   select jsonb_build_object('total',(select count(*) from filtered),'rows',coalesce(
     (select jsonb_agg(to_jsonb(page) order by "createdAt" desc,id) from page),'[]'::jsonb)) into result;
@@ -24405,32 +24696,41 @@ CREATE OR REPLACE FUNCTION "public"."register_rubber_bill_issuer"("p_location_id
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare h private.rubber_bill_issuer_heads; i private.rubber_bill_issuers; n bigint;
+declare d private.bill_issuer_devices; i private.rubber_bill_issuers; n bigint;
 begin
   if not private.rubber_actor_active() or not private.rubber_actor_location(p_location_id)
     or not exists(select 1 from public.profiles where id=auth.uid() and role in ('admin','super_admin')) then
-    raise exception 'FORBIDDEN' using errcode='42501';
-  end if;
+    raise exception 'FORBIDDEN' using errcode='42501'; end if;
   if p_installation_id is null or p_generation_id is null or p_location_id is null
     or length(p_browser)>160 or length(p_platform)>80 then raise exception 'INVALID_ISSUER'; end if;
-  perform pg_advisory_xact_lock(hashtextextended('rubber-issuer:'||p_location_id::text,0));
-  select * into h from private.rubber_bill_issuer_heads where location_id=p_location_id
-    and installation_id=p_installation_id and generation_id=p_generation_id for update;
-  select * into i from private.rubber_bill_issuers where id=h.issuer_id;
-  if i.id is null or i.retired_at is not null then
-    insert into private.rubber_bill_issuer_counters values(p_location_id,1)
-      on conflict(location_id) do update set last_code=rubber_bill_issuer_counters.last_code+1
-      returning last_code into n;
-    insert into private.rubber_bill_issuers(location_id,code,installation_id,generation_id,browser,platform,last_user_id)
-      values(p_location_id,'D'||lpad(n::text,greatest(2,length(n::text)),'0'),p_installation_id,p_generation_id,
-        coalesce(p_browser,''),coalesce(p_platform,''),auth.uid()) returning * into i;
+  perform pg_advisory_xact_lock(hashtextextended('bill-device:'||p_installation_id::text||':'||p_generation_id::text,0));
+  select device.* into d from private.bill_issuer_device_heads h join private.bill_issuer_devices device on device.id=h.device_id
+    where h.installation_id=p_installation_id and h.generation_id=p_generation_id;
+  if d.id is null or d.retired_at is not null then
+    update private.bill_issuer_global_counter set last_code=last_code+1
+      where id=true and last_code<999999999999999999 returning last_code into n;
+    if n is null then raise exception 'ISSUER_CODE_EXHAUSTED'; end if;
+    insert into private.bill_issuer_devices(code,installation_id,generation_id)
+      values('D'||lpad(n::text,greatest(2,length(n::text)),'0'),p_installation_id,p_generation_id) returning * into d;
+    insert into private.bill_issuer_device_heads values(p_installation_id,p_generation_id,d.id)
+      on conflict(installation_id,generation_id) do update set device_id=excluded.device_id;
+  end if;
+  select * into i from private.rubber_bill_issuers where device_id=d.id and location_id=p_location_id;
+  if i.id is null then
+    update private.rubber_bill_issuers old set retired_at=clock_timestamp(),retired_by=auth.uid()
+      from private.rubber_bill_issuer_heads h where h.issuer_id=old.id and h.location_id=p_location_id
+      and h.installation_id=p_installation_id and h.generation_id=p_generation_id and old.retired_at is null;
+    insert into private.rubber_bill_issuers(location_id,code,installation_id,generation_id,browser,platform,last_user_id,device_id)
+      values(p_location_id,d.code,p_installation_id,p_generation_id,coalesce(p_browser,''),coalesce(p_platform,''),auth.uid(),d.id) returning * into i;
     insert into private.rubber_bill_issuer_heads values(p_location_id,p_installation_id,p_generation_id,i.id)
       on conflict(location_id,installation_id,generation_id) do update set issuer_id=excluded.issuer_id;
+    insert into private.rubber_bill_issuer_counters values(p_location_id,substring(d.code from 2)::bigint)
+      on conflict(location_id) do update set last_code=greatest(rubber_bill_issuer_counters.last_code,excluded.last_code);
   else
     update private.rubber_bill_issuers set last_seen_at=clock_timestamp(),last_user_id=auth.uid(),
       browser=coalesce(p_browser,''),platform=coalesce(p_platform,'') where id=i.id;
   end if;
-  return jsonb_build_object('id',i.id,'code',i.code,'locationId',p_location_id,'version',1);
+  return jsonb_build_object('id',i.id,'code',d.code,'locationId',p_location_id,'deviceId',d.id,'version',1);
 end $$;
 
 
@@ -24799,6 +25099,7 @@ CREATE TABLE IF NOT EXISTS "public"."income_expense" (
     "stock_product_id" "uuid",
     "stock_quantity" numeric(12,2),
     "last_submission_fingerprint" "text",
+    "numbering_metadata" "jsonb",
     CONSTRAINT "income_expense_bill_option_check" CHECK ((("record_status" = 'deleted'::"public"."record_status") OR (("bill_option" IS NOT NULL) AND ((("type" = 'income'::"public"."transaction_type") AND ("bill_option" = ANY (ARRAY['รายรับ'::"text", 'บิลขาย'::"text"]))) OR (("type" = 'expense'::"public"."transaction_type") AND ("bill_option" = 'ค่าใช้จ่าย'::"text")))))),
     CONSTRAINT "income_expense_last_submission_fingerprint_check" CHECK ((("last_submission_fingerprint" IS NULL) OR ("last_submission_fingerprint" ~ '^[0-9a-f]{64}$'::"text")))
 );
@@ -25487,12 +25788,20 @@ CREATE OR REPLACE FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") R
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
+declare i private.rubber_bill_issuers; d private.bill_issuer_devices;
 begin
   if not private.rubber_actor_active() or not private.rubber_actor_manager() then
     raise exception 'FORBIDDEN' using errcode='42501'; end if;
-  update private.rubber_bill_issuers set retired_at=clock_timestamp(),retired_by=auth.uid()
-    where id=p_id and retired_at is null;
-  if not exists(select 1 from private.rubber_bill_issuers where id=p_id) then raise exception 'ISSUER_NOT_FOUND'; end if;
+  select * into i from private.rubber_bill_issuers where id=p_id;
+  if i.id is null then raise exception 'ISSUER_NOT_FOUND'; end if;
+  if i.device_id is not null then
+    select * into d from private.bill_issuer_devices where id=i.device_id;
+    perform pg_advisory_xact_lock(hashtextextended('bill-device:'||d.installation_id::text||':'||d.generation_id::text,0));
+    update private.bill_issuer_devices set retired_at=clock_timestamp(),retired_by=auth.uid() where id=d.id and retired_at is null;
+    update private.rubber_bill_issuers set retired_at=clock_timestamp(),retired_by=auth.uid() where device_id=d.id and retired_at is null;
+  else
+    update private.rubber_bill_issuers set retired_at=clock_timestamp(),retired_by=auth.uid() where id=p_id and retired_at is null;
+  end if;
   return jsonb_build_object('id',p_id,'retired',true);
 end $$;
 
@@ -28743,155 +29052,52 @@ CREATE OR REPLACE FUNCTION "public"."sync_income_expense"("payload" "jsonb") RET
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
-declare
-  v_approval jsonb;
-  v_stock_result jsonb;
-  v_result jsonb;
-  v_operation text := coalesce(payload ->> 'operation', '');
-  v_title text := btrim(coalesce(payload ->> 'title', ''));
-  v_client_temp_id text := nullif(btrim(payload ->> 'clientTempId'), '');
-  v_idempotency_key text := nullif(btrim(payload ->> 'idempotencyKey'), '');
-  v_fingerprint text := private.income_expense_submission_fingerprint(payload);
-  v_saved_fingerprint text;
-  v_internal_bypass boolean := coalesce(
-    current_setting('app.bypass_income_expense_approval', true),
-    'false'
-  ) = 'true';
-  v_existing_request record;
-  v_existing_row record;
+declare saved private.income_expense_create_receipts; r jsonb; identity jsonb;
+  bypass boolean:=coalesce(current_setting('app.bypass_income_expense_approval',true),'false')='true';
+  client text:=payload->>'clientTempId'; loc uuid:=(payload->>'locationId')::uuid;
+  fp text:=private.income_expense_submission_fingerprint(payload);
 begin
-  if v_operation = 'create'
-     and (
-       v_title like 'รับโอนจาก%'
-       or v_title like 'โยกเงินไป%'
-       or v_title like 'สาขาจ่ายส่วนต่างให้%'
-       or lower(v_title) = 'branch transfer'
-     ) then
-    return jsonb_build_object(
-      'status', 'conflict',
-      'errorMessage', 'ไม่สามารถซิงก์รายการโยกเงินโดยตรงได้ ต้องทำผ่านระบบโยกเงินเท่านั้น'
-    );
-  end if;
-
-  if v_idempotency_key is not null then
-    perform pg_catalog.pg_advisory_xact_lock(
-      pg_catalog.hashtextextended('income-expense-submission:' || v_idempotency_key, 0)
-    );
-
-    select client_temp_id, last_submission_fingerprint
-      into v_existing_row
-    from public.income_expense
-    where idempotency_key = v_idempotency_key;
-
-    if v_existing_row.client_temp_id is not null then
-      if v_existing_row.client_temp_id is distinct from v_client_temp_id
-         or (
-           v_existing_row.last_submission_fingerprint is not null
-           and v_existing_row.last_submission_fingerprint is distinct from v_fingerprint
-         ) then
-        return jsonb_build_object(
-          'status', 'conflict',
-          'errorMessage', 'ข้อมูลคำขอไม่ตรงกับรายการที่บันทึกไว้ก่อนหน้า'
-        );
+  if not payload ? 'billNumbering' and not exists(select 1 from private.income_expense_number_bindings where client_temp_id=client)
+    then return private.sync_income_expense_before_numbering_20261101(payload); end if;
+  if not coalesce(private.is_active_user(),false) or not public.can_access_location(loc) then
+    return jsonb_build_object('status','failed','errorMessage','Location access denied'); end if;
+  perform private.assert_income_expense_numbering(payload);
+  identity:=jsonb_build_object('clientTempId',client,'operation',payload->>'operation','locationId',loc,
+    'billNumbering',payload->'billNumbering','localBillNo',payload->>'localBillNo');
+  -- Approval decision already owns the request row. Serialize only submissions here;
+  -- replay reads receipt without row locking, avoiding request/receipt lock inversion.
+  if not bypass then perform pg_advisory_xact_lock(hashtextextended('income-number-create:'||client,0)); end if;
+  if payload->>'operation'='create' then
+    select * into saved from private.income_expense_create_receipts where client_temp_id=client;
+    if found then
+      if saved.location_id<>loc or saved.fingerprint<>fp or (not bypass and saved.actor_user_id<>auth.uid())
+        then return identity||jsonb_build_object('status','conflict','errorMessage','ข้อมูลคำขอไม่ตรงกับคำขอเดิม'); end if;
+      if not bypass then
+        r:=saved.result;
+        if r->>'status'='synced' and exists(select 1 from public.income_expense where client_temp_id=client and record_status<>'active')
+          then r:=identity||jsonb_build_object('status','discarded'); end if;
+        return r;
       end if;
-    elsif not v_internal_bypass then
-      select
-        request.id,
-        request.request_idempotency_key,
-        request.requested_payload,
-        request.submission_fingerprint
-        into v_existing_request
-      from public.income_expense_approval_requests request
-      where request.request_status in ('pending', 'approved')
-        and (
-          request.request_idempotency_key = v_idempotency_key
-          or request.requested_payload ->> 'idempotencyKey' = v_idempotency_key
-        )
-      order by request.created_at desc, request.id desc
-      limit 1;
-
-      if v_existing_request.id is not null
-         and coalesce(
-           v_existing_request.submission_fingerprint,
-           private.income_expense_submission_fingerprint(v_existing_request.requested_payload)
-         ) is distinct from v_fingerprint then
-        return jsonb_build_object(
-          'status', 'conflict',
-          'errorMessage', 'ข้อมูลคำขอไม่ตรงกับรายการที่ส่งไว้ก่อนหน้า'
-        );
-      end if;
+    elsif bypass then
+      raise exception 'NUMBERED_APPROVAL_RECEIPT_MISSING';
     end if;
   end if;
-
-  if v_internal_bypass then
-    v_result := private.sync_income_expense_dispatch_20260805020000(payload);
-  elsif payload ->> 'billOption' = 'บิลขาย'
-     and v_operation in ('create', 'update') then
-    v_approval := public.create_income_expense_approval_request(payload);
-    if v_approval ->> 'status' = 'pending' then
-      v_result := jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_approval ->> 'requestId',
-        'matchedReasons', coalesce(v_approval -> 'matchedReasons', '[]'::jsonb),
-        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
-      );
-    elsif v_approval ->> 'status' <> 'no_approval' then
-      v_result := v_approval;
-    else
-      v_stock_result := private.preflight_income_sale_stock(payload);
-      if v_stock_result ->> 'status' <> 'ok' then
-        v_result := v_stock_result;
-      else
-        perform set_config('app.bypass_income_expense_approval', 'true', true);
-        v_result := private.sync_income_expense_dispatch_20260805020000(payload);
-      end if;
-    end if;
-  else
-    v_approval := public.create_income_expense_approval_request(payload);
-    if v_approval ->> 'status' = 'no_approval' then
-      v_result := private.sync_income_expense_dispatch_20260805020000(payload);
-    elsif v_approval ->> 'status' = 'pending' then
-      v_result := jsonb_build_object(
-        'status', 'pending_approval',
-        'requestId', v_approval ->> 'requestId',
-        'matchedReasons', coalesce(v_approval -> 'matchedReasons', '[]'::jsonb),
-        'errorMessage', 'รายการนี้ต้องรออนุมัติ'
-      );
-    else
-      v_result := v_approval;
-    end if;
+  r:=private.sync_income_expense_before_numbering_20261101(payload)||identity;
+  if payload->>'operation'='create' and r->>'status' in ('synced','pending_approval') then
+    insert into private.income_expense_create_receipts values(client,loc,auth.uid(),fp,r)
+      on conflict(client_temp_id) do update set result=excluded.result;
   end if;
-
-  if v_result ->> 'status' = 'pending_approval' then
-    update public.income_expense_approval_requests
-    set submission_fingerprint = v_fingerprint
-    where id = (v_result ->> 'requestId')::uuid
-      and submission_fingerprint is null;
-  elsif v_result ->> 'status' = 'synced' then
-    select request.submission_fingerprint
-      into v_saved_fingerprint
-    from public.income_expense_approval_requests request
-    where request.request_status in ('pending', 'approved')
-      and request.requested_payload ->> 'idempotencyKey' = v_idempotency_key
-    order by request.created_at desc, request.id desc
-    limit 1;
-
-    update public.income_expense
-    set last_submission_fingerprint = coalesce(v_saved_fingerprint, v_fingerprint)
-    where id = (v_result ->> 'id')::uuid
-      and idempotency_key = v_idempotency_key;
+  return r;
+exception when raise_exception then
+  if sqlerrm in ('INVALID_BILL_NUMBER','BILL_NUMBER_CHANGED','NUMBERED_APPROVAL_RECEIPT_MISSING') then
+    return jsonb_build_object('status','failed','errorCode','NUMBERING_REJECTED','errorMessage','เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแล',
+      'clientTempId',client,'operation',payload->>'operation','locationId',loc,'localBillNo',payload->>'localBillNo','billNumbering',payload->'billNumbering');
   end if;
-
-  return v_result;
-end;
-$$;
+  raise;
+end $$;
 
 
 ALTER FUNCTION "public"."sync_income_expense"("payload" "jsonb") OWNER TO "postgres";
-
-
-COMMENT ON FUNCTION "public"."sync_income_expense"("payload" "jsonb") IS 'Synchronizes Income/Expense writes. Original client payload fingerprints survive approval normalization and reject changed replays.';
-
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_income_expense_background"("payload" "jsonb") RETURNS "jsonb"
@@ -29210,7 +29416,9 @@ begin
         and tx_date = (payload->>'txDate')::date
         and server_bill_no is not null;
 
-      v_server_bill_no := v_date || lpad(v_next_seq::text, 4, '0');
+      if payload ? 'billNumbering' then
+v_server_bill_no := private.allocate_income_expense_suffix(payload);
+else v_server_bill_no := v_date || lpad(v_next_seq::text, 4, '0'); end if;
 
       insert into public.income_expense (
         client_temp_id, idempotency_key, revision_no, sync_status, record_status,
@@ -29319,6 +29527,19 @@ $$;
 
 
 ALTER FUNCTION "public"."sync_money_transfer_item_source_fks"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."sync_numbered_income_expense"("payload" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not payload ? 'billNumbering' then raise exception 'INVALID_BILL_NUMBER'; end if;
+  return public.sync_income_expense(payload);
+end $$;
+
+
+ALTER FUNCTION "public"."sync_numbered_income_expense"("payload" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."sync_numbered_rubber_bill"("payload" "jsonb") RETURNS "jsonb"
@@ -31609,6 +31830,41 @@ CREATE TABLE IF NOT EXISTS "private"."approval_request_replay_guards" (
 ALTER TABLE "private"."approval_request_replay_guards" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "private"."bill_issuer_device_heads" (
+    "installation_id" "uuid" NOT NULL,
+    "generation_id" "uuid" NOT NULL,
+    "device_id" "uuid" NOT NULL
+);
+
+
+ALTER TABLE "private"."bill_issuer_device_heads" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."bill_issuer_devices" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "code" "text" NOT NULL,
+    "installation_id" "uuid" NOT NULL,
+    "generation_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "retired_at" timestamp with time zone,
+    "retired_by" "uuid"
+);
+
+
+ALTER TABLE "private"."bill_issuer_devices" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."bill_issuer_global_counter" (
+    "id" boolean DEFAULT true NOT NULL,
+    "last_code" bigint NOT NULL,
+    CONSTRAINT "bill_issuer_global_counter_id_check" CHECK ("id"),
+    CONSTRAINT "bill_issuer_global_counter_last_code_check" CHECK ((("last_code" >= 0) AND ("last_code" <= '999999999999999999'::bigint)))
+);
+
+
+ALTER TABLE "private"."bill_issuer_global_counter" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."browser_approvals" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -31693,6 +31949,50 @@ CREATE TABLE IF NOT EXISTS "private"."income_expense_background_commands" (
 ALTER TABLE "private"."income_expense_background_commands" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "private"."income_expense_create_receipts" (
+    "client_temp_id" "text" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "fingerprint" "text" NOT NULL,
+    "result" "jsonb" NOT NULL
+);
+
+
+ALTER TABLE "private"."income_expense_create_receipts" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."income_expense_number_bindings" (
+    "client_temp_id" "text" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "base_number" "text" NOT NULL,
+    "final_number" "text" NOT NULL,
+    "metadata" "jsonb" NOT NULL
+);
+
+
+ALTER TABLE "private"."income_expense_number_bindings" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."income_expense_suffix_counters" (
+    "location_id" "uuid" NOT NULL,
+    "base_number" "text" NOT NULL,
+    "last_suffix" bigint NOT NULL
+);
+
+
+ALTER TABLE "private"."income_expense_suffix_counters" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."legacy_bill_issuer_refs" (
+    "id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "code" "text" NOT NULL
+);
+
+
+ALTER TABLE "private"."legacy_bill_issuer_refs" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."money_transfer_delete_context" (
     "backend_pid" integer NOT NULL,
     "transaction_id" bigint NOT NULL,
@@ -31761,7 +32061,9 @@ CREATE TABLE IF NOT EXISTS "private"."rubber_bill_issuers" (
     "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
     "last_seen_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
     "retired_at" timestamp with time zone,
-    "retired_by" "uuid"
+    "retired_by" "uuid",
+    "global_code" boolean DEFAULT true NOT NULL,
+    "device_id" "uuid"
 );
 
 
@@ -33561,6 +33863,26 @@ ALTER TABLE ONLY "private"."approval_request_replay_guards"
 
 
 
+ALTER TABLE ONLY "private"."bill_issuer_device_heads"
+    ADD CONSTRAINT "bill_issuer_device_heads_pkey" PRIMARY KEY ("installation_id", "generation_id");
+
+
+
+ALTER TABLE ONLY "private"."bill_issuer_devices"
+    ADD CONSTRAINT "bill_issuer_devices_code_key" UNIQUE ("code");
+
+
+
+ALTER TABLE ONLY "private"."bill_issuer_devices"
+    ADD CONSTRAINT "bill_issuer_devices_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "private"."bill_issuer_global_counter"
+    ADD CONSTRAINT "bill_issuer_global_counter_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "private"."browser_approvals"
     ADD CONSTRAINT "browser_approvals_pkey" PRIMARY KEY ("id");
 
@@ -33588,6 +33910,31 @@ ALTER TABLE ONLY "private"."document_number_counters"
 
 ALTER TABLE ONLY "private"."income_expense_background_commands"
     ADD CONSTRAINT "income_expense_background_commands_pkey" PRIMARY KEY ("command_id");
+
+
+
+ALTER TABLE ONLY "private"."income_expense_create_receipts"
+    ADD CONSTRAINT "income_expense_create_receipts_pkey" PRIMARY KEY ("client_temp_id");
+
+
+
+ALTER TABLE ONLY "private"."income_expense_number_bindings"
+    ADD CONSTRAINT "income_expense_number_bindings_location_id_final_number_key" UNIQUE ("location_id", "final_number");
+
+
+
+ALTER TABLE ONLY "private"."income_expense_number_bindings"
+    ADD CONSTRAINT "income_expense_number_bindings_pkey" PRIMARY KEY ("client_temp_id");
+
+
+
+ALTER TABLE ONLY "private"."income_expense_suffix_counters"
+    ADD CONSTRAINT "income_expense_suffix_counters_pkey" PRIMARY KEY ("location_id", "base_number");
+
+
+
+ALTER TABLE ONLY "private"."legacy_bill_issuer_refs"
+    ADD CONSTRAINT "legacy_bill_issuer_refs_pkey" PRIMARY KEY ("id");
 
 
 
@@ -34346,6 +34693,10 @@ CREATE INDEX "rubber_bill_evidence_projection_queue" ON "private"."rubber_bill_e
 
 
 
+CREATE UNIQUE INDEX "rubber_bill_issuer_device_branch_unique" ON "private"."rubber_bill_issuers" USING "btree" ("device_id", "location_id") WHERE ("device_id" IS NOT NULL);
+
+
+
 CREATE INDEX "rubber_queue_branch" ON "private"."rubber_queue_jobs" USING "btree" ("location_id", "accepted_at" DESC, "command_id");
 
 
@@ -34559,6 +34910,14 @@ CREATE INDEX "income_expense_approval_retention_idx" ON "public"."income_expense
 
 
 CREATE INDEX "income_expense_feed_active_idx" ON "public"."income_expense" USING "btree" ("location_id", "tx_date" DESC, "created_at" DESC, "id" DESC) WHERE ("record_status" = 'active'::"public"."record_status");
+
+
+
+CREATE INDEX "income_expense_numbered_approval_client_idx" ON "public"."income_expense_approval_requests" USING "btree" ((("requested_payload" ->> 'clientTempId'::"text")), "created_at" DESC) WHERE ("requested_payload" ? 'billNumbering'::"text");
+
+
+
+CREATE UNIQUE INDEX "income_expense_numbered_final_unique" ON "public"."income_expense" USING "btree" ("location_id", "server_bill_no") WHERE ("numbering_metadata" IS NOT NULL);
 
 
 
@@ -35122,6 +35481,10 @@ CREATE OR REPLACE TRIGGER "income_background_approval_outcome" AFTER UPDATE OF "
 
 
 
+CREATE OR REPLACE TRIGGER "income_create_approval_outcome" AFTER UPDATE OF "request_status" ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."capture_income_create_approval_outcome"();
+
+
+
 CREATE OR REPLACE TRIGGER "income_expense_approval_keywords_updated_at" BEFORE UPDATE ON "public"."income_expense_approval_keywords" FOR EACH ROW EXECUTE FUNCTION "private"."stamp_income_expense_keyword_disable"();
 
 
@@ -35131,6 +35494,10 @@ CREATE OR REPLACE TRIGGER "income_expense_approval_settings_updated_at" BEFORE U
 
 
 CREATE OR REPLACE TRIGGER "income_expense_lock_location" BEFORE UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_location_change"();
+
+
+
+CREATE OR REPLACE TRIGGER "income_expense_number_identity" BEFORE INSERT OR UPDATE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "private"."preserve_income_expense_number"();
 
 
 
@@ -35286,6 +35653,11 @@ CREATE OR REPLACE TRIGGER "rubber_bills_lock_location" BEFORE UPDATE ON "public"
 
 
 
+ALTER TABLE ONLY "private"."bill_issuer_device_heads"
+    ADD CONSTRAINT "bill_issuer_device_heads_device_id_fkey" FOREIGN KEY ("device_id") REFERENCES "private"."bill_issuer_devices"("id");
+
+
+
 ALTER TABLE ONLY "private"."browser_approvals"
     ADD CONSTRAINT "browser_approvals_approved_by_fkey" FOREIGN KEY ("approved_by") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
 
@@ -35323,6 +35695,11 @@ ALTER TABLE ONLY "private"."rubber_bill_evidence_projection"
 
 ALTER TABLE ONLY "private"."rubber_bill_issuer_heads"
     ADD CONSTRAINT "rubber_bill_issuer_heads_issuer_id_fkey" FOREIGN KEY ("issuer_id") REFERENCES "private"."rubber_bill_issuers"("id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_bill_issuers"
+    ADD CONSTRAINT "rubber_bill_issuers_device_id_fkey" FOREIGN KEY ("device_id") REFERENCES "private"."bill_issuer_devices"("id");
 
 
 
@@ -37289,6 +37666,10 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "private"."allocate_income_expense_suffix"("payload" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."allocate_rubber_bill_suffix"("payload" "jsonb") FROM PUBLIC;
 
 
@@ -37326,6 +37707,10 @@ REVOKE ALL ON FUNCTION "private"."assert_cash_alert_group_not_empty"() FROM PUBL
 
 
 REVOKE ALL ON FUNCTION "private"."assert_cash_alert_group_row_not_empty"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."assert_income_expense_numbering"("payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -37433,6 +37818,10 @@ REVOKE ALL ON FUNCTION "private"."capture_financial_history_creator"() FROM PUBL
 
 
 REVOKE ALL ON FUNCTION "private"."capture_income_background_approval_outcome"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."capture_income_create_approval_outcome"() FROM PUBLIC;
 
 
 
@@ -37597,6 +37986,10 @@ REVOKE ALL ON FUNCTION "private"."enforce_time_tracking_expense_relation"() FROM
 
 
 REVOKE ALL ON FUNCTION "private"."exception_attendance_summary"("p_profile_id" "uuid", "p_period_start" timestamp with time zone, "p_period_end" timestamp with time zone, "p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."get_income_expense_feed_before_numbering_20261101"("p_location_id" "uuid", "p_mode" "text", "p_search" "text", "p_cursor" "text") FROM PUBLIC;
 
 
 
@@ -37786,6 +38179,10 @@ REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_outstanding_snapshot"() F
 
 
 REVOKE ALL ON FUNCTION "private"."prepare_payroll_slip_source_snapshot"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."preserve_income_expense_number"() FROM PUBLIC;
 
 
 
@@ -38018,6 +38415,10 @@ REVOKE ALL ON FUNCTION "private"."stamp_income_expense_keyword_disable"() FROM P
 
 
 REVOKE ALL ON FUNCTION "private"."stamp_rubber_command_resolution"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."sync_income_expense_before_numbering_20261101"("payload" "jsonb") FROM PUBLIC;
 
 
 
@@ -39727,6 +40128,11 @@ REVOKE ALL ON FUNCTION "public"."sync_income_expense_core"("payload" "jsonb") FR
 
 
 REVOKE ALL ON FUNCTION "public"."sync_money_transfer_item_source_fks"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."sync_numbered_income_expense"("payload" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."sync_numbered_income_expense"("payload" "jsonb") TO "authenticated";
 
 
 

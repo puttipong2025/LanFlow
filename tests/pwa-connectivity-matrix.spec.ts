@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { confirmCurrentBranchIfRequired } from "./helpers/select-app-location";
+import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 
 test.use({ baseURL: "http://127.0.0.1:3001" });
 
 test.describe("production PWA connectivity matrix", () => {
+  test.beforeEach(async ({ page }) => installThresholdAlertHandler(page));
   test.afterEach(async ({ context }) => {
     await context.setOffline(false).catch(() => {});
   });
@@ -51,7 +53,7 @@ test.describe("production PWA connectivity matrix", () => {
     expect(pageErrors).toEqual([]);
   });
 
-  test("updates every open window and reloads each window once on reconnect", async ({
+  test("updates every open window in place without reloading on reconnect", async ({
     context,
     page,
   }) => {
@@ -105,18 +107,18 @@ test.describe("production PWA connectivity matrix", () => {
     });
     await expect.poll(() => page.evaluate(() =>
       Number(sessionStorage.getItem("lanflow:pwa-navigation-count"))
-    )).toBe(firstBaseline + 1);
+    )).toBe(firstBaseline);
     await expect.poll(() => secondPage.evaluate(() =>
       Number(sessionStorage.getItem("lanflow:pwa-navigation-count"))
-    )).toBe(secondBaseline + 1);
+    )).toBe(secondBaseline);
 
     await page.waitForTimeout(1_000);
     expect(await page.evaluate(() =>
       Number(sessionStorage.getItem("lanflow:pwa-navigation-count"))
-    )).toBe(firstBaseline + 1);
+    )).toBe(firstBaseline);
     expect(await secondPage.evaluate(() =>
       Number(sessionStorage.getItem("lanflow:pwa-navigation-count"))
-    )).toBe(secondBaseline + 1);
+    )).toBe(secondBaseline);
   });
 
   test("loads every offline-supported module from the warmed PWA cache", async ({
@@ -152,7 +154,7 @@ test.describe("production PWA connectivity matrix", () => {
     });
   });
 
-  test("restores a persisted Rubber Bill draft after reconnect reload", async ({
+  test("keeps the open Rubber Bill form intact across reconnect", async ({
     context,
     page,
   }) => {
@@ -188,16 +190,13 @@ test.describe("production PWA connectivity matrix", () => {
       timeout: 30_000,
     });
 
-    await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
-    await page.getByRole("button", { name: "เพิ่มบิลยาง", exact: true }).click();
-    await confirmCurrentBranchIfRequired(page);
-    const restoredModal = page.locator(".fixed.inset-0").last();
-    await expect(restoredModal.locator(
+    await expect(modal).toBeVisible();
+    await expect(modal.locator(
       'input[placeholder*="ค้นหาชื่อ หรือ รหัสสมาชิก"]',
     )).toHaveValue(marker);
 
     page.once("dialog", (dialog) => dialog.accept());
-    await restoredModal.getByRole("button", { name: "ปิด", exact: true }).click();
-    await expect(restoredModal).toBeHidden();
+    await modal.getByRole("button", { name: "ปิด", exact: true }).click();
+    await expect(modal).toBeHidden();
   });
 });

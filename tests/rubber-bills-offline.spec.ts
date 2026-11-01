@@ -1,4 +1,5 @@
 import { test, expect, Browser, Page } from '@playwright/test';
+import { installThresholdAlertHandler } from './helpers/dismiss-threshold-alert';
 import { assertRubberBillDeleteAllowed } from '../src/hooks/useRubberBills';
 import {
   confirmCurrentBranchIfRequired,
@@ -289,6 +290,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
   let approvalGroupLocationId = '';
   
   test.beforeEach(async ({ page, browser }) => {
+    await installThresholdAlertHandler(page);
     const resetApprovalSetting = await page.request.patch(
       `${localSupabaseUrl}/rest/v1/rubber_bill_approval_settings?id=eq.true`,
       {
@@ -346,7 +348,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await confirmCurrentBranchIfRequired(page);
 
       let interceptedPost = false;
-      await page.route('**/api/lanflow/rubber-bills', async (route) => {
+      await page.route('**/api/lanflow/rubber-bills/queue', async (route) => {
         if (route.request().method() !== 'POST') {
           await route.continue();
           return;
@@ -388,7 +390,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       await page.click('button:has-text("เพิ่มบิลยาง")');
       await confirmCurrentBranchIfRequired(page);
 
-      await page.route('**/api/lanflow/rubber-bills', async (route) => {
+      await page.route('**/api/lanflow/rubber-bills/queue', async (route) => {
         if (route.request().method() !== 'POST') {
           await route.continue();
           return;
@@ -432,7 +434,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await weighRow.locator('input[type="number"]').nth(3).fill('26');
 
         let postAttempts = 0;
-        await page.route('**/api/lanflow/rubber-bills', async (route) => {
+        await page.route('**/api/lanflow/rubber-bills/queue', async (route) => {
           if (route.request().method() !== 'POST') {
             await route.continue();
             return;
@@ -444,7 +446,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
         await expect.poll(() => postAttempts).toBeGreaterThan(0);
         await expect(modal).toBeHidden();
-        await expect(row.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeVisible();
+        await expect(row.getByText('รอยืนยันการรับงานจากเซิร์ฟเวอร์', { exact: true })).toBeVisible();
         const queueAfterFailure = await readQueue(page);
         expect(queueAfterFailure.some((event) =>
           event.entity === 'rubber_bills'
@@ -453,7 +455,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
           && event.payload?.customerName === networkFailureMarker
         )).toBe(true);
       } finally {
-        await page.unroute('**/api/lanflow/rubber-bills');
+        await page.unroute('**/api/lanflow/rubber-bills/queue');
         await cleanupRubberBillByCustomerName(page, networkFailureMarker);
       }
     });
@@ -466,7 +468,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
       try {
         const row = await createSyncedBillFromAuthenticatedApp(page, networkFailureMarker);
         let postAttempts = 0;
-        await page.route('**/api/lanflow/rubber-bills', async (route) => {
+        await page.route('**/api/lanflow/rubber-bills/queue', async (route) => {
           if (route.request().method() !== 'POST') {
             await route.continue();
             return;
@@ -476,6 +478,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         });
 
         await row.getByRole('button', { name: 'ลบ', exact: true }).click();
+        await page.getByRole('alertdialog', { name: 'ลบบิลยาง', exact: true }).getByRole('button', { name: 'ยืนยันลบ', exact: true }).click();
         await expect.poll(() => postAttempts).toBeGreaterThan(0);
         const queueAfterFailure = await readQueue(page);
         expect(queueAfterFailure.some((event) =>
@@ -485,7 +488,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
           && event.payload?.customerName === networkFailureMarker
         )).toBe(true);
       } finally {
-        await page.unroute('**/api/lanflow/rubber-bills');
+        await page.unroute('**/api/lanflow/rubber-bills/queue');
         await cleanupRubberBillByCustomerName(page, networkFailureMarker);
       }
     });
@@ -503,7 +506,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
         let postAttempts = 0;
         let committedStatus = 0;
-        await page.route('**/api/lanflow/rubber-bills', async (route) => {
+        await page.route('**/api/lanflow/rubber-bills/queue', async (route) => {
           if (route.request().method() !== 'POST') {
             await route.continue();
             return;
@@ -527,8 +530,8 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         await weighRow.locator('input[type="number"]').nth(3).fill('25.5');
         await modal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
 
-        await expect.poll(() => committedStatus).toBe(200);
-        await expect.poll(() => postAttempts).toBeGreaterThanOrEqual(2);
+        await expect.poll(() => [200, 202].includes(committedStatus)).toBe(true);
+        await expect.poll(() => postAttempts, { timeout: 30000 }).toBeGreaterThanOrEqual(2);
         await expect(modal).toBeHidden();
         await expect.poll(async () => {
           const queue = await readQueue(page);
@@ -548,7 +551,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
         const rows = await response.json() as Array<{ id: string; record_status: string }>;
         expect(rows.filter((row) => row.record_status === 'active')).toHaveLength(1);
       } finally {
-        await page.unroute('**/api/lanflow/rubber-bills');
+        await page.unroute('**/api/lanflow/rubber-bills/queue');
         await cleanupRubberBillByCustomerName(page, responseLossMarker);
       }
     });
@@ -633,31 +636,36 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
         secondContext = await browser.newContext({ storageState: 'playwright/.auth/super_admin.json' });
         const secondPage = await secondContext.newPage();
+        await installThresholdAlertHandler(secondPage);
         secondPage.on('dialog', dialog => void dialog.accept());
         await secondPage.goto('/');
-        await expect(secondPage.locator('text=ออกจากระบบ')).toBeVisible({ timeout: 30000 });
+        await expect(secondPage.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 30000 });
         await secondPage.click('button:has-text("บิลยาง")');
         const secondRow = secondPage.locator('table tbody tr', { hasText: marker }).first();
         await expect(secondRow.getByText('ซิงก์แล้ว', { exact: true })).toBeVisible({ timeout: 20000 });
         const deleteResponsePromise = secondPage.waitForResponse((candidate) => (
-          candidate.url().endsWith('/api/lanflow/rubber-bills')
+          candidate.url().endsWith('/api/lanflow/rubber-bills/queue')
           && candidate.request().method() === 'POST'
         ));
         await secondRow.getByRole('button', { name: 'ลบ', exact: true }).click();
+        await secondPage.getByRole('alertdialog', { name: 'ลบบิลยาง', exact: true }).getByRole('button', { name: 'ยืนยันลบ', exact: true }).click();
         const deleteResponse = await deleteResponsePromise;
         const deleteBody = await deleteResponse.json() as {
-          status?: string;
+          state?: string;
+          result?: { status?: string };
           errorMessage?: string;
           matchedReasons?: string[];
         };
         expect(deleteResponse.ok(), deleteBody.errorMessage).toBeTruthy();
-        expect(deleteBody.status, JSON.stringify(deleteBody)).toBe('synced');
+        expect(['queued', 'done']).toContain(deleteBody.state);
+        if (deleteBody.state === 'done') expect(deleteBody.result?.status).toBe('synced');
         await expect(secondRow).toBeHidden({ timeout: 20000 });
 
         await page.getByRole('button', { name: /ซิงก์มีปัญหา/ }).click();
         const failedRow = page.locator('table tbody tr', { hasText: marker }).first();
         await expect(failedRow.getByText('ซิงก์ไม่สำเร็จ', { exact: true })).toBeVisible();
         await failedRow.getByRole('button', { name: 'ทิ้งรายการค้างในเครื่อง', exact: true }).click();
+        await page.getByRole('alertdialog', { name: 'ทิ้งรายการค้างในเครื่อง', exact: true }).getByRole('button', { name: 'ยืนยันทิ้งรายการค้าง', exact: true }).click();
 
         await expect(failedRow).toBeHidden({ timeout: 20000 });
         expect((await readQueue(page)).filter((event) => event.id === serverBill.client_temp_id)).toEqual([]);
@@ -670,10 +678,9 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     });
   });
 
-  test('should support create, edit, delete offline and sync when online', async ({ page, context }) => {
+  test('preserves an immutable offline create, cancels unsent work and syncs on reconnect', async ({ page, context }) => {
     test.setTimeout(90000);
 
-    await page.addLocatorHandler(page.getByRole('alertdialog', { name: 'แจ้งเตือน', exact: true }), async (alert) => { await alert.getByRole('button', { name: 'รับทราบ', exact: true }).click(); });
     // 1. Login
     page.on('dialog', dialog => dialog.accept());
     await page.goto('/login');
@@ -724,8 +731,8 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     // Assert: UI shows "รอซิงก์" (pending)
     const createdRow = page.locator('table tbody tr', { hasText: marker }).first();
     await expect(createdRow).toBeVisible({ timeout: 5000 });
-    await expect(createdRow.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeVisible();
-    await expect(createdRow.locator('td').nth(5)).toHaveText(payerName);
+    await expect(createdRow.getByText('รอส่งจากเครื่อง', { exact: true })).toBeVisible();
+    await expect(createdRow.getByRole('cell', { name: payerName, exact: true })).toBeVisible();
 
     // Assert: IDB queue has the create event with correct payload shape
     const queueAfterCreate = await readQueue(page);
@@ -747,30 +754,21 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
     expect(createEvent.payload.configuredPriceSnapshot).toBe(42);
     const clientTempId = createEvent.id;
 
-    // === STEP 2: EDIT the pending bill offline ===
-    const editAction = createdRow.locator('button[title="แก้ไข"]');
+    // Pending numbered work keeps its accepted payload until synchronization.
+    const editAction = createdRow.getByRole('button', { name: 'บิลนี้กำลังรอซิงก์ จึงยังแก้ไขไม่ได้', exact: true });
     const deleteAction = createdRow.getByRole('button', { name: 'ลบ', exact: true });
-    await expect(editAction).toHaveAttribute('aria-label', 'แก้ไข');
     await expect(deleteAction).toHaveAttribute('aria-label', 'ลบ');
     await expect(editAction).toHaveText('แก้');
     await expect(deleteAction).toBeVisible();
     await expect(deleteAction).toBeEnabled();
-    await editAction.click();
-    await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeVisible();
-    
-    const editModal = page.locator('.fixed.inset-0').last();
-    const editWeighRow = editModal.locator('table').first().locator('tbody tr').first();
-    await editWeighRow.locator('input[type="number"]').nth(3).fill('19.75');
-    await editModal.getByRole('button', { name: 'บันทึกบิล', exact: true }).click();
-    await expect(page.locator('h2:has-text("แก้ไขบิลเครื่องชั่งเล็ก")')).toBeHidden({ timeout: 10000 });
-    await expect(createdRow.locator('td').nth(5)).toHaveText(payerName);
+    await expect(editAction).toBeDisabled();
 
-    // Assert: edit coalesced into existing create (not a second event)
+    // No edit or replacement command may change the accepted create.
     const queueAfterEdit = await readQueue(page);
     const editEvents = queueAfterEdit.filter(e => e.id === clientTempId);
     expect(editEvents.length).toBe(1);
-    expect(editEvents[0].operation).toBe('create'); // still "create", payload updated
-    expect(editEvents[0].payload.items.find((i: any) => i.itemType === 'weigh').unitPrice).toBe(19.75);
+    expect(editEvents[0].operation).toBe('create');
+    expect(editEvents[0].payload.items).toEqual(createEvent.payload.items);
     expect(editEvents[0].payload.configuredPriceSnapshot).toBe(42);
 
     // === STEP 3: CREATE second bill, then DELETE (test coalesce: create+delete = no-op) ===
@@ -793,6 +791,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     // Delete the second bill — should coalesce with its pending create
     await deleteRow.getByRole('button', { name: 'ลบ', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'ลบบิลยาง', exact: true }).getByRole('button', { name: 'ยืนยันลบ', exact: true }).click();
     await expect(deleteRow).toBeHidden({ timeout: 5000 });
 
     // Assert: coalesce removed both create and delete events for second bill
@@ -806,6 +805,8 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     // === STEP 4: RELOAD page (go online briefly for dev server, then offline) ===
     // This proves IDB queue survives page reload
+    const admittedRequest = page.waitForRequest(request => request.url().endsWith('/api/lanflow/rubber-bills/queue')
+      && request.method() === 'POST' && request.postDataJSON()?.clientTempId === clientTempId);
     await context.setOffline(false);
     await page.reload({ waitUntil: 'networkidle' });
     await expect(page.getByRole('button', { name: 'ออกจากระบบ', exact: true }).first()).toBeVisible({ timeout: 15000 });
@@ -819,8 +820,7 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     // === STEP 5: Verify sync completed (if not, go online to trigger it) ===
     await context.setOffline(false);
-    // Wait for sync to complete: "รอซิงก์" should disappear
-    await expect(reloadedRow.locator('td').last().getByText('รอซิงก์', { exact: true })).toBeHidden({ timeout: 20000 });
+    await expect(reloadedRow.getByText('ซิงก์แล้ว', { exact: true })).toBeVisible({ timeout: 20000 });
     
     // Queue should be empty after sync
     const queueAfterSync = await readQueue(page);
@@ -828,29 +828,35 @@ test.describe('Rubber Bills Full Offline Sync @rubber-bills-entry', () => {
 
     // UI should show "ซิงก์แล้ว" with a real serverBillNo
     await expect(reloadedRow.locator('span:has-text("ซิงก์แล้ว")')).toBeVisible({ timeout: 5000 });
-    const billNoCell = reloadedRow.locator('td').nth(1);
+    const billNoCell = reloadedRow.locator('td').nth(3);
     const billNoText = await billNoCell.innerText();
     expect(billNoText).not.toContain('TEMP-');
 
     // === STEP 6: IDEMPOTENCY REPLAY — send same payload, must NOT create duplicate ===
-    const replayPayload = editEvents[0].payload;
+    // Reconnect completes the offline context before admission; replay that exact wire payload.
+    const replayPayload = (await admittedRequest).postDataJSON();
+    expect(replayPayload.billNumbering).toEqual(createEvent.payload.billNumbering);
 
     // Capture pre-replay revisionNo from first sync
-    const firstSyncRes = await page.request.post('/api/lanflow/rubber-bills', {
+    const firstSyncRes = await page.request.post('/api/lanflow/rubber-bills/queue', {
       data: replayPayload
     });
     expect(firstSyncRes.ok()).toBeTruthy();
-    const replayData = await firstSyncRes.json();
+    const replayReceipt = await firstSyncRes.json();
+    expect(replayReceipt.state).toBe('done');
+    const replayData = replayReceipt.result;
     expect(replayData.serverBillNo).toBeDefined();
     expect(replayData.status).toBe('synced');
     const revisionAfterReplay = replayData.revisionNo;
 
     // Send the SAME payload again (second replay)
-    const secondReplayRes = await page.request.post('/api/lanflow/rubber-bills', {
+    const secondReplayRes = await page.request.post('/api/lanflow/rubber-bills/queue', {
       data: replayPayload
     });
     expect(secondReplayRes.ok()).toBeTruthy();
-    const secondReplayData = await secondReplayRes.json();
+    const secondReplayReceipt = await secondReplayRes.json();
+    expect(secondReplayReceipt.state).toBe('done');
+    const secondReplayData = secondReplayReceipt.result;
     // Idempotent: same serverBillNo, same revisionNo, status 'synced'
     expect(secondReplayData.status).toBe('synced');
     expect(secondReplayData.serverBillNo).toBe(replayData.serverBillNo);

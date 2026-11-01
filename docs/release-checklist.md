@@ -23,7 +23,7 @@
 
 ## Dependency security
 
-- [ ] รัน `npm audit --omit=dev` และเทียบกับ `docs/dependency-security-review-2026-09-29.md`
+- [ ] รัน `npm audit --omit=dev` และเทียบกับ `docs/dependency-security-review-2026-11-01.md`
 - [ ] บล็อก release เมื่อ advisory เข้าถึงได้จาก production runtime และยังไม่มี mitigation ที่บันทึกไว้
 - [ ] ห้ามใช้ `npm audit fix --force`; อัปเดตแบบเจาะจงและรัน gates ใหม่ทุกครั้ง
 

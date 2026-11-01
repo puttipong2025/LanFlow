@@ -297,7 +297,7 @@ export type IncomeExpenseApprovalKeyword = {
 };
 
 export type IncomeExpenseApprovalRequest = {
-  id: string;
+  id: string; billNumber?: string;
   requestStatus: IncomeExpenseApprovalStatus;
   requestedOperation: QueueOperation;
   matchedKeyword?: string | null;
@@ -325,7 +325,7 @@ export type IncomeExpenseSaleLine = {
   sequenceNo: number;
 };
 
-export type IncomeExpense = {
+export type IncomeExpense = { billNumbering?: import("@/lib/income-expense/numbering-contract").IncomeExpenseNumbering;
   id: string;
   clientTempId: string;
   localBillNo: string;

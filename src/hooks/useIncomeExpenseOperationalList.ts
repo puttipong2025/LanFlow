@@ -14,6 +14,7 @@ import {
 } from "@/lib/income-expense/operational-list";
 import { isIncomeExpenseFeedPayload } from "@/lib/income-expense/contracts";
 import { incomeExpenseOperationalQueryKeys } from "@/lib/income-expense/query-keys";
+import { readIncomeExpenseHistory, startIncomeExpenseHistoryRefresh, saveIncomeExpenseHistoryPage } from "@/lib/income-expense/history-idb";
 
 function queuePartition(ownerUserId: string, locationId: string) {
   return { entity: "income_expense" as const, ownerUserId, locationId };
@@ -43,6 +44,11 @@ export function useIncomeExpenseOperationalList({
     normalizedSearch,
   );
   const pendingKey = incomeExpenseOperationalQueryKeys.pending(ownerUserId, canonicalLocationId);
+  const historyKey = incomeExpenseOperationalQueryKeys.history(ownerUserId, canonicalLocationId);
+  const historyQuery = useQuery({
+    queryKey: historyKey, enabled: Boolean(ownerUserId && locationId), networkMode: "always",
+    queryFn: () => readIncomeExpenseHistory(ownerUserId, canonicalLocationId),
+  });
   const pendingQuery = useQuery({
     queryKey: pendingKey,
     enabled: Boolean(ownerUserId && locationId),
@@ -54,6 +60,8 @@ export function useIncomeExpenseOperationalList({
     initialPageParam: null as string | null,
     enabled: serverFeedEnabled,
     queryFn: async ({ pageParam, signal }): Promise<IncomeExpenseOperationalFeedPage> => {
+      const keepHistory = !pageParam && serverMode === "latest" && !normalizedSearch;
+      const generation = keepHistory ? await startIncomeExpenseHistoryRefresh(ownerUserId, canonicalLocationId) : null;
       const params = new URLSearchParams({
         locationId: canonicalLocationId,
         mode: serverMode,
@@ -66,37 +74,44 @@ export function useIncomeExpenseOperationalList({
       if (!isIncomeExpenseFeedPayload(data, canonicalLocationId, serverMode, normalizedSearch)) {
         throw new Error("ระบบไม่ตอบกลับรายการรับ-จ่ายตามรูปแบบที่กำหนด");
       }
+      if (keepHistory && !signal.aborted) {
+        await saveIncomeExpenseHistoryPage(ownerUserId, canonicalLocationId, generation, (data as IncomeExpenseOperationalFeedPage).rows);
+        await queryClient.invalidateQueries({ queryKey: historyKey });
+      }
       return data as IncomeExpenseOperationalFeedPage;
     },
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
   const pages = feedQuery.data?.pages;
   const localEvents = pendingQuery.data;
+  const history = historyQuery.data;
   const rows = useMemo(() => {
     const loadedPages = pages ?? [];
     const queuedEvents = localEvents ?? [];
     if (mode === "sync_problems") return incomeExpenseSyncProblems(queuedEvents, normalizedSearch);
     if (!online) {
       return mode === "latest"
-        ? mergeIncomeExpenseLocalEvents([], queuedEvents, normalizedSearch)
+        ? mergeIncomeExpenseLocalEvents(history?.rows ?? [], queuedEvents, normalizedSearch)
         : [];
     }
     if (mode !== "latest") return loadedPages.flatMap((page) => page.rows);
     return mergeIncomeExpenseOperationalLatestPages(loadedPages, queuedEvents, normalizedSearch);
-  }, [localEvents, mode, normalizedSearch, online, pages]);
+  }, [history, localEvents, mode, normalizedSearch, online, pages]);
   const pendingApprovalCount = pages?.[0]?.pendingApprovalCount ?? 0;
 
   return {
     rows,
     pendingApprovalCount,
-    hasMore: feedQuery.hasNextPage,
+    offlineHistory: history,
+    hasMore: online && feedQuery.hasNextPage,
     isLoadingMore: feedQuery.isFetchingNextPage,
-    isLoading: pendingQuery.isLoading || (mode !== "sync_problems" && online && feedQuery.isLoading),
+    isLoading: pendingQuery.isLoading || (!online && historyQuery.isLoading) || (mode !== "sync_problems" && online && feedQuery.isLoading),
     isError: pendingQuery.isError || (serverFeedEnabled && feedQuery.isError),
     fetchNextPage: feedQuery.fetchNextPage,
     refresh: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: incomeExpenseOperationalQueryKeys.root() }),
       queryClient.invalidateQueries({ queryKey: pendingKey }),
+      queryClient.invalidateQueries({ queryKey: historyKey }),
     ]),
   };
 }

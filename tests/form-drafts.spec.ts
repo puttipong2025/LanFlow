@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { bangkokDateString } from "../src/lib/bangkok-date";
+import { confirmCurrentBranchIfRequired } from "./helpers/select-app-location";
+import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 
 const previousBangkokDate = () => bangkokDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
@@ -45,6 +47,7 @@ test.describe("persistent form drafts", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
   test.beforeEach(async ({ page }) => {
+    await installThresholdAlertHandler(page);
     await clearFormDrafts(page);
   });
 
@@ -154,7 +157,7 @@ test.describe("persistent form drafts", () => {
     await expect.poll(() => readFormDrafts(page)).toHaveLength(2);
   });
 
-  test("restores an unsaved Income form after reload", async ({ page, context }) => {
+  test("starts an unsaved Income form fresh after reload", async ({ page }) => {
     const marker = `DRAFT-INCOME-${Date.now()}`;
 
     const cashTab = page.getByRole("button", { name: /^รับ-จ่าย(?: |$)/ });
@@ -163,6 +166,7 @@ test.describe("persistent form drafts", () => {
     const addIncome = page.getByRole("button", { name: "เพิ่มรายรับ", exact: true });
     await expect(addIncome).toBeVisible({ timeout: 15_000 });
     await addIncome.click();
+    await confirmCurrentBranchIfRequired(page);
     const modal = page.locator(".fixed.inset-0").last();
     await expect(modal).toBeVisible();
     await modal.locator('input[name="txDate"]').fill(previousBangkokDate());
@@ -170,50 +174,18 @@ test.describe("persistent form drafts", () => {
     await expect(line.locator("input:not([type])")).toBeVisible();
     await line.locator("input:not([type])").fill(marker);
     await line.locator('input[type="number"]').last().fill("1.25");
-    await page.waitForTimeout(500);
-
     await page.reload();
     await expect(cashTab).toBeVisible({ timeout: 15_000 });
     await cashTab.click();
     await expect(addIncome).toBeVisible({ timeout: 15_000 });
     await addIncome.click();
+    await confirmCurrentBranchIfRequired(page);
     const restoredModal = page.locator(".fixed.inset-0").last();
     const restoredLine = restoredModal.locator("table tbody tr").first();
 
     await expect(restoredModal.locator('input[name="txDate"]')).toHaveValue(bangkokDateString());
-    await expect(restoredLine.locator("input:not([type])")).toHaveValue(marker);
-    await expect(restoredLine.locator('input[type="number"]').last()).toHaveValue("1.25");
-
-    try {
-      await context.setOffline(true);
-      await restoredModal.getByRole("button", { name: "บันทึกบิล", exact: true }).click();
-      await expect(restoredModal).toBeHidden();
-      await expect.poll(() => readFormDrafts(page)).toEqual([]);
-
-      await page.evaluate((draftMarker) => new Promise<void>((resolve, reject) => {
-        const request = indexedDB.open("lanflow_sync_db");
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-          const db = request.result;
-          const transaction = db.transaction("sync_queue", "readwrite");
-          const store = transaction.objectStore("sync_queue");
-          const cursorRequest = store.openCursor();
-          cursorRequest.onerror = () => reject(cursorRequest.error);
-          cursorRequest.onsuccess = () => {
-            const cursor = cursorRequest.result;
-            if (!cursor) return;
-            if (cursor.value?.payload?.title === draftMarker) cursor.delete();
-            cursor.continue();
-          };
-          transaction.onerror = () => reject(transaction.error);
-          transaction.oncomplete = () => {
-            db.close();
-            resolve();
-          };
-        };
-      }), marker);
-    } finally {
-      await context.setOffline(false).catch(() => {});
-    }
+    await expect(restoredLine.locator("input:not([type])")).toHaveValue("");
+    await expect(restoredLine.locator('input[type="number"]').last()).toHaveValue("0");
+    expect((await readFormDrafts(page)).filter(draft => draft.formType === "income")).toEqual([]);
   });
 });

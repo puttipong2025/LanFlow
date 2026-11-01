@@ -365,7 +365,6 @@ export function buildPayrollSlipDocument({
   const attendance = source.slip_data?.attendance;
   const outstanding = source.slip_data?.outstandingAdjustments ?? {
     beforeDeductions: source.total_deductions,
-    deductedThisSlip: source.total_deductions,
     remainingAfterDeductions: 0,
   };
   // New snapshots include each source's balance before this month's deductions,
@@ -411,7 +410,6 @@ export function buildPayrollSlipDocument({
     summary: [
       { label: "ค่าแรงรวม", value: formatPayrollMoneyValue(source.gross_pay) },
       ...(hasAdjustments ? [{ label: "หนี้และเงินเบิกก่อนหักรวม", value: formatPayrollMoneyValue(outstanding.beforeDeductions) }] : []),
-      { label: "หักรวมเดือนนี้", value: formatPayrollMoneyValue(source.total_deductions) },
       ...(hasAdjustments ? [{ label: "ยอดค้างยกไปเดือนถัดไป", value: formatPayrollMoneyValue(outstanding.remainingAfterDeductions) }] : []),
       { label: "เงินเดือนสุทธิที่ต้องจ่าย", value: formatPayrollMoneyValue(source.net_pay) },
     ],

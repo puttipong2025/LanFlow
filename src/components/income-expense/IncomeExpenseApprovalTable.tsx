@@ -84,7 +84,7 @@ export function IncomeExpenseApprovalTable({ requests, cashRequests, branchReque
     {requests.map(r => <ApprovalRow key={`income:${r.id}`} id={r.id} title={r.title} status={r.requestStatus} operation={r.requestedOperation} amount={r.cost} income={r.txType === "income"}
       createdAt={r.createdAt} location={locationNames.get(r.locationId) ?? "ไม่ทราบสาขา"} requester={formatPerson(r.requestedByName, r.requestedByPhone)} decider={formatPerson(r.decidedByName, r.decidedByPhone)}
       reason={r.matchedReasons.map(reason => reasonLabels[reason]).join(" · ")} type={r.txType === "income" ? "รายรับ" : "รายจ่าย"} busy={decidingIds.has(r.id)} onApprove={() => onDecision(r.id, "approved")} onReject={() => onDecision(r.id, "rejected")}>
-      {r.matchedKeyword && <p>พบ: {r.matchedKeyword}</p>}
+      {r.billNumber && <p>เลขที่บิล: {r.billNumber}</p>}{r.matchedKeyword && <p>พบ: {r.matchedKeyword}</p>}
       {r.saleLines && r.saleLines.length > 0 && <ol className="list-decimal space-y-1 pl-5">{r.saleLines.map(line => <li key={`${r.id}:${line.sequenceNo}`}>
         {line.title} · {line.quantity} × {formatCurrency(line.unitPrice)} = {formatCurrency(line.lineTotal)}
       </li>)}</ol>}

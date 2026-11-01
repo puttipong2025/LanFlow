@@ -37,15 +37,17 @@ export function IncomeExpenseBackgroundNotices({ ownerUserId, locationId }: { ow
   </div>;
 }
 
-export function IncomeExpenseBackgroundDelete({ number, onConfirm, onClose, discard = false }: {
-  number: string; onConfirm: () => Promise<void>; onClose: () => void; discard?: boolean;
+export function IncomeExpenseBackgroundDelete({ number, onConfirm, onClose, discard = false, localOnly = false }: {
+  number: string; onConfirm: () => Promise<void>; onClose: () => void; discard?: boolean; localOnly?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [error, setError] = useState<string | null>(null);
   return <AlertDialog open title={discard ? "ทิ้งรายการค้าง" : "ยืนยันลบรายการ"}
-    description={discard ? `ทิ้งงานค้าง ${number} จากเครื่องนี้ โดยไม่เปลี่ยนข้อมูลบนระบบกลาง ใช่ไหม?` : `ลบรายการ ${number} ใช่ไหม? ระบบจะส่งคำขอเบื้องหลัง และขออนุมัติตามกติกาปัจจุบัน`}
-    confirmLabel={discard ? "ทิ้งรายการค้าง" : "ส่งคำขอลบ"} busy={busy} onCancel={onClose} onConfirm={() => {
+    description={discard ? `ทิ้งงานค้าง ${number} จากเครื่องนี้ โดยไม่เปลี่ยนข้อมูลบนระบบกลาง ใช่ไหม?` : localOnly
+      ? `ลบรายการ ${number} ที่ยังไม่ส่งใช่ไหม? รายการและงานรอส่งจะถูกลบจากเครื่อง และจะไม่ส่งเมื่อกลับมาออนไลน์`
+      : `ลบรายการ ${number} ใช่ไหม? ระบบจะส่งคำขอเบื้องหลัง และขออนุมัติตามกติกาปัจจุบัน`}
+    confirmLabel={discard ? "ทิ้งรายการค้าง" : localOnly ? "ยืนยันลบ" : "ส่งคำขอลบ"} busy={busy} onCancel={() => { if (!submitting.current) onClose(); }} onConfirm={() => {
       if (submitting.current) return;
       submitting.current = true;
       setBusy(true); setError(null);

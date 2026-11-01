@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { QueryClient } from "@tanstack/react-query";
 import { NextRequest, NextResponse } from "next/server";
 import { loadSourceModule } from "../helpers/load-source-module";
 import { CASH_COUNT_OVERDUE_CODE, parseCashCountLocks } from "../../src/lib/cash-count-lock";
@@ -98,7 +99,7 @@ test("all financial response mappers preserve the dedicated lock contract", () =
 for (const entity of ["income_expense", "rubber_bills"] as const) {
   test(`${entity} retains the same queued command during lock and removes it once after unlock`, async () => {
     let event: SyncEvent | null = { queueId: 1, id: "command", entity, ownerUserId: "owner", locationId: id,
-      operation: "create", timestamp: 1, status: "pending", payload: { clientTempId: "command", locationId: id, cost: 100, localBillNo: "LOCAL-1" } };
+      operation: "create", timestamp: 1, status: "pending", payload: { operation: "create", expectedRevisionNo: 0, clientTempId: "command", locationId: id, cost: 100, localBillNo: "LOCAL-1" } };
     let locked = true; let writes = 0; let removed = 0;
     const hook = loadSourceModule<Record<string, (client: unknown, user: string, location: string) => Promise<unknown>>>(entity === "income_expense" ? "src/hooks/useIncomeExpense.ts" : "src/hooks/useRubberBills.ts", {
       "@tanstack/react-query": {},
@@ -122,7 +123,7 @@ for (const entity of ["income_expense", "rubber_bills"] as const) {
       "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => undefined },
     }, { navigator: { onLine: true } });
     const sync = hook[entity === "income_expense" ? "syncPendingIncomeExpense" : "syncPendingRubberBills"];
-    const client = { cancelQueries: async () => undefined, setQueriesData: () => undefined };
+    const client = new QueryClient();
     await sync(client, "owner", id);
     expect(event).toMatchObject({ id: "command", status: "pending", payload: { cost: 100 } });
     expect(removed).toBe(0);
@@ -136,7 +137,9 @@ test("manual retry keeps a lock-blocked command pending and preserves ordinary c
       operation: "create", timestamp: 1, status: "failed", payload: { cost: 100 } };
     const hook = loadSourceModule<{ usePerRecordSyncRetry: (location: string, owner: string) => { retrySyncEvent: (value: { entity: string; id: string }) => Promise<unknown> } }>("src/hooks/usePerRecordSyncRetry.ts", {
       "@tanstack/react-query": { useQueryClient: () => ({}), useMutation: (options: { mutationFn: (value: unknown) => Promise<unknown> }) => ({ mutateAsync: options.mutationFn }) },
-      "@/lib/idb-queue": { getPendingEvents: async () => [event], updateSyncEvent: async () => undefined, updateSyncEventIfCurrent: async (next: SyncEvent) => { event = next; return true; } },
+      "@/lib/idb-queue": { getPendingEvents: async () => [event],
+        reconcileSyncEventsIfCurrent: async (_expected: SyncEvent[], next: SyncEvent) => { event = next; return true; },
+        updateSyncEventIfCurrent: async (next: SyncEvent) => { event = next; return true; } },
       "@/lib/sync-response": { isCashCountLockSyncResponse, isRetryableSyncResponse },
       "@/lib/auth-fetch": { authFetch: async () => Response.json({ status: locked ? "failed" : "conflict", errorCode: locked ? CASH_COUNT_OVERDUE_CODE : "CONFLICT", errorMessage: "retry denied" }, { status: 409 }) },
       "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => undefined }, "@/lib/rubber-bills/feed-cache": {},

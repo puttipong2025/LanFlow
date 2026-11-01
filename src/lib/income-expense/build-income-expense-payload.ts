@@ -12,6 +12,7 @@ export type IncomeExpenseSaleLinePayload = Pick<
 >;
 
 export type IncomeExpenseSyncPayload = {
+  billNumbering?: IncomeExpense["billNumbering"];
   operation: QueueOperation;
   expectedRevisionNo: number;
   clientTempId: string;
@@ -44,6 +45,7 @@ export function buildIncomeExpensePayload(
   const idempotencyKey = `${operation}:${tx.clientTempId}:${tx.revisionNo}`;
 
   return {
+    ...(tx.billNumbering ? { billNumbering: tx.billNumbering } : {}),
     operation,
     expectedRevisionNo: tx.revisionNo,
     clientTempId: tx.clientTempId,

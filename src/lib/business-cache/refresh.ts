@@ -3,6 +3,7 @@ import { authFetch, assertApiResponse } from "@/lib/auth-fetch";
 import { getRubberBillReceiptSnapshots } from "@/lib/rubber-bill-receipts-idb";
 import { incomeExpenseOperationalQueryKeys } from "@/lib/income-expense/query-keys";
 import { isIncomeExpenseFeedPayload } from "@/lib/income-expense/contracts";
+import { startIncomeExpenseHistoryRefresh, saveIncomeExpenseHistoryPage } from "@/lib/income-expense/history-idb";
 import type { IncomeExpenseOperationalFeedPage } from "@/lib/income-expense/operational-list";
 import { BUSINESS_CACHE_PROTOCOL, type CacheModule, type ReceiptCheck, cacheMetadataKey, validateReceiptChecks } from "./protocol";
 import { commitCacheRefresh, readCacheMetadata } from "./storage";
@@ -72,6 +73,7 @@ export async function refreshBusinessCaches(queryClient: QueryClient, owner: str
         // Same key as the existing feed: in-flight requests are shared with the screen.
         await queryClient.fetchInfiniteQuery({ queryKey, initialPageParam: null as string | null, staleTime: 0,
           queryFn: async ({ pageParam, signal: querySignal }): Promise<IncomeExpenseOperationalFeedPage> => {
+            const generation = !pageParam ? await startIncomeExpenseHistoryRefresh(owner, branch) : null;
             const params = new URLSearchParams({ locationId: branch, mode: "latest", search: "" });
             if (pageParam) params.set("cursor", pageParam);
             const res = await authFetch(`/api/lanflow/income-expense/feed?${params}`, { signal: AbortSignal.any([signal, querySignal, AbortSignal.timeout(15_000)]) });
@@ -80,6 +82,10 @@ export async function refreshBusinessCaches(queryClient: QueryClient, owner: str
             if (hasOpenBusinessForm()) {
               publish(module, { state: "waiting", updatedAt: previous?.updatedAt });
               await waitForBusinessForms(signal);
+            }
+            if (!pageParam && !signal.aborted && !querySignal.aborted) {
+              await saveIncomeExpenseHistoryPage(owner, branch, generation, (data as IncomeExpenseOperationalFeedPage).rows);
+              await queryClient.invalidateQueries({ queryKey: incomeExpenseOperationalQueryKeys.history(owner, branch) });
             }
             return data as IncomeExpenseOperationalFeedPage;
           }, getNextPageParam: (page: IncomeExpenseOperationalFeedPage) => page.nextCursor ?? undefined });
