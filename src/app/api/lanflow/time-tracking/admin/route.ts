@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { rpcErrorMessage, rpcErrorStatus } from "@/lib/server/time-payroll-rpc-errors";
+import { rpcConnectionFailure, rpcErrorMessage, rpcErrorStatus } from "@/lib/server/time-payroll-rpc-errors";
 import { bangkokDateString } from "@/lib/bangkok-date";
 import { requireAuth } from "@/lib/server/auth";
 import { readActionablePendingAdjustments } from "@/lib/server/time-payroll-pending-adjustments";
@@ -40,10 +40,11 @@ function hasValidAttendanceSelections(value: unknown, month: string) {
   return true;
 }
 
-function rpcFailure(error: { message: string }) {
+function rpcFailure(error: { message: string; code?: string }) {
+  const connectionFailure = rpcConnectionFailure(error); if (connectionFailure) return connectionFailure;
   const locked = cashCountLockResponse(error.message); if (locked) return locked;
   const paymentError = mapTimePayrollPaymentRpcError(error.message);
-  const code = error.message.match(/WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED/)?.[0] ?? null;
+  const code = error.message.match(/ATTENDANCE_STALE|ATTENDANCE_REVISION_REQUIRED|WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED/)?.[0] ?? null;
   return NextResponse.json(
     { error: paymentError?.message ?? rpcErrorMessage(error.message), ...(code ? { code } : {}) },
     { status: paymentError?.status ?? rpcErrorStatus(error.message) },
@@ -391,11 +392,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (body.action === "REPLACE_ATTENDANCE_EXCEPTIONS") {
-      const { user_id, month, selections } = payload;
+      const { user_id, month, selections, expected_revision } = payload;
       if (
         !isUuid(user_id)
         || typeof month !== "string"
         || !ISO_MONTH_PATTERN.test(month)
+        || typeof expected_revision !== "string"
+        || !/^[a-f0-9]{32}$/.test(expected_revision)
         || !hasValidAttendanceSelections(selections, month)
       ) {
         return NextResponse.json({ error: "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง" }, { status: 400 });
@@ -404,6 +407,7 @@ export async function POST(request: NextRequest) {
         p_profile_id: user_id,
         p_month: month,
         p_selections: selections,
+        p_expected_revision: expected_revision,
       });
       if (error) return rpcFailure(error);
       return NextResponse.json({ success: true, result: data });

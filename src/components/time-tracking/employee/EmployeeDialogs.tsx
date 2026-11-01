@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { authFetch } from "@/lib/auth-fetch";
@@ -32,6 +33,7 @@ export function EmployeeDialogs({
   previewSource: PreviewSource | null; setPreviewSource: Dispatch<SetStateAction<PreviewSource | null>>; inputDialog: ReactNode;
   setMutation: (next: boolean) => boolean;
 }) {
+  const [debtError, setDebtError] = useState<string | null>(null);
   return (
     <>
       {isDebtModalOpen && (
@@ -47,6 +49,7 @@ export function EmployeeDialogs({
               <div>
                 <label htmlFor="time-payroll-debt-date" className="block text-sm font-semibold text-ink/70 mb-1">วันที่รายการ</label>
                 <input
+                  disabled={saving}
                   id="time-payroll-debt-date"
                   type="date"
                   value={debtDueDate}
@@ -59,6 +62,7 @@ export function EmployeeDialogs({
               <div>
                 <label htmlFor="time-payroll-debt-description" className="block text-sm font-semibold text-ink/70 mb-1">รายละเอียด</label>
                 <input
+                  disabled={saving}
                   id="time-payroll-debt-description"
                   type="text"
                   value={debtDescription}
@@ -70,6 +74,7 @@ export function EmployeeDialogs({
               <div>
                 <label htmlFor="time-payroll-debt-amount" className="block text-sm font-semibold text-ink/70 mb-1">ยอดเงิน (บาท)</label>
                 <input
+                  disabled={saving}
                   id="time-payroll-debt-amount"
                   type="number"
                   value={debtAmount}
@@ -78,6 +83,7 @@ export function EmployeeDialogs({
                   placeholder="0.00"
                 />
               </div>
+            {debtError && <p role="alert" className="text-pretty text-sm text-clay">{debtError}</p>}
             <div className="flex justify-end gap-2 border-t border-black/10 pt-4">
               <button
                 type="button"
@@ -102,6 +108,7 @@ export function EmployeeDialogs({
                   }
 
                   if (!setMutation(true)) return;
+                  setDebtError(null);
                   try {
                     const res = await authFetch("/api/lanflow/time-tracking/admin", {
                       method: "POST", headers: { "Content-Type": "application/json" },
@@ -114,15 +121,16 @@ export function EmployeeDialogs({
                       await loadData();
                     } else {
                       const json = await res.json();
-                      alert(json.error || "Failed to create debt");
+                      setDebtError(json.error || "สร้างหนี้ไม่สำเร็จ");
                     }
+                  } catch { setDebtError("ไม่ทราบผลการบันทึก กรุณาโหลดข้อมูลล่าสุดเพื่อตรวจสอบก่อนลองใหม่");
                   } finally {
                     setMutation(false);
                   }
                 }}
                 className="rounded-md bg-commit px-4 py-2 font-bold text-white hover:bg-commit/90 disabled:opacity-50"
               >
-                บันทึก
+                {saving ? "กำลังบันทึก..." : "บันทึก"}
               </button>
             </div>
           </div>

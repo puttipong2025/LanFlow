@@ -23,7 +23,7 @@ select extensions.is(public.register_rubber_bill_issuer('ad110000-0000-4000-8000
  'ad110000-0000-4000-8000-000000000010','ad110000-0000-4000-8000-000000000011')->>'id',
  (select value->>'id' from registered where label='a'),'exact registration retry stays stable');
 select extensions.is((select last_code from private.bill_issuer_global_counter),(select last_code+1 from global_before),'branch switch and retry do not consume another code');
-select extensions.is((public.list_rubber_bill_issuers(p_search=>(select value->>'code' from registered where label='a'))->>'total')::bigint,1::bigint,'Admin lists one device rather than one row per branch');
+select extensions.is((public.list_rubber_bill_issuers(p_location_id=>'ad110000-0000-4000-8000-000000000001',p_search=>(select value->>'code' from registered where label='a'))->>'total')::bigint,1::bigint,'Admin lists one device rather than one row per branch');
 select public.retire_rubber_bill_issuer((select (value->>'id')::uuid from registered where label='a'));
 insert into registered values('replacement',public.register_rubber_bill_issuer('ad110000-0000-4000-8000-000000000001',
  'ad110000-0000-4000-8000-000000000010','ad110000-0000-4000-8000-000000000011'));

@@ -5,6 +5,7 @@ import { chunkUniqueIds } from "@/lib/server/chunk-ids";
 import { buildPayrollPeriodState, type PayrollPeriodRow } from "@/lib/time-tracking/period-state";
 import { readAllSupabaseRows } from "@/lib/supabase-pages";
 import { readTimeTrackingActionRequest } from "../action-request";
+import { rpcConnectionFailure } from "@/lib/server/time-payroll-rpc-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +36,8 @@ function rpcErrorMessage(message: string) {
   return "ไม่สามารถทำรายการได้ กรุณาลองใหม่";
 }
 
-function rpcFailure(error: { message: string }) {
+function rpcFailure(error: { message: string; code?: string }) {
+  const connectionFailure = rpcConnectionFailure(error); if (connectionFailure) return connectionFailure;
   return NextResponse.json(
     { error: rpcErrorMessage(error.message) },
     { status: rpcErrorStatus(error.message) },

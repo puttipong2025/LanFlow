@@ -5,7 +5,7 @@ select extensions.no_plan();
 select extensions.ok(
   has_function_privilege(
     'authenticated',
-    'public.replace_time_payroll_attendance_exceptions(uuid,text,jsonb)',
+    'public.replace_time_payroll_attendance_exceptions(uuid,text,jsonb,text)',
     'EXECUTE'
   )
   and has_function_privilege(

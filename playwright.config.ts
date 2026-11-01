@@ -68,6 +68,10 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
       testIgnore: [
+        '**/bill-device-reset-database.spec.ts',
+        '**/bill-device-reset-browser.spec.ts',
+        '**/time-payroll-attendance-concurrency.spec.ts',
+        '**/time-payroll-refresh-ui.spec.ts',
         '**/income-expense-fresh-form-browser.spec.ts',
         '**/income-expense-numbering-browser.spec.ts',
         '**/rubber-bills-pwa.spec.ts',

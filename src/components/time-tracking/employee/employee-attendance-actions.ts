@@ -30,26 +30,27 @@ export function createEmployeeAttendanceActions({
   setMutation: (next: boolean) => boolean;
   loadData: () => Promise<void>;
 }) {
-  async function replaceAttendanceExceptions(selections: AttendanceExceptionDto[]) {
+  async function replaceAttendanceExceptions(selections: AttendanceExceptionDto[], revision?: string) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!attendance) return "ไม่พบข้อมูลปฏิทินวันทำงาน กรุณาโหลดใหม่";
-    if (!setMutation(true)) return null;
+    if (!setMutation(true)) return "กำลังดำเนินการ กรุณารอ";
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "REPLACE_ATTENDANCE_EXCEPTIONS",
-          payload: { user_id: managedUserId, month: attendance.month, selections },
+          payload: { user_id: managedUserId, month: attendance.month, selections, expected_revision: revision },
         }),
       });
       if (!response.ok) {
         const json = await response.json().catch(() => null);
+        if (json?.code === "ATTENDANCE_STALE") await loadData();
         return json?.error || "บันทึกปฏิทินไม่สำเร็จ";
       }
-      const json = await response.json() as { result?: AttendanceDeductionResult };
+      const json = await response.json().catch(() => null) as { result?: AttendanceDeductionResult } | null;
       await loadData();
-      notifyAttendanceSaved(json.result, "บันทึกปฏิทินแล้ว");
+      notifyAttendanceSaved(json?.result, "บันทึกปฏิทินแล้ว");
       return null;
     } catch {
       return "บันทึกปฏิทินไม่สำเร็จ";
@@ -61,7 +62,7 @@ export function createEmployeeAttendanceActions({
   async function setPayrollPeriod(action: PayrollPeriodAction, effectiveDate: string) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
-    if (!setMutation(true)) return null;
+    if (!setMutation(true)) return "กำลังดำเนินการ กรุณารอ";
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -87,7 +88,7 @@ export function createEmployeeAttendanceActions({
   async function cancelPayrollPeriodSchedule() {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
-    if (!setMutation(true)) return null;
+    if (!setMutation(true)) return "กำลังดำเนินการ กรุณารอ";
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -113,7 +114,7 @@ export function createEmployeeAttendanceActions({
   async function correctPayrollPeriodStart(periodId: string, startOn: string) {
     if (!online) return TIME_TRACKING_OFFLINE_MESSAGE;
     if (!canConfigure) return "คุณไม่มีสิทธิ์เปลี่ยนช่วงทำงาน";
-    if (!setMutation(true)) return null;
+    if (!setMutation(true)) return "กำลังดำเนินการ กรุณารอ";
     try {
       const response = await authFetch("/api/lanflow/time-tracking/admin", {
         method: "POST",
@@ -127,9 +128,9 @@ export function createEmployeeAttendanceActions({
         const json = await response.json().catch(() => null);
         return json?.error || "แก้วันเริ่มช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";
       }
-      const json = await response.json() as { result?: AttendanceDeductionResult };
+      const json = await response.json().catch(() => null) as { result?: AttendanceDeductionResult } | null;
       await loadData();
-      notifyAttendanceSaved(json.result, "แก้วันเริ่มช่วงทำงานแล้ว");
+      notifyAttendanceSaved(json?.result, "แก้วันเริ่มช่วงทำงานแล้ว");
       return null;
     } catch {
       return "แก้วันเริ่มช่วงทำงานไม่สำเร็จ กรุณาลองใหม่";

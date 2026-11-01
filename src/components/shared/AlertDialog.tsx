@@ -10,6 +10,7 @@ type AlertDialogProps = {
   description: string;
   cancelLabel?: string | null;
   busy?: boolean;
+  confirmDisabled?: boolean;
   confirmClassName?: string;
   cancelClassName?: string;
   onCancel: () => void;
@@ -27,6 +28,7 @@ export function AlertDialog({
   confirmLabel,
   cancelLabel = "ยกเลิก",
   busy = false,
+  confirmDisabled = false,
   confirmClassName,
   cancelClassName,
   onCancel,
@@ -117,7 +119,7 @@ export function AlertDialog({
                 if (button) button.autofocus = !cancelLabel;
               }}
               type="button"
-              disabled={busy}
+              disabled={busy || confirmDisabled}
               onClick={onConfirm}
               className={cn(
                 "focus-ring inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-50",

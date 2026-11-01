@@ -16,6 +16,19 @@ function serviceClient() {
   });
 }
 
+// Existing behavior scenarios use the current snapshot; the separate
+// attendance-concurrency regression deliberately reuses an old snapshot.
+function attendanceWriter(client: SupabaseClient) {
+  return { rpc: async (_name: string, args: { p_profile_id: string | null; p_month: string | null; p_selections: unknown }) => {
+    const snapshot = await client.rpc("get_time_payroll_attendance_month", {
+      p_profile_id: args.p_profile_id, p_month: args.p_month,
+    });
+    return client.rpc("replace_time_payroll_attendance_exceptions", {
+      ...args, p_expected_revision: snapshot.data?.revision ?? "invalid-snapshot",
+    });
+  } };
+}
+
 async function globalManagerClient() {
   expect(publishableKey).toBeTruthy();
   const client = createClient(supabaseUrl, publishableKey, {
@@ -250,7 +263,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       });
       expect(enabled.error).toBeNull();
 
-      const seeded = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const seeded = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: month,
         p_selections: [{ date: workDate, status: "OFF" }],
@@ -258,7 +271,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(seeded.error).toBeNull();
 
       for (const invalidSelections of [null, {}, "OFF", 1, true]) {
-        const rejected = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        const rejected = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
           p_profile_id: employeeId,
           p_month: month,
           p_selections: invalidSelections,
@@ -274,7 +287,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       }
 
       for (const invalidDate of ["not-a-date", "2026-02-31"]) {
-        const malformedDate = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+        const malformedDate = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
           p_profile_id: employeeId,
           p_month: month,
           p_selections: [{ date: invalidDate, status: "OFF" }],
@@ -303,14 +316,14 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         error: "ข้อมูลข้อยกเว้นวันทำงานไม่ถูกต้อง",
       });
 
-      const nullMonth = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const nullMonth = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: null,
         p_selections: [],
       });
-      expect(nullMonth.error?.message).toContain("INVALID_ATTENDANCE_SELECTIONS");
+      expect(nullMonth.error?.message).toContain("INVALID_MONTH");
 
-      const nullProfile = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const nullProfile = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: null,
         p_month: month,
         p_selections: [],
@@ -561,7 +574,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_action: "PAUSE",
         p_effective_date: pendingPauseOn,
       })).error).toBeNull();
-      const attendanceReplacement = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const attendanceReplacement = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: firstCurrent.slice(0, 7),
         p_selections: [{ date: firstCurrent, status: "HALF_DAY" }],
@@ -1087,6 +1100,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
           payload: {
             user_id: employeeId,
             month: currentMonth,
+            expected_revision: (await manager.rpc("get_time_payroll_attendance_month", { p_profile_id: employeeId, p_month: currentMonth })).data?.revision,
             selections: [{ date: firstDay, status: "OFF" }],
           },
         }),
@@ -1119,7 +1133,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       expect(deduction.error).toBeNull();
       expect(Number(deduction.data!.amount)).toBe(500);
 
-      const noOp = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const noOp = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: currentMonth,
         p_selections: [{ date: firstDay, status: "OFF" }],
@@ -1207,7 +1221,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         },
       ])).error).toBeNull();
 
-      const result = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const result = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: currentMonth,
         p_selections: [],
@@ -1308,7 +1322,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         eligibility_at: `${bangkokDate()}T16:00:00+07:00`,
       })).error).toBeNull();
 
-      const failed = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const failed = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: currentMonth,
         p_selections: [{ date: firstDay, status: "OFF" }],
@@ -1545,7 +1559,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_effective_date: lifecycleDate(1),
       })).error).toBeNull();
 
-      const replaced = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const replaced = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: month,
         p_selections: [
@@ -1571,7 +1585,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         },
       });
 
-      const restoredFull = await manager.rpc("replace_time_payroll_attendance_exceptions", {
+      const restoredFull = await attendanceWriter(manager).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeId,
         p_month: month,
         p_selections: [{ date: resumeOn, status: "HALF_DAY" }],
@@ -2263,7 +2277,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
       );
       expect(employeeOtherRoute.status).toBe(403);
 
-      const sameBranch = await delegated.rpc("replace_time_payroll_attendance_exceptions", {
+      const sameBranch = await attendanceWriter(delegated).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeA,
         p_month: month,
         p_selections: [{ date: workStart, status: "HALF_DAY" }],
@@ -2314,7 +2328,7 @@ test.describe.serial("Exception attendance backend contract @time-payroll-except
         p_month: month,
       });
       expect(employeeOtherRead.error?.message).toContain("Forbidden");
-      const employeeWrite = await employee.rpc("replace_time_payroll_attendance_exceptions", {
+      const employeeWrite = await attendanceWriter(employee).rpc("replace_time_payroll_attendance_exceptions", {
         p_profile_id: employeeA,
         p_month: month,
         p_selections: [],

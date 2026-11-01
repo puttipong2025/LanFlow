@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Settings2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import type { TimePayrollSettingsDto } from "@/lib/time-tracking/attendance-contract";
@@ -16,19 +16,28 @@ export function TimePayrollConfigPanel({
   saving?: boolean;
   onSave: (time: string) => Promise<boolean>;
 }) {
+  const submitting = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const pending = Boolean(saving || busy);
   const [open, setOpen] = useState(false);
   const [time, setTime] = useState(settings.pendingWorkdayEndTime ?? settings.workdayEndTime);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting.current || pending || !online) return;
     setError(null);
     if (!/^\d{2}:\d{2}$/.test(time)) {
       setError("กรุณาระบุเวลาในรูปแบบ ชั่วโมง:นาที");
       return;
     }
-    if (await onSave(time)) setOpen(false);
-    else setError("บันทึกการตั้งค่าไม่สำเร็จ กรุณาลองใหม่");
+    submitting.current = true;
+    setBusy(true);
+    try {
+      if (await onSave(time)) setOpen(false);
+      else setError("บันทึกการตั้งค่าไม่สำเร็จ กรุณาลองใหม่");
+    } catch { setError("บันทึกการตั้งค่าไม่สำเร็จ กรุณาลองใหม่"); }
+    finally { submitting.current = false; setBusy(false); }
   }
 
   return (
@@ -40,17 +49,17 @@ export function TimePayrollConfigPanel({
             <p className="mt-1 text-pretty text-sm text-ink/70">ปัจจุบัน {settings.workdayEndTime} น.</p>
             {settings.pendingWorkdayEndTime && <p className="mt-1 text-pretty text-xs text-amber">รอใช้ {settings.pendingWorkdayEndTime} น. ตั้งแต่ {settings.pendingEffectiveDate}</p>}
           </div>
-          {canConfigure ? <button type="button" onClick={() => { setTime(settings.pendingWorkdayEndTime ?? settings.workdayEndTime); setOpen(true); }} disabled={!online} title={online ? "ตั้งค่าเวลาสิ้นสุดวันทำงาน" : "เวลาและเงินเดือนใช้ได้เมื่อออนไลน์เท่านั้น"} aria-label="ตั้งค่าเวลาสิ้นสุดวันทำงาน" className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"><Settings2 size={18} aria-hidden="true" /></button> : <span className="text-xs text-ink/55">ดูได้เท่านั้น</span>}
+          {canConfigure ? <button type="button" onClick={() => { setTime(settings.pendingWorkdayEndTime ?? settings.workdayEndTime); setOpen(true); }} disabled={pending || !online} title={online ? "ตั้งค่าเวลาสิ้นสุดวันทำงาน" : "เวลาและเงินเดือนใช้ได้เมื่อออนไลน์เท่านั้น"} aria-label="ตั้งค่าเวลาสิ้นสุดวันทำงาน" className="focus-ring inline-flex size-10 items-center justify-center rounded-md bg-river text-white hover:bg-river/90 disabled:cursor-not-allowed disabled:opacity-50"><Settings2 size={18} aria-hidden="true" /></button> : <span className="text-xs text-ink/55">ดูได้เท่านั้น</span>}
         </div>
       </section>
       {open && (
-        <ModalShell title="ตั้งค่าเวลาสิ้นสุดวันทำงาน" subtitle="การเปลี่ยนแปลงจะมีผลในวันถัดไป" onClose={() => setOpen(false)} nativeModal closeOnEscape size="compact" closeDisabled={saving}>
-          <form onSubmit={(event) => void submit(event)} className="space-y-4" aria-busy={saving}>
+        <ModalShell title="ตั้งค่าเวลาสิ้นสุดวันทำงาน" subtitle="การเปลี่ยนแปลงจะมีผลในวันถัดไป" onClose={() => setOpen(false)} nativeModal closeOnEscape size="compact" closeDisabled={pending}>
+          <form onSubmit={(event) => void submit(event)} className="space-y-4" aria-busy={pending}>
             <label className="grid gap-1 text-sm font-semibold text-ink">เวลาใหม่
-              <input type="time" value={time} onChange={(event) => setTime(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" required aria-invalid={Boolean(error)} aria-describedby={error ? "time-payroll-config-error" : undefined} />
+              <input disabled={pending} type="time" value={time} onChange={(event) => setTime(event.target.value)} className="focus-ring h-10 rounded-md border border-black/15 px-3" required aria-invalid={Boolean(error)} aria-describedby={error ? "time-payroll-config-error" : undefined} />
             </label>
             {error && <p id="time-payroll-config-error" role="alert" className="text-sm font-semibold text-danger">{error}</p>}
-            <button type="submit" disabled={saving || !online} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{saving ? "กำลังบันทึก..." : "บันทึกให้มีผลวันถัดไป"}</button>
+            <button type="submit" disabled={pending || !online} className="focus-ring h-10 rounded-md bg-commit px-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{pending ? "กำลังบันทึก..." : "บันทึกให้มีผลวันถัดไป"}</button>
           </form>
         </ModalShell>
       )}

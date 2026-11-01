@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertDialog } from "@/components/shared/AlertDialog";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { authFetch } from "@/lib/auth-fetch";
 import { formatBangkokDateTime } from "@/lib/bangkok-date";
@@ -9,11 +10,12 @@ import type { Location } from "@/types";
 import { LazyPaymentAllocationModal as PaymentAllocationModal } from "../LazyPaymentAllocationModal";
 import type { PaymentAllocationInput } from "../contracts";
 import { SlipPreviewModal } from "../SlipPreviewModal";
+import { usePayrollRefresh } from "../PayrollRefresh";
 import { monthLabel } from "../display";
 import { bangkokToday, paymentScopeReason, paymentSourceLabel, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 import { invalidatePaymentLocations } from "../invalidate-payment";
 
-export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLocations, globalManager, onApprove, onReject, onChangePayment, onClose, onRefresh }: { user: any, ownerUserId: string, online: boolean, canDecide: boolean, expenseLocations: Location[], globalManager: boolean, onApprove?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (slip: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onChangePayment: (slip: any, refreshOwner: () => Promise<void>) => void, onClose: () => void, onRefresh: () => Promise<void> }) {
+export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLocations, globalManager, onApprove, onReject, onChangePayment, onClose }: { user: any, ownerUserId: string, online: boolean, canDecide: boolean, expenseLocations: Location[], globalManager: boolean, onApprove?: (slip: any) => Promise<boolean>, onReject?: (slip: any) => Promise<boolean>, onChangePayment: (slip: any) => void, onClose: () => void }) {
   const queryClient = useQueryClient();
   const missingPayrollMonths = Array.isArray(user.missing_payroll_months) ? user.missing_payroll_months : [];
   const [pendingCreatePayment, setPendingCreatePayment] = useState<{ month: string; netPay: number } | null>(null);
@@ -21,6 +23,8 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
   const [slips, setSlips] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [deletingSlip, setDeletingSlip] = useState<any>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createMonth, setCreateMonth] = useState(missingPayrollMonths[0] ?? bangkokToday().slice(0, 7));
@@ -55,6 +59,8 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
       if (requestId === loadSlipsRequestIdRef.current) setLoading(false);
     }
   }, [user.id]);
+
+  const refreshPayroll = usePayrollRefresh(loadSlips);
 
   useEffect(() => {
     void loadSlips();
@@ -121,8 +127,7 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
     setPendingCreatePayment(null);
     setCreateFormOpen(false);
     await Promise.all([
-      loadSlips(),
-      onRefresh(),
+      refreshPayroll(),
       invalidatePaymentLocations(queryClient, ownerUserId, [payment?.expenseLocationId]),
     ]);
     return true;
@@ -133,7 +138,7 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
     window.requestAnimationFrame(() => createSubmitRef.current?.focus());
   }
 
-  async function deleteSlip(slipId: string, month: string, locationId?: string | null) {
+  async function deleteSlip(slipId: string, locationId?: string | null) {
     const slip = slips.find((item: any) => item.id === slipId);
     const lockReason = reportLockReason(slip ?? {});
     if (lockReason) {
@@ -144,9 +149,9 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    if (!confirm(`ยืนยันการลบสลิปเดือน ${month} หรือไม่? รายการจะถูกลบถาวร`)) return;
     if (mutationLockRef.current) return;
     setMutation(true);
+    setDeleteError(null);
     try {
       const res = await authFetch("/api/lanflow/time-tracking/admin", {
         method: 'POST',
@@ -154,17 +159,17 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
         body: JSON.stringify({ action: 'DELETE_PAYROLL_SLIP', payload: { slip_id: slipId } })
       });
       if (res.ok) {
+        setDeletingSlip(null);
         await Promise.all([
-          loadSlips(),
-          onRefresh(),
+          refreshPayroll(),
           invalidatePaymentLocations(queryClient, ownerUserId, [locationId]),
         ]);
       } else {
         const json = await res.json();
-        alert(json.error || "เกิดข้อผิดพลาด");
+        setDeleteError(json.error || "ไม่สามารถลบสลิปได้");
       }
     } catch {
-      alert("เกิดข้อผิดพลาด");
+      setDeleteError("ไม่ทราบผลการลบ กรุณาโหลดข้อมูลล่าสุดเพื่อตรวจสอบ");
     } finally {
       setMutation(false);
     }
@@ -172,6 +177,9 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
 
   return (
     <>
+      <AlertDialog open={Boolean(deletingSlip)} title="ลบสลิปเงินเดือน" description="ลบสลิปถาวรและจัดยอดหักใหม่" confirmLabel="ยืนยันลบ" confirmClassName="bg-danger" busy={saving} onCancel={() => setDeletingSlip(null)} onConfirm={() => void deleteSlip(deletingSlip.id, deletingSlip.expense_location_id)}>
+        {deleteError && <p role="alert" className="mt-3 text-pretty text-sm text-danger">{deleteError}</p>}
+      </AlertDialog>
       <ModalShell
         title={`สลิปเงินเดือนของ ${user.name}`}
         onClose={onClose}
@@ -247,20 +255,20 @@ export function PayrollModal({ user, ownerUserId, online, canDecide, expenseLoca
                       )}
 
                         {!cancelled && canDecide && slip.status === 'PENDING' && onApprove && (
-                         <button onClick={() => void runSlipDecision(() => onApprove(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                         <button onClick={() => void runSlipDecision(() => onApprove(slip))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-success text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-success/85 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                        )}
                        {!cancelled && slip.status === 'APPROVED' && Number(slip.net_pay) > 0 && (
                           <div className="flex min-w-0 flex-col items-start gap-1">
                             <span className="text-pretty text-xs font-semibold text-ink/70">{paymentSourceLabel(slip)}</span>
-                            <button onClick={() => onChangePayment(slip, loadSlips)} disabled={saving || loading || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
+                            <button onClick={() => onChangePayment(slip)} disabled={saving || loading || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? undefined} className="bg-river text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-river/85 disabled:opacity-40">เปลี่ยนวิธีจ่าย</button>
                           </div>
                        )}
                         {!cancelled && canDecide && slip.status === 'PENDING' && onReject && (
-                          <button onClick={() => void runSlipDecision(() => onReject(slip, loadSlips))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
+                          <button onClick={() => void runSlipDecision(() => onReject(slip))} disabled={saving || loading || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="bg-danger text-white px-3 py-1.5 rounded-md text-sm font-bold hover:bg-danger/85 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                        )}
 
                       {canDelete && (
-                        <button onClick={() => deleteSlip(slip.id, slip.month, slip.expense_location_id)} disabled={saving || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
+                        <button onClick={() => { setDeleteError(null); setDeletingSlip(slip); }} disabled={saving || !online || Boolean(slip.report_lock_no) || Boolean(paymentScopeReason(slip, globalManager, expenseLocations))} title={reportLockReason(slip) ?? paymentScopeReason(slip, globalManager, expenseLocations) ?? (online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE)} className="rounded-md bg-danger px-3 py-1.5 text-sm font-semibold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-40">
                           {slip.status === 'APPROVED' && Number(slip.net_pay) > 0 ? 'ยกเลิกค่าใช้จ่าย' : 'ลบสลิป'}
                         </button>
                       )}

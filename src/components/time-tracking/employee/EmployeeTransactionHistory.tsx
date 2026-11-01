@@ -7,7 +7,7 @@ import { LazyWithdrawalAdjustmentDelete as WithdrawalAdjustmentDelete } from "..
 import { paymentScopeReason, paymentSourceLabel, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 
 type PreviewSource = { type: "withdrawal" | "payroll"; id: string };
-type Decision = (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean>;
+type Decision = (type: ApprovalType, item: any) => Promise<boolean>;
 
 export function EmployeeTransactionHistory({
   data, transactions, adjustmentSummaryByWithdrawal, adjustmentsByWithdrawal, online, saving,
@@ -80,10 +80,10 @@ export function EmployeeTransactionHistory({
                       </button>
                     )}
                     {!cancelled && canDecideItems && t.status === 'PENDING' && onApprove && (
-                      <button onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
+                      <button onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', t))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-success px-3 py-1 font-bold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50">อนุมัติ</button>
                     )}
                     {!cancelled && canDecideItems && t.status === 'PENDING' && onReject && (
-                      <button onClick={() => void runApprovalAction(() => onReject('TRANSACTION', t, loadData))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
+                      <button onClick={() => void runApprovalAction(() => onReject('TRANSACTION', t))} disabled={saving || !online} title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE} className="rounded bg-danger px-3 py-1 font-bold text-white hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50">ปฏิเสธ</button>
                     )}
                     {t.type === 'WITHDRAWAL' && t.status === 'APPROVED' && (
                       <div className="flex min-w-0 flex-col items-start gap-1">
@@ -143,10 +143,10 @@ export function EmployeeTransactionHistory({
                                         || (summary.blockingSlip ? `เดือน ${summary.blockingSlip.month} มีสลิป ${summary.blockingSlip.id} ที่ใช้ยอดหลังปรับ กรุณาเปิดเดือนก่อนลบ` : null)} />
                                   )}
                                   {!cancelled && canDecideItems && adjustment.status === 'PENDING' && onApprove && (
-                                    <button type="button" onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT', source_expense_location_id: t.expense_location_id ?? null }, loadData))} disabled={saving || !online} className="rounded-md bg-success px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">อนุมัติ</button>
+                                    <button type="button" onClick={() => void runApprovalAction(() => onApprove('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT', source_expense_location_id: t.expense_location_id ?? null }))} disabled={saving || !online} className="rounded-md bg-success px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">อนุมัติ</button>
                                   )}
                                   {!cancelled && canDecideItems && adjustment.status === 'PENDING' && onReject && (
-                                    <button type="button" onClick={() => void runApprovalAction(() => onReject('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT' }, loadData))} disabled={saving || !online} className="rounded-md bg-danger px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ปฏิเสธ</button>
+                                    <button type="button" onClick={() => void runApprovalAction(() => onReject('TRANSACTION', { ...adjustment, type: 'ADJUSTMENT' }))} disabled={saving || !online} className="rounded-md bg-danger px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ปฏิเสธ</button>
                                   )}
                                   {!cancelled && !canManageTime && isSelf && adjustment.status === 'PENDING' && (
                                     <button type="button" onClick={() => void onWithdrawAdjustment(adjustment.id)} disabled={saving || !online} className="rounded-md bg-actionSecondary px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">ถอนคำขอ</button>

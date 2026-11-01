@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       p_location_id: body.locationId, p_installation_id: body.installationId, p_generation_id: body.generationId,
       p_browser: browser, p_platform: platform,
     });
-    if (result.error || !isRubberBillIssuer(result.data)) return NextResponse.json({ error: "ยังเตรียมรหัสเครื่องไม่สำเร็จ กรุณาลองใหม่" }, { status: result.error?.code === "42501" ? 403 : 503, headers: SMS_HEADERS });
+    if (result.error || !isRubberBillIssuer(result.data) || result.data.locationId.toLowerCase() !== body.locationId.toLowerCase()) return NextResponse.json({ error: "ยังเตรียมรหัสเครื่องไม่สำเร็จ กรุณาลองใหม่" }, { status: result.error?.code === "42501" ? 403 : 503, headers: SMS_HEADERS });
     return NextResponse.json(result.data, { headers: SMS_HEADERS });
   } catch { return NextResponse.json({ error: "ยังเตรียมรหัสเครื่องไม่สำเร็จ" }, { status: 503, headers: SMS_HEADERS }); }
 }

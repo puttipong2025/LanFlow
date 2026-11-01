@@ -53,6 +53,7 @@ interface AttendanceSummaryDto {
 }
 
 export interface AttendanceMonthDto {
+  revision?: string;
   month: string;
   mode: AttendanceMode;
   workdayEndTime: string;

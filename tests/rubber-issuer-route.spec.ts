@@ -23,6 +23,18 @@ test("registration rejects an array masquerading as a device code", async () => 
   }));
   expect(response.status).toBe(503);
 });
+for (const mismatch of [true, false]) test(`registration binds acknowledgement to requested branch: mismatch=${mismatch}`, async () => {
+  const module = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/issuers/route")>("src/app/api/lanflow/rubber-bills/issuers/route.ts", {
+    "@/lib/server/auth": { requireAuth: async () => ({ ok: true, auth: { sub: uuid }, supabase: {
+      rpc: async () => ({ data: { version: 1, id: uuid, code: "D01", locationId: mismatch ? "af000000-0000-4000-8000-000000000002" : uuid }, error: null }),
+    } }) },
+    "@/lib/server/sms-otp": { isSmsMutationAllowed: () => true, SMS_HEADERS: { "Cache-Control": "no-store" } },
+  });
+  const response = await module.POST(new Request("http://localhost/api/issuers", { method: "POST",
+    body: JSON.stringify({ locationId: uuid.toUpperCase(), installationId: uuid, generationId: uuid }),
+  }));
+  expect(response.status).toBe(mismatch ? 503 : 200);
+});
 function route(manager = true, allowed = true, result: unknown = { total: 0, rows: [] }) {
   let calls = 0;
   const requests: Record<string, unknown>[]=[];

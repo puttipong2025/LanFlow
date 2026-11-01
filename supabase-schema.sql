@@ -1015,6 +1015,19 @@ $$;
 ALTER FUNCTION "private"."assign_rubber_bill_item_sequence"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."bill_device_reset_snapshot"() RETURNS "jsonb"
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO ''
+    AS $$
+  select jsonb_build_object('count', count(*), 'snapshot',
+    encode(extensions.digest(coalesce(string_agg(id::text, ',' order by id), ''), 'sha256'), 'hex'))
+  from private.bill_issuer_devices where retired_at is null;
+$$;
+
+
+ALTER FUNCTION "private"."bill_device_reset_snapshot"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -6206,6 +6219,7 @@ SET default_tablespace = '';
 SET default_table_access_method = "heap";
 
 
+
 CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "client_temp_id" "text",
@@ -7773,7 +7787,36 @@ $$;
 ALTER FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) OWNER TO "postgres";
 
 
+
 CREATE OR REPLACE FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  return private.rebuild_open_time_payroll_deductions(p_profile_id,p_actor,'attendance');
+end;
+$$;
+
+
+ALTER FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare source_id uuid;
+begin
+ select parent_debt_id into source_id from public.financial_transactions where id=p_adjustment_id and type='ADJUSTMENT' and cancelled_at is null;
+ if source_id is null then raise exception 'WITHDRAWAL_SOURCE_NOT_FOUND'; end if;
+ return private.rebuild_open_withdrawal_deductions(p_profile_id,p_actor,source_id,p_adjustment_id);
+end $$;
+
+
+ALTER FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."rebuild_open_time_payroll_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_cause" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $$
@@ -7900,8 +7943,8 @@ begin
       select value from jsonb_array_elements(v_plan -> 'allocations')
     loop
       v_comment := case
-        when v_allocation ->> 'type' = 'DEBT_DEDUCTION' then 'หักหนี้อัตโนมัติหลังแก้วันทำงาน'
-        else 'หักยอดเบิกเงินอัตโนมัติหลังแก้วันทำงาน'
+        when v_allocation ->> 'type' = 'DEBT_DEDUCTION' then case when p_cause = 'reopen' then 'จัดยอดหักหนี้ใหม่หลังเปิดเดือน' else 'หักหนี้อัตโนมัติหลังแก้วันทำงาน' end
+        else case when p_cause = 'reopen' then 'จัดยอดหักเบิกใหม่หลังเปิดเดือน' else 'หักยอดเบิกเงินอัตโนมัติหลังแก้วันทำงาน' end
       end;
       insert into public.financial_transactions (
         profile_id, type, amount, status, parent_debt_id, applied_month,
@@ -7926,7 +7969,7 @@ begin
       admin_id, action, target_table, record_id, old_data, new_data, comment
     ) values (
       p_actor,
-      'RECALCULATE_ATTENDANCE_DEDUCTIONS',
+      case when p_cause = 'reopen' then 'RECALCULATE_REOPENED_MONTH_DEDUCTIONS' else 'RECALCULATE_ATTENDANCE_DEDUCTIONS' end,
       'financial_transactions',
       p_profile_id,
       jsonb_build_object(
@@ -7938,7 +7981,7 @@ begin
         'months', v_open_months,
         'allocations', v_created_allocations
       ),
-      'แก้วันทำงานและคำนวณยอดหักหนี้/เงินเบิกของเดือนเปิดใหม่'
+      case when p_cause = 'reopen' then 'เปิดเดือนและจัดยอดหักหนี้/เงินเบิกใหม่' else 'แก้วันทำงานและคำนวณยอดหักหนี้/เงินเบิกของเดือนเปิดใหม่' end
     );
   exception when others then
     perform set_config(
@@ -7963,22 +8006,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") OWNER TO "postgres";
-
-
-CREATE OR REPLACE FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
-declare source_id uuid;
-begin
- select parent_debt_id into source_id from public.financial_transactions where id=p_adjustment_id and type='ADJUSTMENT' and cancelled_at is null;
- if source_id is null then raise exception 'WITHDRAWAL_SOURCE_NOT_FOUND'; end if;
- return private.rebuild_open_withdrawal_deductions(p_profile_id,p_actor,source_id,p_adjustment_id);
-end $$;
-
-
-ALTER FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") OWNER TO "postgres";
+ALTER FUNCTION "private"."rebuild_open_time_payroll_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_cause" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."rebuild_open_withdrawal_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_withdrawal_id" "uuid", "p_adjustment_id" "uuid") RETURNS "jsonb"
@@ -8439,6 +8467,84 @@ $$;
 ALTER FUNCTION "private"."reject_future_money_transfer_slip"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare
+  v_actor uuid := auth.uid();
+  v_month date;
+  v_next date;
+  v_changed integer;
+  v_today date := (now() at time zone 'Asia/Bangkok')::date;
+  v_rebuild jsonb;
+  v_selection jsonb;
+  v_selection_date date;
+begin
+  if v_actor is null or p_profile_id is null or not private.can_manage_time_payroll_profile(p_profile_id)
+  then raise exception 'Forbidden'; end if;
+  if p_month is null
+    or p_month !~ '^[0-9]{4}-[0-9]{2}$'
+    or jsonb_typeof(p_selections) is distinct from 'array'
+  then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+  begin v_month := (p_month || '-01')::date; exception when others then raise exception 'INVALID_MONTH'; end;
+  if to_char(v_month, 'YYYY-MM') <> p_month then raise exception 'INVALID_MONTH'; end if;
+  v_next := (v_month + interval '1 month')::date;
+  for v_selection in select value from jsonb_array_elements(p_selections)
+  loop
+    if (v_selection ->> 'date') is null
+      or (v_selection ->> 'date') !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
+    then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+    begin
+      v_selection_date := (v_selection ->> 'date')::date;
+    exception when others then
+      raise exception 'INVALID_ATTENDANCE_SELECTIONS';
+    end;
+    if to_char(v_selection_date, 'YYYY-MM-DD') <> v_selection ->> 'date'
+    then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+    if v_selection_date > v_today then raise exception 'FUTURE_ATTENDANCE_DATE'; end if;
+  end loop;
+
+  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
+  perform private.assert_attendance_range_without_payroll_slip(p_profile_id, v_month, v_month);
+  for v_selection in select value from jsonb_array_elements(p_selections)
+  loop
+    v_selection_date := (v_selection ->> 'date')::date;
+    if (v_selection ->> 'status') is null
+      or (v_selection ->> 'status') not in ('HALF_DAY', 'OFF')
+      or v_selection_date < v_month
+      or v_selection_date >= v_next
+      or not exists (
+        select 1 from public.time_payroll_active_periods ap
+        where ap.profile_id = p_profile_id and ap.start_on <= v_selection_date
+          and (ap.end_on is null or ap.end_on >= v_selection_date)
+      )
+    then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+  end loop;
+  if (
+    select count(*) <> count(distinct item ->> 'date') from jsonb_array_elements(p_selections) item
+  ) then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
+
+  delete from public.time_payroll_attendance_exceptions x
+  where x.profile_id = p_profile_id and x.work_date >= v_month and x.work_date < v_next;
+  insert into public.time_payroll_attendance_exceptions(profile_id, work_date, status, created_by, updated_by)
+  select p_profile_id, (item ->> 'date')::date, item ->> 'status', v_actor, v_actor
+  from jsonb_array_elements(p_selections) item;
+  get diagnostics v_changed = row_count;
+
+  insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
+  values (v_actor, 'REPLACE_ATTENDANCE_EXCEPTIONS', 'time_payroll_attendance_exceptions', p_profile_id,
+    jsonb_build_object('month', p_month, 'selections', p_selections, 'count', v_changed), 'แก้ข้อยกเว้นวันทำงาน');
+
+  v_rebuild := private.rebuild_open_deductions_after_attendance(p_profile_id, v_actor);
+  return jsonb_build_object('changed', v_changed, 'month', p_month) || v_rebuild;
+end;
+$_$;
+
+
+ALTER FUNCTION "private"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) RETURNS TABLE("blocker_key" "text", "item_count" bigint)
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -8544,23 +8650,7 @@ CREATE OR REPLACE FUNCTION "private"."report_income_expense_period_rows"("p_repo
     and private.time_payroll_branch_paid_amount(
       source.net_pay, source.payment_contract_version, source.payment_channel,
       source.payment_transfer_amount, source.expense_location_id
-    ) > 0
-
-  union all
-
-  select coalesce(transfer.accounting_date,
-      (coalesce(transfer.updated_at, transfer.created_at) at time zone 'Asia/Bangkok')::date),
-    'TP-' || left(transfer.id::text, 8), 'expense',
-    'โอน' || transfer.time_payroll_source_label || 'ให้ ' || transfer.time_payroll_employee_name,
-    transfer.net_amount_to_pay,
-    '62-' || transfer.id::text
-  from public.report_items item
-  join public.money_transfers transfer on transfer.id = item.entity_id
-  where item.report_id = p_report_id
-    and item.entity_type = 'bank_transfer_source'
-    and transfer.transfer_type = 'time_payroll'
-    and transfer.transfer_status in ('paid', 'overpaid')
-    and transfer.net_amount_to_pay > 0;
+    ) > 0;
 $$;
 
 
@@ -11273,6 +11363,26 @@ $$;
 
 
 ALTER FUNCTION "private"."telegram_badge_require_manager"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."time_payroll_attendance_revision"("p_profile_id" "uuid", "p_month" "text") RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select md5(jsonb_build_object(
+    'periods',coalesce((select jsonb_agg(jsonb_build_array(ap.id,ap.start_on,ap.end_on,ap.updated_at) order by ap.id)
+      from public.time_payroll_active_periods ap where ap.profile_id=p_profile_id
+      and ap.start_on < ((p_month||'-01')::date+interval '1 month')
+      and (ap.end_on is null or ap.end_on >= (p_month||'-01')::date)),'[]'::jsonb),
+    'exceptions',coalesce((select jsonb_agg(jsonb_build_array(x.work_date,x.status,x.updated_at) order by x.work_date)
+      from public.time_payroll_attendance_exceptions x where x.profile_id=p_profile_id
+      and x.work_date >= (p_month||'-01')::date
+      and x.work_date < ((p_month||'-01')::date+interval '1 month')),'[]'::jsonb)
+  )::text);
+$$;
+
+
+ALTER FUNCTION "private"."time_payroll_attendance_revision"("p_profile_id" "uuid", "p_month" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."time_payroll_branch_paid_amount"("p_source_amount" numeric, "p_contract_version" smallint, "p_channel" "text", "p_transfer_amount" numeric, "p_expense_location_id" "uuid") RETURNS numeric
@@ -15989,6 +16099,7 @@ $$;
 ALTER FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") OWNER TO "postgres";
 
 
+
 CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text", "p_expense_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -16187,6 +16298,7 @@ begin
         admin_comment = coalesce(p_comment, ''),
         approved_by = v_actor_id
       where id = v_slip.id;
+      perform private.rebuild_open_time_payroll_deductions(v_slip.profile_id,v_actor_id,'reopen');
     end if;
 
     insert into public.time_tracking_audit_logs (
@@ -17309,6 +17421,7 @@ $$;
 ALTER FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") OWNER TO "postgres";
 
 
+
 CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -17437,6 +17550,9 @@ begin
     perform private.lock_report_locations(array[v_slip.expense_location_id]);
     perform private.delete_time_payroll_transfer_for_source('payroll_slip', v_slip.id);
     delete from public.payroll_slips where id = v_slip.id;
+    if v_slip.status in ('PENDING','APPROVED') and v_slip.cancelled_at is null then
+      perform private.rebuild_open_time_payroll_deductions(v_slip.profile_id,v_actor_id,'reopen');
+    end if;
   end if;
 
   return jsonb_build_object(
@@ -23213,6 +23329,7 @@ $$;
 ALTER FUNCTION "public"."get_telegram_evidence_location_config"() OWNER TO "postgres";
 
 
+
 CREATE OR REPLACE FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -23296,6 +23413,7 @@ begin
 
   return jsonb_build_object(
     'month', p_month,
+    'revision', private.time_payroll_attendance_revision(p_profile_id,p_month),
     'mode', 'EXCEPTIONS',
     'workdayEndTime', v_settings ->> 'workdayEndTime',
     'eligibleThrough', v_eligible_through,
@@ -24112,6 +24230,21 @@ $$;
 ALTER FUNCTION "public"."prevent_location_change"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."preview_bill_device_reset"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not private.rubber_actor_active() or not exists (
+    select 1 from public.profiles where id = auth.uid() and role = 'super_admin'
+  ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
+  return private.bill_device_reset_snapshot();
+end $$;
+
+
+ALTER FUNCTION "public"."preview_bill_device_reset"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
     LANGUAGE "sql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -24695,6 +24828,7 @@ ALTER FUNCTION "public"."record_weight_evidence_backup"("p_bill_id" "uuid", "p_r
 CREATE OR REPLACE FUNCTION "public"."register_rubber_bill_issuer"("p_location_id" "uuid", "p_installation_id" "uuid", "p_generation_id" "uuid", "p_browser" "text" DEFAULT ''::"text", "p_platform" "text" DEFAULT ''::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
+    SET "lock_timeout" TO '3s'
     AS $$
 declare d private.bill_issuer_devices; i private.rubber_bill_issuers; n bigint;
 begin
@@ -24703,6 +24837,7 @@ begin
     raise exception 'FORBIDDEN' using errcode='42501'; end if;
   if p_installation_id is null or p_generation_id is null or p_location_id is null
     or length(p_browser)>160 or length(p_platform)>80 then raise exception 'INVALID_ISSUER'; end if;
+  perform pg_advisory_xact_lock_shared(hashtextextended('bill-issuer-registry',0));
   perform pg_advisory_xact_lock(hashtextextended('bill-device:'||p_installation_id::text||':'||p_generation_id::text,0));
   select device.* into d from private.bill_issuer_device_heads h join private.bill_issuer_devices device on device.id=h.device_id
     where h.installation_id=p_installation_id and h.generation_id=p_generation_id;
@@ -24867,82 +25002,24 @@ COMMENT ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid",
 
 
 
-CREATE OR REPLACE FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb", "p_expected_revision" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
     AS $_$
-declare
-  v_actor uuid := auth.uid();
-  v_month date;
-  v_next date;
-  v_changed integer;
-  v_today date := (now() at time zone 'Asia/Bangkok')::date;
-  v_rebuild jsonb;
-  v_selection jsonb;
-  v_selection_date date;
 begin
-  if v_actor is null or p_profile_id is null or not private.can_manage_time_payroll_profile(p_profile_id)
-  then raise exception 'Forbidden'; end if;
-  if p_month is null
-    or p_month !~ '^[0-9]{4}-[0-9]{2}$'
-    or jsonb_typeof(p_selections) is distinct from 'array'
-  then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
-  begin v_month := (p_month || '-01')::date; exception when others then raise exception 'INVALID_MONTH'; end;
-  if to_char(v_month, 'YYYY-MM') <> p_month then raise exception 'INVALID_MONTH'; end if;
-  v_next := (v_month + interval '1 month')::date;
-  for v_selection in select value from jsonb_array_elements(p_selections)
-  loop
-    if (v_selection ->> 'date') is null
-      or (v_selection ->> 'date') !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'
-    then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
-    begin
-      v_selection_date := (v_selection ->> 'date')::date;
-    exception when others then
-      raise exception 'INVALID_ATTENDANCE_SELECTIONS';
-    end;
-    if to_char(v_selection_date, 'YYYY-MM-DD') <> v_selection ->> 'date'
-    then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
-    if v_selection_date > v_today then raise exception 'FUTURE_ATTENDANCE_DATE'; end if;
-  end loop;
-
-  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:' || p_profile_id::text, 0));
-  perform private.assert_attendance_range_without_payroll_slip(p_profile_id, v_month, v_month);
-  for v_selection in select value from jsonb_array_elements(p_selections)
-  loop
-    v_selection_date := (v_selection ->> 'date')::date;
-    if (v_selection ->> 'status') is null
-      or (v_selection ->> 'status') not in ('HALF_DAY', 'OFF')
-      or v_selection_date < v_month
-      or v_selection_date >= v_next
-      or not exists (
-        select 1 from public.time_payroll_active_periods ap
-        where ap.profile_id = p_profile_id and ap.start_on <= v_selection_date
-          and (ap.end_on is null or ap.end_on >= v_selection_date)
-      )
-    then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
-  end loop;
-  if (
-    select count(*) <> count(distinct item ->> 'date') from jsonb_array_elements(p_selections) item
-  ) then raise exception 'INVALID_ATTENDANCE_SELECTIONS'; end if;
-
-  delete from public.time_payroll_attendance_exceptions x
-  where x.profile_id = p_profile_id and x.work_date >= v_month and x.work_date < v_next;
-  insert into public.time_payroll_attendance_exceptions(profile_id, work_date, status, created_by, updated_by)
-  select p_profile_id, (item ->> 'date')::date, item ->> 'status', v_actor, v_actor
-  from jsonb_array_elements(p_selections) item;
-  get diagnostics v_changed = row_count;
-
-  insert into public.time_tracking_audit_logs(admin_id, action, target_table, record_id, new_data, comment)
-  values (v_actor, 'REPLACE_ATTENDANCE_EXCEPTIONS', 'time_payroll_attendance_exceptions', p_profile_id,
-    jsonb_build_object('month', p_month, 'selections', p_selections, 'count', v_changed), 'แก้ข้อยกเว้นวันทำงาน');
-
-  v_rebuild := private.rebuild_open_deductions_after_attendance(p_profile_id, v_actor);
-  return jsonb_build_object('changed', v_changed, 'month', p_month) || v_rebuild;
+  if auth.uid() is null or not private.can_manage_time_payroll_profile(p_profile_id) then raise exception 'Forbidden'; end if;
+  if p_month is null or p_month !~ '^[0-9]{4}-(0[1-9]|1[0-2])$' then raise exception 'INVALID_MONTH'; end if;
+  if p_expected_revision is null then raise exception 'ATTENDANCE_REVISION_REQUIRED'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('time-payroll-attendance:'||p_profile_id::text,0));
+  if p_expected_revision is distinct from private.time_payroll_attendance_revision(p_profile_id,p_month) then
+    raise exception 'ATTENDANCE_STALE';
+  end if;
+  return private.replace_time_payroll_attendance_exceptions(p_profile_id,p_month,p_selections);
 end;
 $_$;
 
 
-ALTER FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") OWNER TO "postgres";
+ALTER FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb", "p_expected_revision" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb" DEFAULT '{}'::"jsonb", "p_comment" "text" DEFAULT NULL::"text") RETURNS "jsonb"
@@ -25784,14 +25861,63 @@ CREATE OR REPLACE FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_
 ALTER FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    SET "lock_timeout" TO '3s'
+    AS $_$
+declare receipt private.bill_device_reset_receipts; preview jsonb; finished timestamptz;
+begin
+  if not private.rubber_actor_active() or not exists (
+    select 1 from public.profiles where id = auth.uid() and role = 'super_admin'
+  ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
+  if p_request_id is null or p_snapshot is null or p_snapshot !~ '^[a-f0-9]{64}$'
+    or p_confirmation is distinct from 'รีเซ็ตทั้งหมด' then
+    raise exception 'BILL_DEVICE_RESET_INVALID' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('bill-device-reset:' || p_request_id::text, 0));
+  select * into receipt from private.bill_device_reset_receipts where request_id = p_request_id;
+  if found then
+    if receipt.actor_user_id is distinct from auth.uid() or receipt.snapshot is distinct from p_snapshot then
+      raise exception 'BILL_DEVICE_RESET_REQUEST_MISMATCH' using errcode = '22023';
+    end if;
+  else
+    perform pg_advisory_xact_lock(hashtextextended('bill-issuer-registry', 0));
+    preview := private.bill_device_reset_snapshot();
+    if preview->>'snapshot' is distinct from p_snapshot then
+      raise exception 'BILL_DEVICE_RESET_CONFLICT' using errcode = 'PT409';
+    end if;
+    if (preview->>'count')::bigint = 0 then
+      raise exception 'BILL_DEVICE_RESET_EMPTY' using errcode = 'PT409';
+    end if;
+    finished := clock_timestamp();
+    with changed as (
+      update private.bill_issuer_devices set retired_at = finished, retired_by = auth.uid()
+        where retired_at is null returning id
+    )
+    update private.rubber_bill_issuers link set retired_at = finished, retired_by = auth.uid()
+      from changed where link.device_id = changed.id and link.retired_at is null;
+    insert into private.bill_device_reset_receipts values
+      (p_request_id, auth.uid(), p_snapshot, (preview->>'count')::bigint, finished) returning * into receipt;
+  end if;
+  return jsonb_build_object('requestId', receipt.request_id, 'snapshot', receipt.snapshot,
+    'retiredCount', receipt.retired_count, 'completedAt', receipt.completed_at);
+end $_$;
+
+
+ALTER FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
+    SET "lock_timeout" TO '3s'
     AS $$
 declare i private.rubber_bill_issuers; d private.bill_issuer_devices;
 begin
   if not private.rubber_actor_active() or not private.rubber_actor_manager() then
     raise exception 'FORBIDDEN' using errcode='42501'; end if;
+  perform pg_advisory_xact_lock_shared(hashtextextended('bill-issuer-registry',0));
   select * into i from private.rubber_bill_issuers where id=p_id;
   if i.id is null then raise exception 'ISSUER_NOT_FOUND'; end if;
   if i.device_id is not null then
@@ -31830,6 +31956,20 @@ CREATE TABLE IF NOT EXISTS "private"."approval_request_replay_guards" (
 ALTER TABLE "private"."approval_request_replay_guards" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "private"."bill_device_reset_receipts" (
+    "request_id" "uuid" NOT NULL,
+    "actor_user_id" "uuid" NOT NULL,
+    "snapshot" "text" NOT NULL,
+    "retired_count" bigint NOT NULL,
+    "completed_at" timestamp with time zone NOT NULL,
+    CONSTRAINT "bill_device_reset_receipts_retired_count_check" CHECK (("retired_count" > 0)),
+    CONSTRAINT "bill_device_reset_receipts_snapshot_check" CHECK (("snapshot" ~ '^[a-f0-9]{64}$'::"text"))
+);
+
+
+ALTER TABLE "private"."bill_device_reset_receipts" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."bill_issuer_device_heads" (
     "installation_id" "uuid" NOT NULL,
     "generation_id" "uuid" NOT NULL,
@@ -33860,6 +34000,11 @@ ALTER TABLE "public"."user_locations" OWNER TO "postgres";
 
 ALTER TABLE ONLY "private"."approval_request_replay_guards"
     ADD CONSTRAINT "approval_request_replay_guards_pkey" PRIMARY KEY ("workflow", "request_key");
+
+
+
+ALTER TABLE ONLY "private"."bill_device_reset_receipts"
+    ADD CONSTRAINT "bill_device_reset_receipts_pkey" PRIMARY KEY ("request_id");
 
 
 
@@ -37742,6 +37887,10 @@ REVOKE ALL ON FUNCTION "private"."assign_rubber_bill_formula_version"() FROM PUB
 
 
 
+REVOKE ALL ON FUNCTION "private"."bill_device_reset_snapshot"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -38227,13 +38376,11 @@ REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_i
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") FROM PUBLIC;
-
-
-
 REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."rebuild_open_time_payroll_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_cause" "text") FROM PUBLIC;
 REVOKE ALL ON FUNCTION "private"."rebuild_open_withdrawal_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_withdrawal_id" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
 
 
@@ -38254,6 +38401,7 @@ REVOKE ALL ON FUNCTION "private"."reject_expired_approval_request_replay"() FROM
 
 
 
+REVOKE ALL ON FUNCTION "private"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") FROM PUBLIC;
 REVOKE ALL ON FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
@@ -38442,6 +38590,7 @@ REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."time_payroll_attendance_revision"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
 REVOKE ALL ON FUNCTION "private"."time_payroll_branch_paid_amount"("p_source_amount" numeric, "p_contract_version" smallint, "p_channel" "text", "p_transfer_amount" numeric, "p_expense_location_id" "uuid") FROM PUBLIC;
 
 
@@ -38810,9 +38959,6 @@ GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "
 
 
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") FROM PUBLIC;
-
-
-
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") TO "authenticated";
 
@@ -38899,9 +39045,6 @@ GRANT ALL ON FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "
 REVOKE ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "service_role";
-
-
-
 REVOKE ALL ON FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") TO "service_role";
 
@@ -39352,9 +39495,6 @@ GRANT ALL ON FUNCTION "public"."get_telegram_evidence_location_config"() TO "aut
 
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") TO "authenticated";
-
-
-
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() TO "authenticated";
 
@@ -39479,6 +39619,11 @@ GRANT ALL ON FUNCTION "public"."prepare_sms_phone_change"("p_actor" "uuid", "p_t
 
 
 
+REVOKE ALL ON FUNCTION "public"."preview_bill_device_reset"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_bill_device_reset"() TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) TO "authenticated";
 
@@ -39559,11 +39704,8 @@ GRANT ALL ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid
 
 
 
-REVOKE ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") TO "authenticated";
-
-
-
+REVOKE ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb", "p_expected_revision" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb", "p_expected_revision" "text") TO "authenticated";
 REVOKE ALL ON FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") FROM PUBLIC;
 
 
@@ -39863,6 +40005,11 @@ GRANT ALL ON FUNCTION "public"."request_time_tracking_withdrawal_adjustment"("p_
 
 REVOKE ALL ON FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_session" "uuid", "p_id" "uuid", "p_digest" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") TO "authenticated";
 
 
 
@@ -40709,13 +40856,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT UPDATE ON 
 
 
 
-
-
-
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-
-
-
 
 
 

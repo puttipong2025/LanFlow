@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertDialog } from "@/components/shared/AlertDialog";
 import { UserCircle } from "lucide-react";
-import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures, canManageTimePayroll } from "@/lib/permissions";
@@ -10,6 +10,7 @@ import type { Location, Profile } from "@/types";
 import { AttendanceCalendar } from "../attendance/AttendanceCalendar";
 import { AttendancePeriodControls } from "../periods/AttendancePeriodControls";
 import type { ApprovalType, PaymentAllocationInput } from "../contracts";
+import { usePayrollRefresh } from "../PayrollRefresh";
 import { EmployeeDialogs } from "./EmployeeDialogs";
 import { EmployeeFinancialSummary } from "./EmployeeFinancialSummary";
 import { EmployeeSlipList } from "./EmployeeSlipList";
@@ -18,18 +19,22 @@ import { createEmployeeAttendanceActions } from "./employee-attendance-actions";
 import { bangkokToday, paymentScopeReason, reportLockReason, TIME_TRACKING_OFFLINE_MESSAGE } from "../policy";
 import { invalidatePaymentLocations } from "../invalidate-payment";
 
-export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], hideHeading = false, allowManagerActions, canDecide, canConfigure, onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], hideHeading?: boolean, allowManagerActions?: boolean, canDecide?: boolean, canConfigure?: boolean, onApprove?: (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean>, onReject?: (type: ApprovalType, item: any, refreshOwner: () => Promise<void>) => Promise<boolean> }) {
+export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocationId, online, expenseLocations = [], hideHeading = false, allowManagerActions, canDecide, canConfigure, onSavingChange, onApprove, onReject }: { profile: Profile, targetUserId?: string, targetPrimaryLocationId?: string | null, online: boolean, expenseLocations?: Location[], hideHeading?: boolean, allowManagerActions?: boolean, canDecide?: boolean, canConfigure?: boolean, onSavingChange?: (saving: boolean) => void, onApprove?: (type: ApprovalType, item: any) => Promise<boolean>, onReject?: (type: ApprovalType, item: any) => Promise<boolean> }) {
   const queryClient = useQueryClient();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [deletingTransaction, setDeletingTransaction] = useState<any>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  useEffect(() => { onSavingChange?.(saving); return () => onSavingChange?.(false); }, [onSavingChange, saving]);
   const [pendingExpenseLocationTx, setPendingExpenseLocationTx] = useState<any>(null);
   const [pendingWithdrawal, setPendingWithdrawal] = useState<{ amount: number; effectiveDate: string } | null>(null);
   const [adjustingWithdrawal, setAdjustingWithdrawal] = useState<any>(null);
   const [previewSource, setPreviewSource] = useState<{ type: "withdrawal" | "payroll"; id: string } | null>(null);
   const { requestInput, inputDialog } = useInputDialog();
   const loadRequestIdRef = useRef(0);
+  const withdrawalInputRef = useRef(false);
   const mutationLockRef = useRef(false);
 
   function setMutation(next: boolean) {
@@ -53,7 +58,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
   const globalManager = canManageSystemFeatures(profile);
   const withdrawalActionText = isSelf ? "ขอเบิกเงินตนเอง" : "ขอเบิกเงินแทน";
 
-  const loadData = useCallback(async () => {
+  const readEmployee = useCallback(async () => {
     const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setLoadError(null);
@@ -74,24 +79,14 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     }
   }, [attendanceMonth, targetUserId]);
 
+  const loadData = usePayrollRefresh(readEmployee);
+
   useEffect(() => {
-    void loadData();
+    void readEmployee();
     return () => {
       loadRequestIdRef.current += 1;
     };
-  }, [loadData]);
-
-  useEffect(() => {
-    const refreshVisibleData = () => {
-      if (document.visibilityState === "visible") void loadData();
-    };
-    window.addEventListener("focus", refreshVisibleData);
-    document.addEventListener("visibilitychange", refreshVisibleData);
-    return () => {
-      window.removeEventListener("focus", refreshVisibleData);
-      document.removeEventListener("visibilitychange", refreshVisibleData);
-    };
-  }, [loadData]);
+  }, [readEmployee]);
 
   async function handleDeleteTransaction(tx: any) {
     const lockReason = reportLockReason(tx) || paymentScopeReason(tx, globalManager, expenseLocations);
@@ -103,9 +98,9 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    if (!confirm(`คุณต้องการลบรายการ ${tx.type === 'DEBT' ? 'สร้างหนี้สิน' : 'เบิกเงิน'} จำนวน ${tx.amount} ใช่หรือไม่?`)) return;
 
     if (!setMutation(true)) return;
+    setDeleteError(null);
     try {
       const res = await authFetch(
         canManageTime ? "/api/lanflow/time-tracking/admin" : "/api/lanflow/time-tracking/user",
@@ -116,17 +111,17 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       );
       if (!res.ok) {
          const json = await res.json();
-         alert(json.error || "ไม่สามารถลบรายการได้");
+         setDeleteError(json.error || "ไม่สามารถลบรายการได้");
       } else {
-         alert("ลบรายการสำเร็จ");
+         setDeletingTransaction(null);
          await Promise.all([
            loadData(),
-           queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+
            invalidatePaymentLocations(queryClient, profile.id, [tx.expense_location_id]),
          ]);
       }
-    } catch (e) {
-      alert("เกิดข้อผิดพลาด");
+    } catch {
+      setDeleteError("ไม่ทราบผลการลบ กรุณาโหลดข้อมูลล่าสุดเพื่อตรวจสอบ");
     } finally {
       setMutation(false);
     }
@@ -200,7 +195,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     setPendingWithdrawal(null);
     await Promise.all([
       loadData(),
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+
       invalidatePaymentLocations(queryClient, profile.id, [payment?.expenseLocationId]),
     ]);
     return true;
@@ -231,7 +226,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     setAdjustingWithdrawal(null);
     await Promise.all([
       loadData(),
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+
       invalidatePaymentLocations(queryClient, profile.id, [value.locationId]),
     ]);
     return true;
@@ -252,7 +247,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
         throw new Error(json?.error || "ถอนคำขอไม่สำเร็จ");
       }
       await loadData();
-      await queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] });
+
     } catch (error) {
       alert(error instanceof Error ? error.message : "ถอนคำขอไม่สำเร็จ");
     } finally {
@@ -288,7 +283,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
     </div>
   );
 
-  if (loadError) return (
+  if (loadError && !data) return (
     <div role="alert" className="rounded-xl border border-danger/25 bg-danger/5 p-4">
       <p className="text-pretty text-sm font-semibold text-danger">{loadError}</p>
       <button type="button" onClick={() => void loadData()} className="focus-ring mt-3 rounded-lg bg-river px-4 py-2 text-sm font-semibold text-white hover:bg-river/90">
@@ -315,6 +310,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
       className={`flex flex-col gap-6 p-4 ${targetUserId ? 'bg-mint/35 rounded-2xl border border-black/5 shadow-inner' : ''}`}
       aria-busy={saving}
     >
+      {loadError && <p role="alert" className="text-pretty text-sm text-clay">โหลดข้อมูลล่าสุดไม่ได้ แสดงข้อมูลครั้งก่อน <button type="button" onClick={() => void loadData()} className="focus-ring underline">ลองโหลดใหม่</button></p>}
       {!hideHeading && (
         <h2 className="flex items-center gap-2 text-balance text-xl font-bold text-ink">
           <UserCircle /> {targetUserId ? "ข้อมูลของพนักงาน" : "ระบบเวลาและเงินเดือน (ของตนเอง)"}
@@ -359,6 +355,9 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
               alert(TIME_TRACKING_OFFLINE_MESSAGE);
               return;
             }
+            if (withdrawalInputRef.current) return;
+            withdrawalInputRef.current = true;
+            try {
             const amount = await requestInput({
               title: withdrawalActionText,
               label: "ยอดเงินที่ต้องการเบิก (บาท)",
@@ -392,6 +391,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
             } finally {
               setMutation(false);
             }
+            } finally { withdrawalInputRef.current = false; }
           }}
           disabled={saving || !online}
           title={online ? undefined : TIME_TRACKING_OFFLINE_MESSAGE}
@@ -421,7 +421,7 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
         onPreview={(source) => setPreviewSource(source)}
         onChangePayment={changeWithdrawalExpenseLocation}
         onAdjust={setAdjustingWithdrawal}
-        onDelete={handleDeleteTransaction}
+        onDelete={async (tx) => { setDeleteError(null); setDeletingTransaction(tx); }}
         onWithdrawAdjustment={withdrawAdjustment}
       />
 
@@ -430,6 +430,10 @@ export function EmployeeWorkspace({ profile, targetUserId, targetPrimaryLocation
         online={online}
         onPreview={(id) => setPreviewSource({ type: "payroll", id })}
       />
+
+      <AlertDialog open={Boolean(deletingTransaction)} title="ลบรายการเบิกหรือหนี้" description="รายการนี้จะถูกลบถาวรและคืนผลหักที่เกี่ยวข้อง" confirmLabel="ยืนยันลบ" confirmClassName="bg-danger" busy={saving} onCancel={() => setDeletingTransaction(null)} onConfirm={() => void handleDeleteTransaction(deletingTransaction)}>
+        {deleteError && <p role="alert" className="mt-3 text-pretty text-sm text-danger">{deleteError}</p>}
+      </AlertDialog>
 
       <EmployeeDialogs
         isDebtModalOpen={isDebtModalOpen}

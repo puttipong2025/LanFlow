@@ -22,7 +22,7 @@ type PayrollSettings = {
   pendingEffectiveDate?: string | null;
 };
 
-export function useActionableBadges(enabled: boolean) {
+export function useActionableBadges(enabled: boolean, poll = true) {
   const query = useQuery({
     queryKey: [ACTIONABLE_BADGES_QUERY_KEY],
     enabled,
@@ -45,7 +45,7 @@ export function useActionableBadges(enabled: boolean) {
       };
     },
     staleTime: 30_000,
-    refetchInterval: (query) => millisecondsUntilNextActionableBadgeRefresh(
+    refetchInterval: (query) => !poll ? false : millisecondsUntilNextActionableBadgeRefresh(
       new Date(),
       query.state.data?.payrollSettings?.workdayEndTime,
       query.state.data?.payrollSettings?.pendingEffectiveDate,
@@ -56,5 +56,7 @@ export function useActionableBadges(enabled: boolean) {
 
   return {
     counts: query.isError ? {} : query.data?.counts ?? {},
+    error: query.isError,
+    refresh: query.refetch,
   };
 }

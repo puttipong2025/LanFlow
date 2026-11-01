@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarDays } from "lucide-react";
 import { formatPayrollCurrency } from "@/lib/time-tracking/format";
 import type { AttendanceExceptionDto, AttendanceMonthDto } from "@/lib/time-tracking/attendance-contract";
@@ -7,7 +7,7 @@ import { monthLabel, shiftMonth } from "../display";
 type AttendanceCalendarProps = {
   attendance: AttendanceMonthDto; month: string; editable?: boolean; saving?: boolean; disabledReason?: string;
   onMonthChange: (month: string) => void;
-  onSave?: (selections: AttendanceExceptionDto[]) => Promise<string | null>;
+  onSave?: (selections: AttendanceExceptionDto[], revision?: string) => Promise<string | null>;
 };
 function monthDays(month: string) {
   const [year, monthNumber] = month.split("-").map(Number);
@@ -37,6 +37,8 @@ export function AttendanceCalendar({
   onMonthChange,
   onSave,
 }: AttendanceCalendarProps) {
+  const editingRevision = useRef<string | undefined>(undefined);
+  const submitting = useRef(false);
   const [draft, setDraft] = useState<Record<string, "HALF_DAY" | "OFF"> | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const exceptions = useMemo(() => Object.fromEntries(attendance.exceptions.map((item) => [item.date, item.status])), [attendance.exceptions]);
@@ -53,11 +55,13 @@ export function AttendanceCalendar({
 
   useEffect(() => {
     setDraft(null);
+    editingRevision.current = undefined;
     setSaveError(null);
   }, [month, attendance.month]);
 
   function cycleDay(date: string) {
     if (!editable || saving || !isActiveDate(date) || !isEligibleDate(date)) return;
+    if (draft === null) editingRevision.current = attendance.revision;
     setSaveError(null);
     setDraft((current) => {
       const next = { ...(current ?? exceptions) };
@@ -69,16 +73,20 @@ export function AttendanceCalendar({
   }
 
   async function save() {
-    if (!onSave || !dirty) return;
+    if (!onSave || !dirty || submitting.current || saving) return;
+    submitting.current = true;
     setSaveError(null);
-    const error = await onSave(Object.entries(selections)
-      .filter(([date]) => isActiveDate(date) && isEligibleDate(date))
-      .map(([date, status]) => ({ date, status })));
-    if (error) {
-      setSaveError(error);
-      return;
-    }
-    setDraft(null);
+    try {
+      const error = await onSave(Object.entries(selections)
+        .filter(([date]) => isActiveDate(date) && isEligibleDate(date))
+        .map(([date, status]) => ({ date, status })), editingRevision.current);
+      if (error) {
+        setSaveError(error);
+        if (error.includes("ข้อมูลเปลี่ยน")) setDraft(null);
+        return;
+      }
+      setDraft(null);
+    } finally { submitting.current = false; }
   }
 
   return (
@@ -99,9 +107,9 @@ export function AttendanceCalendar({
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-3">
-        <button type="button" onClick={() => onMonthChange(shiftMonth(month, -1))} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold">เดือนก่อน</button>
+        <button type="button" disabled={saving} onClick={() => onMonthChange(shiftMonth(month, -1))} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold disabled:opacity-50">เดือนก่อน</button>
         <p className="text-center text-balance font-semibold text-ink">{monthLabel(month)}</p>
-        <button type="button" onClick={() => onMonthChange(shiftMonth(month, 1))} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold">เดือนถัดไป</button>
+        <button type="button" disabled={saving} onClick={() => onMonthChange(shiftMonth(month, 1))} className="focus-ring rounded-md border border-black/15 px-3 py-2 text-sm font-semibold disabled:opacity-50">เดือนถัดไป</button>
       </div>
 
       <div className="mt-3 grid grid-cols-7 gap-1" aria-label={`ปฏิทิน ${monthLabel(month)}`}>

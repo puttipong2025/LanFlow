@@ -2,6 +2,7 @@
 
 import { canManageTimePayroll } from "@/lib/permissions";
 import type { Location, Profile } from "@/types";
+import { PayrollRefresh } from "./time-tracking/PayrollRefresh";
 import { EmployeeWorkspace } from "./time-tracking/employee/EmployeeWorkspace";
 import { ManagerWorkspace } from "./time-tracking/manager/ManagerWorkspace";
 
@@ -18,7 +19,7 @@ export function TimeTrackingModule({
   locations,
   selectedLocationId,
 }: TimeTrackingModuleProps) {
-  return canManageTimePayroll(profile)
+  return <PayrollRefresh online={online} ownerUserId={profile.id}>{canManageTimePayroll(profile)
     ? (
       <ManagerWorkspace
         profile={profile}
@@ -27,5 +28,5 @@ export function TimeTrackingModule({
         selectedLocationId={selectedLocationId}
       />
     )
-    : <EmployeeWorkspace profile={profile} online={online} />;
+    : <EmployeeWorkspace profile={profile} online={online} />}</PayrollRefresh>;
 }

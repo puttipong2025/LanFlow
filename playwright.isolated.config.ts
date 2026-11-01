@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/bill-device-reset-route.spec.ts',
     '**/income-expense-fifth-scan.spec.ts',
     '**/income-expense-fourth-scan.spec.ts',
     '**/income-expense-third-scan.spec.ts',
@@ -18,6 +19,7 @@ export default defineConfig({
     '**/income-expense-approval-settings.spec.ts',
     '**/time-payroll-adjustment-errors.spec.ts',
     '**/time-payroll-route-failures.spec.ts',
+    '**/time-payroll-attendance-route.spec.ts',
     '**/rubber-device-numbering.spec.ts',
     '**/rubber-issuer-route.spec.ts',
     '**/business-cache.spec.ts',

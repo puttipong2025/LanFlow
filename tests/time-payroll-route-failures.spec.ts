@@ -31,6 +31,23 @@ const dependencies = (rpc: () => Promise<unknown>) => ({
   },
 });
 
+for (const endpoint of ["user", "admin"] as const) for (const [code, message, status] of [
+  ["P0001", "INVALID_AMOUNT", 400], ["P0001", "Forbidden", 403],
+  ["PGRST000", "private database connection failure", 503],
+  ["08006", "private database connection failure", 503],
+  ["PGRST003", "private database pool timeout", 504],
+] as const) test(`${endpoint} POST classifies returned ${code}/${status} without exposing internals`, async () => {
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/time-tracking/user/route")>(
+    `src/app/api/lanflow/time-tracking/${endpoint}/route.ts`,
+    dependencies(async () => ({ data: null, error: { code, message } })),
+  );
+  const response = await route.POST(new NextRequest(`http://localhost/api/lanflow/time-tracking/${endpoint}`, {
+    method: "POST", body: JSON.stringify({ action: "DELETE_TRANSACTION", payload: { transaction_id: id } }),
+  }));
+  expect(response.status).toBe(status);
+  expect((await response.json()).error).not.toContain("private database");
+});
+
 test("document Route renders saved details when optional source metadata is malformed", async () => {
   const source = {
     id, profile_id: id, month: "2026-10", status: "APPROVED", cancelled_at: null,

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { useInputDialog } from "@/hooks/useInputDialog";
 import { authFetch } from "@/lib/auth-fetch";
 import { canManageSystemFeatures, canManageTimePayroll } from "@/lib/permissions";
@@ -12,6 +11,7 @@ import { countWorkItemsForUsers, filterTimeTrackingEmployees, hasEmployeeWork, r
 import { usePayrollCutoffRefresh } from "../payroll-cutoff-refresh";
 import type { WageRecalculationPreview } from "../WageRecalculationDialog";
 import type { ApprovalType, PaymentAllocationInput } from "../contracts";
+import { usePayrollRefresh } from "../PayrollRefresh";
 import { ManagerDialogs } from "./ManagerDialogs";
 import { ManagerEmployeeDirectory } from "./ManagerEmployeeDirectory";
 import { ManagerHeader } from "./ManagerHeader";
@@ -25,6 +25,9 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const adminLoadRequestIdRef = useRef(0);
+  const wageSubmitRef = useRef(false);
+  const approvalSubmitRef = useRef(false);
+  const wagePreviewRef = useRef(false);
   const wageEditTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const [viewDashboardUserId, setViewDashboardUserId] = useState<string | null>(null);
@@ -38,7 +41,6 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     amount: number;
     primaryLocationId?: string | null;
     currentLocationId?: string | null;
-    refreshOwner?: () => Promise<void>;
   } | null>(null);
   const [pendingPaymentChange, setPendingPaymentChange] = useState<{
     sourceType: 'transaction' | 'payroll_slip';
@@ -47,7 +49,6 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     amountLabel: string;
     primaryLocationId?: string | null;
     currentLocationId?: string | null;
-    refreshOwner?: () => Promise<void>;
   } | null>(null);
   const [employeeFilter, setEmployeeFilter] = useState<"pending" | "all" | null>(null);
   const [employeeBranchFilter, setEmployeeBranchFilter] = useState(selectedLocationId ?? "all");
@@ -88,12 +89,8 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       if (requestId === adminLoadRequestIdRef.current) setLoading(false);
     }
   }, []);
-  const refreshPayrollBoundary = useCallback(async () => {
-    await Promise.all([
-      load(false),
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
-    ]);
-  }, [load, queryClient]);
+  const readManager = useCallback(() => load(false), [load]);
+  const refreshPayrollBoundary = usePayrollRefresh(readManager);
 
   useEffect(() => {
     void load();
@@ -108,18 +105,6 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     data?.settings?.pendingEffectiveDate,
     data?.users,
   );
-
-  useEffect(() => {
-    const refreshVisibleData = () => {
-      if (document.visibilityState === "visible") void load(false);
-    };
-    window.addEventListener("focus", refreshVisibleData);
-    document.addEventListener("visibilitychange", refreshVisibleData);
-    return () => {
-      window.removeEventListener("focus", refreshVisibleData);
-      document.removeEventListener("visibilitychange", refreshVisibleData);
-    };
-  }, [load]);
 
   const permissions = data?.permissions ?? {};
   const canManage = permissions.canManage ?? canManageTimePayroll(profile);
@@ -156,68 +141,70 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
     status: 'APPROVED' | 'REJECTED',
     expenseLocationId?: string | null,
     providedComment?: string,
-    refreshOwner?: () => Promise<void>,
     adjustment = false, payment?: PaymentAllocationInput,
   ) {
     if (!online) {
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return false;
     }
-    const requestedComment = providedComment === undefined
-      ? await requestInput({
-          title: status === 'APPROVED' ? "อนุมัติรายการ" : "ปฏิเสธรายการ",
-          label: status === 'APPROVED' ? "เหตุผลการอนุมัติ" : "เหตุผลการปฏิเสธ",
-          multiline: true,
-        })
-      : providedComment;
-    if (requestedComment === null) return false;
-    const comment = requestedComment;
-    const failureMessage = status === 'APPROVED'
-      ? 'ไม่สามารถบันทึกการอนุมัติได้'
-      : 'ไม่สามารถบันทึกการปฏิเสธได้';
-    let res: Response;
+    if (approvalSubmitRef.current) return false;
+    approvalSubmitRef.current = true;
     try {
-      res = await authFetch("/api/lanflow/time-tracking/admin", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: adjustment
-            ? 'DECIDE_WITHDRAWAL_ADJUSTMENT'
-            : type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
-          payload: adjustment
-            ? { adjustment_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
-            : type === 'TRANSACTION'
-            ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId, payment }
-            : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId, payment }
-        })
-      });
-    } catch (error) {
-      if (providedComment !== undefined) throw new Error(failureMessage);
-      alert(failureMessage);
-      return false;
-    }
-    if (!res.ok) {
-      const json = await res.json().catch(() => null);
-      if (providedComment !== undefined) throw new Error(json?.error || failureMessage);
-      alert(json?.error || failureMessage);
-      return false;
-    }
-    await Promise.all([load(false), refreshOwner?.(),
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
-      invalidatePaymentLocations(queryClient, profile.id, [expenseLocationId, payment?.expenseLocationId])]);
-    return true;
+      const requestedComment = providedComment === undefined
+        ? await requestInput({
+            title: status === 'APPROVED' ? "อนุมัติรายการ" : "ปฏิเสธรายการ",
+            label: status === 'APPROVED' ? "เหตุผลการอนุมัติ" : "เหตุผลการปฏิเสธ",
+            multiline: true,
+          })
+        : providedComment;
+      if (requestedComment === null) return false;
+      const comment = requestedComment;
+      const failureMessage = status === 'APPROVED'
+        ? 'ไม่สามารถบันทึกการอนุมัติได้'
+        : 'ไม่สามารถบันทึกการปฏิเสธได้';
+      let res: Response;
+      try {
+        res = await authFetch("/api/lanflow/time-tracking/admin", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: adjustment
+              ? 'DECIDE_WITHDRAWAL_ADJUSTMENT'
+              : type === 'TRANSACTION' ? 'APPROVE_TRANSACTION' : 'APPROVE_PAYROLL_SLIP',
+            payload: adjustment
+              ? { adjustment_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId }
+              : type === 'TRANSACTION'
+              ? { transaction_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId, payment }
+              : { slip_id: id, status, admin_comment: comment, expense_location_id: expenseLocationId, payment }
+          })
+        });
+      } catch {
+        if (providedComment !== undefined) throw new Error(failureMessage);
+        alert(failureMessage);
+        return false;
+      }
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        if (providedComment !== undefined) throw new Error(json?.error || failureMessage);
+        alert(json?.error || failureMessage);
+        return false;
+      }
+      await Promise.all([refreshPayrollBoundary(),
+
+        invalidatePaymentLocations(queryClient, profile.id, [expenseLocationId, payment?.expenseLocationId])]);
+      return true;
+    } finally { approvalSubmitRef.current = false; }
   }
   function handleApprove(
     type: ApprovalType,
     id: string,
     expense?: { title: string; amount: number; primaryLocationId?: string | null },
-    refreshOwner?: () => Promise<void>,
   ) {
     if (expense) {
-      setPendingExpenseApproval({ type: type as 'TRANSACTION' | 'SLIP', id, ...expense, refreshOwner });
+      setPendingExpenseApproval({ type: type as 'TRANSACTION' | 'SLIP', id, ...expense });
       return Promise.resolve(false);
     }
-    return submitApproval(type, id, 'APPROVED', undefined, undefined, refreshOwner);
+    return submitApproval(type, id, 'APPROVED');
   }
   async function submitPaymentChange(payment: PaymentAllocationInput, comment: string) {
     if (!pendingPaymentChange) return false;
@@ -238,11 +225,10 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       const json = await res.json().catch(() => null);
       throw new Error(json?.error || "ไม่สามารถเปลี่ยนวิธีจ่ายได้");
     }
-    const refreshOwner = pendingPaymentChange.refreshOwner;
     const affectedLocationIds = [pendingPaymentChange.currentLocationId, payment.expenseLocationId];
     setPendingPaymentChange(null);
-    await Promise.all([load(false), refreshOwner?.(),
-      queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
+    await Promise.all([refreshPayrollBoundary(),
+
       invalidatePaymentLocations(queryClient, profile.id, affectedLocationIds)]);
     return true;
   }
@@ -281,46 +267,51 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       alert(TIME_TRACKING_OFFLINE_MESSAGE);
       return;
     }
-    const wageText = await requestInput({
-      title: "แก้ไขค่าแรงรายวัน",
-      label: "ค่าแรงรายวัน (บาท)",
-      initialValue: formatDailyWage(currentWage),
-      inputType: "number",
-      required: true,
-      min: 0,
-      step: 0.0001,
-    });
-    if (wageText === null) return;
-    if (parseDailyWageInput(wageText) === null) {
-      setWageChangeError({ userId, message: "ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง" });
-      return;
-    }
-
-    setWagePreviewingUserId(userId);
-    setWageChangeError(null);
+    if (wagePreviewRef.current) return;
+    wagePreviewRef.current = true;
     try {
-      const normalizedWage = wageText.trim();
-      const preview = await loadWagePreview(userId, normalizedWage);
-      if (preview.noOp) {
-        toast.info("ค่าแรงเท่าเดิม ไม่มีข้อมูลที่ต้องเปลี่ยน");
+      const wageText = await requestInput({
+        title: "แก้ไขค่าแรงรายวัน",
+        label: "ค่าแรงรายวัน (บาท)",
+        initialValue: formatDailyWage(currentWage),
+        inputType: "number",
+        required: true,
+        min: 0,
+        step: 0.0001,
+      });
+      if (wageText === null) return;
+      if (parseDailyWageInput(wageText) === null) {
+        setWageChangeError({ userId, message: "ค่าแรงต้องเป็น 0 ขึ้นไปและมีทศนิยมไม่เกิน 4 ตำแหน่ง" });
         return;
       }
-      setPendingWageChange({ userId, employeeName, wageText: normalizedWage, preview });
-      setWageDialogError(null);
-      setWageDialogOpen(true);
-    } catch (error) {
-      console.error("Failed to preview daily wage:", error);
-      setWageChangeError({
-        userId,
-        message: error instanceof Error ? error.message : "ตรวจผลกระทบของค่าแรงไม่สำเร็จ",
-      });
-    } finally {
-      setWagePreviewingUserId(null);
-    }
+
+      setWagePreviewingUserId(userId);
+      setWageChangeError(null);
+      try {
+        const normalizedWage = wageText.trim();
+        const preview = await loadWagePreview(userId, normalizedWage);
+        if (preview.noOp) {
+          toast.info("ค่าแรงเท่าเดิม ไม่มีข้อมูลที่ต้องเปลี่ยน");
+          return;
+        }
+        setPendingWageChange({ userId, employeeName, wageText: normalizedWage, preview });
+        setWageDialogError(null);
+        setWageDialogOpen(true);
+      } catch (error) {
+        console.error("Failed to preview daily wage:", error);
+        setWageChangeError({
+          userId,
+          message: error instanceof Error ? error.message : "ตรวจผลกระทบของค่าแรงไม่สำเร็จ",
+        });
+      } finally {
+        setWagePreviewingUserId(null);
+      }
+    } finally { wagePreviewRef.current = false; }
   }
 
   async function commitWageChange() {
-    if (!pendingWageChange || wageCommitBusy) return;
+    if (!pendingWageChange || wageSubmitRef.current) return;
+    wageSubmitRef.current = true;
     setWageCommitBusy(true);
     setWageDialogError(null);
     try {
@@ -356,22 +347,20 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
       }
       setWageChangeError(null);
       setWageDialogOpen(false);
-      await Promise.all([
-        load(false),
-        queryClient.invalidateQueries({ queryKey: [ACTIONABLE_BADGES_QUERY_KEY] }),
-      ]);
+      await refreshPayrollBoundary();
       toast.success("แก้ค่าแรงและคำนวณยอดหักใหม่แล้ว");
     } catch (error) {
       console.error("Failed to commit daily wage:", error);
       setWageDialogError(error instanceof Error ? error.message : "แก้ไขค่าแรงรายวันไม่สำเร็จ");
     } finally {
+      wageSubmitRef.current = false;
       setWageCommitBusy(false);
     }
   }
 
-  if (loading) return <div>กำลังโหลดข้อมูล...</div>;
+  if (loading && !data) return <div>กำลังโหลดข้อมูล...</div>;
 
-  if (loadError) return (
+  if (loadError && !data) return (
     <div role="alert" className="rounded-xl border border-danger/25 bg-danger/5 p-4">
       <p className="text-sm font-semibold text-danger">{loadError}</p>
       <button type="button" onClick={() => void load()} className="focus-ring mt-3 rounded-lg bg-river px-4 py-2 text-sm font-semibold text-white hover:bg-river/90">
@@ -412,6 +401,7 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-6 p-4">
+      {loadError && <p role="alert" className="text-pretty text-sm text-clay">โหลดข้อมูลล่าสุดไม่ได้ แสดงข้อมูลครั้งก่อน <button type="button" onClick={() => void refreshPayrollBoundary()} className="focus-ring underline">ลองโหลดใหม่</button></p>}
          <ManagerHeader
            settings={data?.settings}
            canEditGlobalConfig={canEditGlobalConfig}
@@ -475,7 +465,6 @@ export function ManagerWorkspace({ profile, online, locations, selectedLocationI
         payrollUser={users.find((user: any) => user.id === payrollUserId)}
         setPayrollUser={setPayrollUserId}
         setPendingPaymentChange={setPendingPaymentChange}
-        load={refreshPayrollBoundary}
         pendingExpenseApproval={pendingExpenseApproval}
         pendingPaymentChange={pendingPaymentChange}
         submitPaymentChange={submitPaymentChange}

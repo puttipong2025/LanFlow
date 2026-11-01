@@ -1,8 +1,18 @@
+import { NextResponse } from "next/server";
+
+export function rpcConnectionFailure(error: { code?: string }) {
+  const status = error.code === "PGRST003" ? 504
+    : /^(?:08[A-Z0-9]{3}|PGRST00[0-2])$/.test(error.code ?? "") ? 503 : null;
+  return status === null ? null : NextResponse.json({
+    error: "ระบบเชื่อมต่อข้อมูลขัดข้อง กรุณาโหลดข้อมูลล่าสุดเพื่อตรวจสอบผลรายการ",
+  }, { status });
+}
+
 export function rpcErrorStatus(message: string) {
   if (/ADJUSTMENT_NOT_LATEST|CASH_COUNT_ACTIVE|ADJUSTMENT_NOT_FOUND|Transaction not found/i.test(message)) return 409;
   if (/Authentication required/i.test(message)) return 401;
   if (/Forbidden|access denied/i.test(message)) return 403;
-  if (/PAYROLL_AMOUNT_CHANGED|WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED|MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|ADJUSTMENT_(STALE|NO_OP|PENDING_EXISTS|ALREADY_DECIDED|BELOW_CLOSED_FLOOR)|already been decided/i.test(message)) return 409;
+  if (/ATTENDANCE_STALE|ATTENDANCE_REVISION_REQUIRED|PAYROLL_AMOUNT_CHANGED|WAGE_PREVIEW_STALE|WAGE_PREVIEW_REQUIRED|MONTH_CLOSED|PENDING_PERIOD_ACTION|DEDUCTION_LOCKED|DEDUCTION_WAGE_LOCKED|PENDING_BLOCKER|OLDER_WORK_MONTH|DELETE_NEWER_SLIP_FIRST|REPORT_LOCKED|NO_PERIOD_HISTORY_TO_RESUME|RESUME_BEFORE_LAST_END_DATE|PERIOD_START_CORRECTION_STALE|ADJUSTMENT_(STALE|NO_OP|PENDING_EXISTS|ALREADY_DECIDED|BELOW_CLOSED_FLOOR)|already been decided/i.test(message)) return 409;
   return 400;
 }
 
@@ -38,6 +48,7 @@ export function rpcErrorMessage(message: string) {
       : `เดือน ${deduction[1]} มีรายการหักเงินจริงแล้ว จึงแก้วันทำงานย้อนหลังไม่ได้`;
   }
   if (/DEDUCTION_WAGE_LOCKED/i.test(message)) return "มีเดือนที่หักเงินจริงแล้วแต่ยังไม่ได้ออกสลิป จึงแก้ค่าแรงไม่ได้";
+  if (/ATTENDANCE_STALE|ATTENDANCE_REVISION_REQUIRED/i.test(message)) return "ข้อมูลเปลี่ยน กรุณาโหลดใหม่";
   if (/WAGE_PREVIEW_STALE/i.test(message)) return "ข้อมูลค่าแรงหรือยอดหักเปลี่ยนแล้ว กรุณาตรวจ Preview ใหม่ก่อนยืนยัน";
   if (/WAGE_PREVIEW_REQUIRED/i.test(message)) return "กรุณาตรวจ Preview ค่าแรงก่อนยืนยัน";
 

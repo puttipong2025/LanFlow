@@ -7,10 +7,11 @@ import { isIssuerPage, type IssuerRow } from "@/lib/rubber-bills/issuer-manageme
 import { ModalShell } from "@/components/shared/ModalShell";
 import { TablePagination } from "@/components/shared/TablePagination";
 import type { Location } from "@/types";
+import { BillDeviceReset } from "./BillDeviceReset";
 
 const endpoint = "/api/lanflow/admin/rubber-bill-issuers";
 const time = (v: string) => new Intl.DateTimeFormat("th-TH", { timeZone: "Asia/Bangkok", dateStyle: "short", timeStyle: "short" }).format(new Date(v));
-export function RubberBillIssuers({ ownerUserId, locations }: { ownerUserId: string; locations: Location[] }) {
+export function RubberBillIssuers({ ownerUserId, locations, canResetAll = false }: { ownerUserId: string; locations: Location[]; canResetAll?: boolean }) {
   const client = useQueryClient(), lock = useRef(false);
   const [location, setLocation] = useState(""), [status, setStatus] = useState("active");
   const [draft, setDraft] = useState(""), [search, setSearch] = useState(""), [page, setPage] = useState(1);
@@ -39,6 +40,7 @@ export function RubberBillIssuers({ ownerUserId, locations }: { ownerUserId: str
   }
   return <section className="space-y-4 rounded-md border border-black/10 bg-white p-4 shadow-panel">
     <div><h3 className="text-balance text-lg font-bold">เครื่องออกบิล</h3><p className="text-pretty text-sm text-ink/60">หนึ่งเบราว์เซอร์/โปรไฟล์ใช้รหัสเดียวทุกสาขา ร่วมกับบิลยางและรับ–จ่าย · เวลาติดต่อล่าสุดไม่ใช่สถานะออนไลน์ปัจจุบัน</p></div>
+    {canResetAll && <BillDeviceReset ownerUserId={ownerUserId} />}
     <form onSubmit={event => { event.preventDefault(); setSearch(draft.trim()); setPage(1); }} className="flex flex-wrap items-end gap-3">
       <label className="grid gap-1 text-sm font-semibold">สาขา<select aria-label="กรองสาขาเครื่องออกบิล" value={location} onChange={e => { setLocation(e.target.value); setPage(1); }} className="focus-ring h-10 rounded-md border border-black/15 px-3"><option value="">ทุกสาขา</option>{locations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label>
       <label className="grid gap-1 text-sm font-semibold">สถานะ<select aria-label="กรองสถานะรหัสเครื่อง" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }} className="focus-ring h-10 rounded-md border border-black/15 px-3"><option value="all">ทั้งหมด</option><option value="active">ใช้งาน</option><option value="retired">เลิกใช้งาน</option></select></label>

@@ -62,6 +62,8 @@ select set_config('request.jwt.claim.sub','',true);
 select private.process_rubber_queue(20);
 select extensions.is((select result->>'status' from private.rubber_queue_jobs where client_temp_id='number-approved'),'pending_approval','new numbering still obeys price approval');
 select extensions.is((select count(*) from private.rubber_bill_number_bindings where client_temp_id='number-approved'),0::bigint,'pending approval does not allocate final suffix');
+select set_config('request.jwt.claim.sub',(select id::text from public.profiles where role='super_admin' and is_active limit 1),true);
+select public.reset_all_bill_devices(gen_random_uuid(),public.preview_bill_device_reset()->>'snapshot','รีเซ็ตทั้งหมด');
 select set_config('request.jwt.claim.sub','af000000-0000-4000-8000-000000000002',true);
 update public.profiles set can_access_super_admin_features=true where id=auth.uid();
 select extensions.is(public.get_rubber_bill_operational_feed_v2('af000000-0000-4000-8000-000000000001','pending_approval')->'rows'->0->'numbering_metadata'->>'version','1','pending feed preserves explicit numbering metadata');
@@ -71,7 +73,7 @@ select public.submit_rubber_queue(jsonb_build_object('contractVersion',2,
 from public.rubber_bill_approval_requests where client_temp_id='number-approved';
 select set_config('request.jwt.claim.sub','',true);
 select private.process_rubber_queue(20);
-select extensions.is((select server_bill_no from public.rubber_bills where client_temp_id='number-approved'),pg_temp.number_code('2610310001-D01-5'),'approval creates bill with the frozen base and final suffix');
+select extensions.is((select server_bill_no from public.rubber_bills where client_temp_id='number-approved'),pg_temp.number_code('2610310001-D01-5'),'approval after bulk device reset creates bill with frozen base and final suffix');
 select set_config('request.jwt.claim.sub','af000000-0000-4000-8000-000000000002',true);
 select extensions.is(public.submit_numbered_rubber_queue((select value from number_results where label='proposal'))->'result'->>'serverBillNo',pg_temp.number_code('2610310001-D01-5'),'admission replay after approval returns the same final');
 select extensions.is((select last_suffix from private.rubber_bill_suffix_counters where location_id='af000000-0000-4000-8000-000000000001' and base_number=pg_temp.number_code('2610310001-D01')),5::bigint,'approval and replay allocate the suffix once');

@@ -129,7 +129,6 @@ const CashCountModule = dynamic(
   () => import("@/components/cash-counts/CashCountModule").then((module) => module.CashCountModule),
   { loading: ModuleLoadingState },
 );
-
 export function LanFlowApp() {
   const auth = useAuthContext();
   if (auth.profile?.role === "user") return <UserTimePayrollApp />;
@@ -413,7 +412,7 @@ function BusinessLanFlowApp() {
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
   const browserApprovals = useBrowserApprovals(activeTab !== "admin");
-  const { counts: actionableBadgeCounts } = useActionableBadges(isLoaded);
+  const { counts: actionableBadgeCounts, error: badgeError, refresh: refreshBadges } = useActionableBadges(isLoaded, activeTab !== "time-tracking");
 
   useEffect(() => {
     if (activeTab === "money-transfer" && !canAccessMoneyTransfer) {
@@ -679,6 +678,7 @@ function BusinessLanFlowApp() {
         />
       </section>
 
+      {badgeError && <div role="status" className="mx-auto max-w-7xl px-4 pt-3 text-sm text-clay"><p className="text-pretty">โหลดจำนวนงานล่าสุดไม่ได้ <button type="button" onClick={() => void refreshBadges()} className="focus-ring underline">ลองโหลดใหม่</button></p></div>}
       <section className={`landscape-compact-content mx-auto w-full px-3 py-5 sm:px-4 sm:py-6 ${activeTab === "rubber" || activeTab === "rubber-evidence" || activeTab === "rubber-export" ? "max-w-[1800px]" : "max-w-7xl"}`}>
         {selectedLock && <CashCountLockNotice state={selectedLock} offset={cashLocks.offset} working={cashLocks.working === selectedLock.locationId} onUnlock={() => void cashLocks.unlock(selectedLock.locationId)} onOpen={() => { setLockAlertOpen(true); void rubberWeightAlert.checkNow(); }} />}
         {cashLocks.error && <div role="alert" className="my-2 space-y-2 text-sm text-clay"><p className="text-pretty">{cashLocks.error}</p><button type="button" onClick={() => void cashLocks.refresh()} className="focus-ring min-h-11 rounded-md bg-river px-3 font-semibold text-white">ลองโหลดสถานะล็อกใหม่</button></div>}
