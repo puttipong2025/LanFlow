@@ -10,11 +10,12 @@ const literal = (v: unknown) => `'${JSON.stringify(v).replaceAll("'", "''")}'::j
 test("concurrent numbered income business creates and exact replays keep one binding per identity", async () => {
   test.setTimeout(60000);
   const actor = crypto.randomUUID(), branch = crypto.randomUUID();
-  const settings = JSON.parse(await sql("select to_jsonb(s) from public.income_expense_approval_settings s where id=true"));
+  const settings = JSON.parse(await sql("select coalesce((select to_jsonb(s) from public.income_expense_approval_settings s where id=true),'null'::jsonb)"));
   const auth = `select set_config('request.jwt.claim.sub','${actor}',true);`;
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date());
   try {
-    await sql(`insert into public.locations(id,name,code,is_active) values('${branch}','IE concurrent','IC${branch.slice(0,6)}',true);
+    await sql(`insert into public.income_expense_approval_settings(id) values(true) on conflict(id) do nothing;
+      insert into public.locations(id,name,code,is_active) values('${branch}','IE concurrent','IC${branch.slice(0,6)}',true);
       insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_features) values('${actor}','${actor}','IE concurrent','admin',true,true);
       insert into public.user_locations(user_id,location_id,is_primary) values('${actor}','${branch}',true);
       update public.income_expense_approval_settings set approval_min_amount=null,non_current_date_requires_approval=false;`);
@@ -37,7 +38,9 @@ test("concurrent numbered income business creates and exact replays keep one bin
     expect(replay.map(v => v.serverBillNo)).toEqual(Array(4).fill(result[0].serverBillNo));
     expect(await sql(`select count(*) from public.income_expense where location_id='${branch}'`)).toBe("6");
   } finally {
-    await sql(`begin; update public.income_expense_approval_settings set approval_min_amount=${settings.approval_min_amount ?? "null"},non_current_date_requires_approval=${settings.non_current_date_requires_approval};
+    await sql(`begin; ${settings
+      ? `update public.income_expense_approval_settings set approval_min_amount=${settings.approval_min_amount ?? "null"},non_current_date_requires_approval=${settings.non_current_date_requires_approval};`
+      : 'delete from public.income_expense_approval_settings where id=true;'}
       delete from public.income_expense where location_id='${branch}';
       set constraints all immediate;
       delete from private.income_expense_number_bindings where location_id='${branch}';

@@ -6,7 +6,9 @@ insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_
   values('ae000000-0000-4000-8000-000000000002','0899998012','IE numbers','admin',true,true);
 insert into public.user_locations(user_id,location_id,is_primary)
   values('ae000000-0000-4000-8000-000000000002','ae000000-0000-4000-8000-000000000001',true);
-update public.income_expense_approval_settings set approval_min_amount=null,non_current_date_requires_approval=false;
+-- A fresh seed may remove this singleton through the profile FK; own all approval inputs.
+insert into public.income_expense_approval_settings(id) values(true) on conflict(id) do nothing;
+update public.income_expense_approval_settings set applies_to='both',approval_min_amount=null,non_current_date_requires_approval=false;
 update public.income_expense_approval_keywords set is_active=false;
 select set_config('request.jwt.claim.sub','ae000000-0000-4000-8000-000000000002',true);
 select set_config('request.jwt.claims','{"sub":"ae000000-0000-4000-8000-000000000002","role":"authenticated"}',true);

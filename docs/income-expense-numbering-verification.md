@@ -75,3 +75,11 @@ Verified 2026-11-01:
 | Visual gate | Viewed the final mobile images: accepted number wraps in the form without horizontal clipping; the Thai quota notification is asserted; approval history shows the matching final. Images retained in `.codex-attachments/income-expense-numbering-delivery-20261101/`. |
 
 The current Local schema snapshot preserves the concurrent registry work. Rollout/rollback is documented in `docs/income-expense-numbering-rollout.md`. The 32-task Daily checklist and canonical vault contract are synchronized after these verified results. No Cloud apply, commit, push or deployment was performed by this task.
+
+## Release CI fixture follow-up — 2026-11-01
+
+The release at `10c0d82` passed the hosted web gate and deployed on Vercel. Its fresh-database gate exposed nine failing assertions in the numbered Income/Expense SQL fixture. Fresh seed truncation removes the approval-settings singleton through its profile foreign key; the fixture's `UPDATE` changed zero rows, so its intended approval threshold was never configured. Removing that row inside a rollback-only Local reproduction produced the same nine failures; explicitly providing the row with `applies_to='both'` passed all 36 assertions. An existing income-only setting reproduced the same failure, so the fixture now owns both presence and type scope.
+
+The new concurrency fixture also assumed that selecting the singleton always returned JSON. A missing-row reproduction failed with `Unexpected end of JSON input`. It now reads a nullable snapshot, creates its required setting, and restores the prior row's modified fields or its original absence during cleanup. The missing-row and populated-row concurrency controls passed; the missing-row control also verified that cleanup restored absence. Original Local settings were restored after the reproduction.
+
+After these fixture corrections, all **79 SQL files / 1,922 assertions** passed again. Focused concurrency, ESLint and type checks passed. The changes affect test setup and cleanup; the already-applied six Cloud migrations remain unchanged.
