@@ -5216,6 +5216,13 @@ declare
   v_reverting boolean;
   v_receipt_no text;
 begin
+  if old.status = 'verified' and new.status = 'verified'
+    and (to_jsonb(new) - array['current_weight', 'weight_loss_percent'])
+      is not distinct from (to_jsonb(old) - array['current_weight', 'weight_loss_percent'])
+    and exists (select 1 from private.rubber_export_weight_context c
+      where c.backend_pid = pg_backend_pid() and c.transaction_id = txid_current() and c.export_id = old.id) then
+    return new;
+  end if;
   v_reverting := old.status = 'verified' and new.status = 'draft';
 
   if old.status = 'deleted' then
@@ -12189,6 +12196,82 @@ $$;
 
 
 ALTER FUNCTION "public"."activate_exception_attendance"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."adjust_rubber_export_weight"("p_export_id" "uuid", "p_current_weight" numeric, "p_expected_current_weight" numeric, "p_note" "text" DEFAULT NULL::"text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare
+  v_export public.rubber_exports%rowtype;
+  v_report_no text;
+  v_actor_name text;
+  v_loss numeric;
+begin
+  select * into v_export from public.rubber_exports where id = p_export_id;
+  if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
+  if not private.can_manage_rubber_exports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์ปรับน้ำหนักรายการส่งออกของสาขานี้';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(v_export.location_id::text, 0));
+  -- Legacy sale/receipt paths can hold the row before requesting the branch lock.
+  -- Do not wait on that row while holding the branch lock: the two waits form a cycle.
+  begin
+    select * into v_export from public.rubber_exports where id = p_export_id for update nowait;
+  exception when lock_not_available then
+    raise exception 'RUBBER_EXPORT_WEIGHT_CONFLICT: รายการกำลังถูกใช้งาน กรุณาลองปรับน้ำหนักอีกครั้ง';
+  end;
+  if v_export.id is null then raise exception 'ไม่พบรายการส่งออก'; end if;
+  if not private.can_manage_rubber_exports(v_export.location_id) then
+    raise exception 'ไม่มีสิทธิ์ปรับน้ำหนักรายการส่งออกของสาขานี้';
+  end if;
+  if v_export.status <> 'verified' then raise exception 'ปรับน้ำหนักย้อนหลังได้เฉพาะรายการที่ตรวจสอบแล้ว'; end if;
+  if v_export.sold_out_at is not null then raise exception 'RUBBER_EXPORT_SOLD_OUT: รายการนี้ขายแล้ว'; end if;
+  v_report_no := private.active_report_no('rubber_export', p_export_id);
+  if v_report_no is not null then perform private.raise_report_lock(v_report_no); end if;
+  if exists (select 1 from public.rubber_bills where source_rubber_export_id = p_export_id and record_status = 'active') then
+    raise exception 'BRANCH_RECEIPT_SOURCE_LOCKED: มีบิลรับเข้าอ้างอิงรายการนี้แล้ว';
+  end if;
+  if exists (select 1 from public.export_vehicle_weigh_bill_reservations where rubber_export_id = p_export_id) then
+    raise exception 'WEX_RESERVATION_LOCKED: รายการนี้ถูกจองในบิลรถส่งออก';
+  end if;
+  if p_current_weight is null or p_expected_current_weight is null
+    or p_current_weight::text in ('NaN', 'Infinity', '-Infinity')
+    or p_expected_current_weight::text in ('NaN', 'Infinity', '-Infinity')
+    or p_current_weight <= 0 or p_current_weight > v_export.original_weight_total
+    or p_expected_current_weight <= 0 or p_expected_current_weight > v_export.original_weight_total then
+    raise exception 'น้ำหนักต้องมากกว่า 0 และไม่เกินน้ำหนักสุทธิรวมเดิม';
+  end if;
+  if p_current_weight <> round(p_current_weight, 2) or p_expected_current_weight <> round(p_expected_current_weight, 2) then
+    raise exception 'RUBBER_EXPORT_PRECISION: น้ำหนักรองรับทศนิยมไม่เกิน 2 ตำแหน่ง';
+  end if;
+  if char_length(p_note) > 300 then raise exception 'หมายเหตุปรับน้ำหนักต้องไม่เกิน 300 ตัวอักษร'; end if;
+  if p_current_weight = v_export.current_weight then
+    return jsonb_build_object('id', p_export_id, 'currentWeight', v_export.current_weight, 'weightLossPercent', v_export.weight_loss_percent);
+  end if;
+  if p_expected_current_weight is distinct from v_export.current_weight then
+    raise exception 'RUBBER_EXPORT_WEIGHT_CONFLICT: น้ำหนักเปลี่ยนไปแล้ว กรุณาปิดแล้วเปิดรายละเอียดใหม่';
+  end if;
+  select name into v_actor_name from public.profiles where id = auth.uid() and is_active;
+  if v_actor_name is null then raise exception 'ไม่มีสิทธิ์ปรับน้ำหนัก บัญชีผู้ใช้ไม่พร้อมใช้งาน'; end if;
+  v_loss := round((v_export.original_weight_total - p_current_weight) / v_export.original_weight_total * 100, 2);
+  insert into private.rubber_export_weight_context values (pg_backend_pid(), txid_current(), p_export_id);
+  update public.rubber_exports set current_weight = p_current_weight, weight_loss_percent = v_loss where id = p_export_id;
+  delete from private.rubber_export_weight_context
+    where backend_pid = pg_backend_pid() and transaction_id = txid_current() and export_id = p_export_id;
+  insert into public.rubber_export_weight_adjustments (
+    export_id, export_no, location_id, previous_weight, current_weight,
+    previous_loss_percent, loss_percent, actor_user_id, actor_name, note
+  ) values (
+    p_export_id, v_export.export_no, v_export.location_id, v_export.current_weight, p_current_weight,
+    v_export.weight_loss_percent, v_loss, auth.uid(), v_actor_name, nullif(btrim(p_note), '')
+  );
+  return jsonb_build_object('id', p_export_id, 'currentWeight', p_current_weight, 'weightLossPercent', v_loss);
+end;
+$$;
+
+
+ALTER FUNCTION "public"."adjust_rubber_export_weight"("p_export_id" "uuid", "p_current_weight" numeric, "p_expected_current_weight" numeric, "p_note" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."approve_rubber_bill_approval_request"("p_request_id" "uuid") RETURNS "jsonb"
@@ -32332,6 +32415,16 @@ CREATE TABLE IF NOT EXISTS "private"."rubber_command_receipts" (
 ALTER TABLE "private"."rubber_command_receipts" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "private"."rubber_export_weight_context" (
+    "backend_pid" integer NOT NULL,
+    "transaction_id" bigint NOT NULL,
+    "export_id" "uuid" NOT NULL
+);
+
+
+ALTER TABLE "private"."rubber_export_weight_context" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."rubber_queue_execution" (
     "backend_pid" integer NOT NULL,
     "transaction_id" bigint NOT NULL,
@@ -33746,6 +33839,26 @@ COMMENT ON COLUMN "public"."rubber_export_items"."rubber_value_amount" IS 'Immut
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."rubber_export_weight_adjustments" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "export_id" "uuid" NOT NULL,
+    "export_no" "text" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "previous_weight" numeric(14,2) NOT NULL,
+    "current_weight" numeric(14,2) NOT NULL,
+    "previous_loss_percent" numeric(8,2) NOT NULL,
+    "loss_percent" numeric(8,2) NOT NULL,
+    "actor_user_id" "uuid",
+    "actor_name" "text" NOT NULL,
+    "adjusted_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    "note" "text",
+    CONSTRAINT "rubber_export_weight_adjustments_note_check" CHECK (("char_length"("note") <= 300))
+);
+
+
+ALTER TABLE "public"."rubber_export_weight_adjustments" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."rubber_weight_alert_group_locations" (
     "group_id" "uuid" NOT NULL,
     "location_id" "uuid" NOT NULL,
@@ -34212,6 +34325,11 @@ ALTER TABLE ONLY "private"."rubber_command_contexts"
 
 ALTER TABLE ONLY "private"."rubber_command_receipts"
     ADD CONSTRAINT "rubber_command_receipts_pkey" PRIMARY KEY ("command_id");
+
+
+
+ALTER TABLE ONLY "private"."rubber_export_weight_context"
+    ADD CONSTRAINT "rubber_export_weight_context_pkey" PRIMARY KEY ("backend_pid", "transaction_id", "export_id");
 
 
 
@@ -34737,6 +34855,11 @@ ALTER TABLE ONLY "public"."rubber_export_items"
 
 ALTER TABLE ONLY "public"."rubber_export_items"
     ADD CONSTRAINT "rubber_export_items_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_weight_adjustments"
+    ADD CONSTRAINT "rubber_export_weight_adjustments_pkey" PRIMARY KEY ("id");
 
 
 
@@ -35312,6 +35435,10 @@ CREATE UNIQUE INDEX "rubber_export_items_one_active_bill" ON "public"."rubber_ex
 
 
 CREATE INDEX "rubber_export_items_source_report" ON "public"."rubber_export_items" USING "btree" ("source_report_item_id") WHERE ("active" = true);
+
+
+
+CREATE INDEX "rubber_export_weight_adjustments_export_history" ON "public"."rubber_export_weight_adjustments" USING "btree" ("export_id", "adjusted_at" DESC, "id" DESC);
 
 
 
@@ -36675,6 +36802,16 @@ ALTER TABLE ONLY "public"."rubber_export_items"
 
 
 
+ALTER TABLE ONLY "public"."rubber_export_weight_adjustments"
+    ADD CONSTRAINT "rubber_export_weight_adjustments_actor_user_id_fkey" FOREIGN KEY ("actor_user_id") REFERENCES "public"."profiles"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."rubber_export_weight_adjustments"
+    ADD CONSTRAINT "rubber_export_weight_adjustments_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
 ALTER TABLE ONLY "public"."rubber_exports"
     ADD CONSTRAINT "rubber_exports_created_by_user_id_fkey" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."profiles"("id");
 
@@ -36871,6 +37008,9 @@ ALTER TABLE ONLY "public"."user_locations"
 
 
 ALTER TABLE "private"."money_transfer_delete_context" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "private"."rubber_export_weight_context" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "Allow all authenticated users to read active items" ON "public"."income_sale_items" FOR SELECT TO "authenticated" USING ((("is_active" = true) AND "private"."can_access_business_modules"()));
@@ -37401,6 +37541,13 @@ ALTER TABLE "public"."rubber_bills" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."rubber_export_items" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."rubber_export_weight_adjustments" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "rubber_export_weight_adjustments_scoped_read" ON "public"."rubber_export_weight_adjustments" FOR SELECT TO "authenticated" USING ("private"."can_manage_rubber_exports"("location_id"));
+
 
 
 ALTER TABLE "public"."rubber_exports" ENABLE ROW LEVEL SECURITY;
@@ -38757,6 +38904,11 @@ REVOKE ALL ON FUNCTION "private"."withdrawal_closed_floor"("p_withdrawal_id" "uu
 
 
 REVOKE ALL ON FUNCTION "public"."activate_exception_attendance"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."adjust_rubber_export_weight"("p_export_id" "uuid", "p_current_weight" numeric, "p_expected_current_weight" numeric, "p_note" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."adjust_rubber_export_weight"("p_export_id" "uuid", "p_current_weight" numeric, "p_expected_current_weight" numeric, "p_note" "text") TO "authenticated";
 
 
 
@@ -40865,6 +41017,11 @@ GRANT ALL ON TABLE "public"."rubber_bill_ocr_sources" TO "service_role";
 
 GRANT ALL ON TABLE "public"."rubber_export_items" TO "service_role";
 GRANT SELECT ON TABLE "public"."rubber_export_items" TO "authenticated";
+
+
+
+GRANT SELECT ON TABLE "public"."rubber_export_weight_adjustments" TO "authenticated";
+GRANT SELECT ON TABLE "public"."rubber_export_weight_adjustments" TO "service_role";
 
 
 

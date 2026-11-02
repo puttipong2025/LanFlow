@@ -106,6 +106,8 @@ export default defineConfig({
     '**/rubber-evidence-selectors.spec.ts',
     '**/rubber-export-age.spec.ts',
     '**/rubber-export-calculations.spec.ts',
+    '**/rubber-export-weight-route.spec.ts',
+    '**/rubber-export-save.spec.ts',
     '**/rubber-export-presentation.spec.ts',
     '**/scoped-single-flight.spec.ts',
     '**/sync-response.spec.ts',

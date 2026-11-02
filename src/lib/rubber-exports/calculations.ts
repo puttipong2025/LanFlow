@@ -15,7 +15,20 @@ function toCents(value: number) {
 export function calculateWeightLossPercent(originalWeight: number, currentWeight: number) {
   if (!Number.isFinite(originalWeight) || !Number.isFinite(currentWeight)) return null;
   if (originalWeight <= 0 || currentWeight <= 0 || currentWeight > originalWeight) return null;
-  return round2(((originalWeight - currentWeight) / originalWeight) * 100);
+  const originalCents = toCents(originalWeight), currentCents = toCents(currentWeight);
+  if (originalCents === null || currentCents === null) return null;
+  // Match PostgreSQL numeric half-up rounding without binary subtraction at a half tie.
+  const lossBasisPoints = ((originalCents - currentCents) * BigInt(10000) + originalCents / BigInt(2)) / originalCents;
+  return Number(lossBasisPoints) / 100;
+}
+
+export function calculateCurrentWeight(originalWeight: number, lossPercent: number) {
+  if (!Number.isFinite(originalWeight) || originalWeight <= 0
+    || !hasTwoDecimalPrecision(lossPercent) || lossPercent < 0 || lossPercent >= 100) return null;
+  const originalCents = toCents(originalWeight), lossBasisPoints = toCents(lossPercent);
+  if (originalCents === null || lossBasisPoints === null) return null;
+  const weightCents = (originalCents * (BigInt(10000) - lossBasisPoints) + BigInt(5000)) / BigInt(10000);
+  return weightCents > BigInt(0) ? Number(weightCents) / 100 : null;
 }
 
 export function calculateWorkTotal(

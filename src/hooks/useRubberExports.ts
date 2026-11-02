@@ -4,9 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { assertApiResponse, authFetch } from "@/lib/auth-fetch";
+import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import type {
   RubberExportAvailableBill,
   RubberExportDetails,
+  RubberExportEditValues,
   RubberExportExpenseDestination,
   RubberExportPermissions,
   RubberExportPreview,
@@ -316,19 +318,27 @@ export function useRubberExports(
 
   async function update(
     exportId: string,
-    values: {
-      currentWeight: number | null;
-      workRate: number | null;
-      otherOperatingCost: number;
-    }
+    values: RubberExportEditValues,
   ) {
-    const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}`, {
+    const mutationScope = scopeVersion.current;
+    const response = await authFetch(`/api/lanflow/rubber-exports/${exportId}${values.adjustment ? "/weight" : ""}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(values),
+      body: JSON.stringify(values.adjustment ? { currentWeight: values.currentWeight, ...values.adjustment } : values),
     });
     await assertApiResponse(response);
-    await reload();
+    const sameScope = mutationScope === scopeVersion.current && locationIdRef.current === locationId;
+    if (!values.adjustment) { if (sameScope) await reload(); return; }
+    const refetchType = sameScope ? "active" : "none";
+    const refreshed = await Promise.allSettled([
+      sameScope ? reload() : Promise.resolve(false),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.stock(locationId), refetchType }, { throwOnError: true }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardSnapshot(locationId), refetchType }, { throwOnError: true }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardMoneyHistory(locationId), refetchType }, { throwOnError: true }),
+      queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardBranchSummaries(), refetchType }, { throwOnError: true }),
+    ]);
+    return { refreshFailed: refreshed.some((result, index) => result.status === "rejected"
+      || (index === 0 && result.status === "fulfilled" && result.value !== true)) };
   }
 
   async function replaceItems(exportId: string, selectedReportItemIds: string[]) {

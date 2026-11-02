@@ -66,6 +66,25 @@ export type RubberExportSummary = {
 
 export type RubberExportDetails = RubberExportSummary & {
   items: RubberExportItem[];
+  weightAdjustments?: RubberExportWeightAdjustment[];
+};
+
+export type RubberExportWeightAdjustment = {
+  id: string;
+  previousWeight: number;
+  currentWeight: number;
+  previousLossPercent: number;
+  lossPercent: number;
+  actorName: string;
+  adjustedAt: string;
+  note: string | null;
+};
+
+export type RubberExportEditValues = {
+  currentWeight: number | null;
+  workRate: number | null;
+  otherOperatingCost: number;
+  adjustment?: { expectedCurrentWeight: number; note: string };
 };
 
 export type RubberExportAvailableBill = {

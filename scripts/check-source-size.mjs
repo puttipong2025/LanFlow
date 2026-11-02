@@ -19,7 +19,6 @@ const grandfathered = new Map(Object.entries({
   "src/components/rubber-bills/RubberBillModal.tsx": 856,
   "src/components/rubber-bills/RubberBillsModule.tsx": 819,
   "src/components/rubber-evidence/RubberEvidenceModule.tsx": 539,
-  "src/components/rubber-exports/RubberExportDetailModal.tsx": 514,
   "src/components/rubber-exports/RubberExportsModule.tsx": 679,
   "src/types/index.ts": 610,
 }));

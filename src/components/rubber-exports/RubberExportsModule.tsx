@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FilePlus2, RotateCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 import type { Location } from "@/types";
@@ -16,6 +16,7 @@ import { createRubberExportPdfFile } from "@/lib/rubber-exports/rubber-export-pd
 import { rubberExportShareTitle } from "@/lib/rubber-exports/rubber-export-presentation";
 import { RubberExportCreateModal, type RubberExportPreviewDisplay } from "@/components/rubber-exports/RubberExportCreateModal";
 import { RubberExportDetailModal } from "@/components/rubber-exports/RubberExportDetailModal";
+import { saveRubberExportDetails } from "@/components/rubber-exports/save-rubber-export-details";
 import { RubberExportTable } from "@/components/rubber-exports/RubberExportTable";
 import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -157,6 +158,13 @@ export function RubberExportsModule({
   const [revertError, setRevertError] = useState<string | null>(null);
   const detailController = useRef<AbortController | null>(null);
   const pdfShare = useSharePdf();
+  const closeDetails = useCallback(() => {
+    detailController.current?.abort();
+    detailController.current = null;
+    setDetailTarget(null);
+    setDetails(null);
+    setDetailError(null);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 400);
@@ -198,13 +206,14 @@ export function RubberExportsModule({
   }
 
   useEffect(() => {
+    closeDetails();
     setPendingDelete(null);
     setDeleting(false);
     setPendingRevert(null);
     setReverting(false);
     setRevertError(null);
     return () => { deleteRequestVersion.current += 1; };
-  }, [selectedLocation.id]);
+  }, [selectedLocation.id, closeDetails]);
 
   useEffect(() => {
     if (view === "deletions") void reloadDeletions();
@@ -230,17 +239,7 @@ export function RubberExportsModule({
       if (detailController.current === controller) {
         setDetailError(error instanceof Error ? error.message : "โหลดรายการส่งออกไม่สำเร็จ");
       }
-    } finally {
-      if (detailController.current === controller) detailController.current = null;
     }
-  }
-
-  function closeDetails() {
-    detailController.current?.abort();
-    detailController.current = null;
-    setDetailTarget(null);
-    setDetails(null);
-    setDetailError(null);
   }
 
   useEffect(() => () => detailController.current?.abort(), []);
@@ -584,7 +583,7 @@ export function RubberExportsModule({
             details.id,
             details.status,
             details.originalWeightTotal,
-            details.currentWeight ?? "",
+            details.status === "draft" ? details.currentWeight ?? "" : "",
             details.workRate ?? "",
             details.otherOperatingCost,
             details.items.map((item) => item.id).join(","),
@@ -593,17 +592,9 @@ export function RubberExportsModule({
           canVerify={api.permissions.canVerify}
           shareBusy={pdfShare.busy}
           sharing={sharingId === details.id}
-          onSave={async (values) => {
-            try {
-              await api.update(details.id, values);
-              setDetails(await api.details(details.id));
-              toast.success("บันทึกฉบับร่างแล้ว");
-            } catch (error) {
-              toast.error(error instanceof Error ? error.message : "บันทึกไม่สำเร็จ");
-              throw error;
-            }
-          }}
+          onSave={(values) => saveRubberExportDetails(api, details, values, setDetails, detailController.current?.signal)}
           onVerify={async (destination, values) => {
+            const signal = detailController.current?.signal;
             try {
               if (values.currentWeight === null || values.workRate === null) return;
               await api.verify(details.id, destination, {
@@ -611,9 +602,13 @@ export function RubberExportsModule({
                 workRate: values.workRate,
                 otherOperatingCost: values.otherOperatingCost,
               });
-              setDetails(await api.details(details.id));
+              if (signal?.aborted) return;
+              const next = await api.details(details.id, signal);
+              if (signal?.aborted) return;
+              setDetails(next);
               toast.success("ตรวจสอบรายการแล้ว");
             } catch (error) {
+              if (signal?.aborted) return;
               toast.error(error instanceof Error ? error.message : "ตรวจสอบไม่สำเร็จ");
               throw error;
             }

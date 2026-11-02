@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  calculateCurrentWeight,
   calculateExternalWorkTransferAmount,
   calculateRubberExportItemPricePerKg,
   calculatePurchaseCostIncludingWork,
@@ -10,6 +11,20 @@ import {
 import { bangkokDateString } from "../src/lib/bangkok-date";
 
 test.describe("Rubber export calculations @rubber-export", () => {
+  test("rounds weight loss half ties consistently with exact database decimals", () => {
+    expect(calculateWeightLossPercent(0.32, 0.27)).toBe(15.63);
+    expect(calculateWeightLossPercent(32, 27)).toBe(15.63);
+    expect(calculateWeightLossPercent(6400, 3999.68)).toBe(37.51);
+    expect(calculateWeightLossPercent(1000, 900)).toBe(10);
+  });
+  test("percentage entry uses the original weight, rounds kilograms and rejects invalid loss", () => {
+    expect(calculateCurrentWeight(12355, 5)).toBe(11737.25);
+    expect(calculateCurrentWeight(12355, 0)).toBe(12355);
+    expect(calculateCurrentWeight(12355, 2.87)).toBe(12000.41);
+    expect(calculateCurrentWeight(100.01, 50)).toBe(50.01);
+    for (const percent of [-1, 100, Infinity, NaN, 0.001]) expect(calculateCurrentWeight(12355, percent)).toBeNull();
+    expect(calculateCurrentWeight(0.01, 99.99)).toBeNull();
+  });
   test("uses current weight for loss and purchase cost including work", () => {
     expect(calculateWeightLossPercent(540, 500)).toBe(7.41);
     expect(calculateWeightLossPercent(3, 2)).toBe(33.33);

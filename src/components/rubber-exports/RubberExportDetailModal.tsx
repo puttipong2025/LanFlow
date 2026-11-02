@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Share2 } from "lucide-react";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { RubberExportLoadingModal } from "@/components/rubber-exports/RubberExportLoadingModal";
+import { RubberExportWeightEditor } from "@/components/rubber-exports/RubberExportWeightEditor";
 import {
   calculateExternalWorkTransferAmount,
   calculatePurchaseCostIncludingWork,
@@ -16,6 +17,7 @@ import {
 import type {
   RubberExportDetails,
   RubberExportExpenseDestination,
+  RubberExportEditValues,
 } from "@/types/rubber-exports";
 import { formatRubberAge, RUBBER_EXPORT_PRICE_FORMULAS } from "@/lib/rubber-exports/rubber-export-presentation";
 
@@ -66,11 +68,7 @@ export function RubberExportDetailModal({
   canVerify: boolean;
   shareBusy: boolean;
   sharing: boolean;
-  onSave: (values: {
-    currentWeight: number | null;
-    workRate: number | null;
-    otherOperatingCost: number;
-  }) => Promise<void>;
+  onSave: (values: RubberExportEditValues) => Promise<void>;
   onVerify: (destination: RubberExportExpenseDestination, values: {
     currentWeight: number | null;
     workRate: number | null;
@@ -86,9 +84,7 @@ export function RubberExportDetailModal({
   const [workRateError, setWorkRateError] = useState<string | null>(null);
   const [otherCost, setOtherCost] = useState(details.otherOperatingCost);
   const [otherCostBlank, setOtherCostBlank] = useState(false);
-  const [useTotalWeight, setUseTotalWeight] = useState(
-    details.status === "draft" && details.currentWeight === details.originalWeightTotal
-  );
+  const [weightEntryInvalid, setWeightEntryInvalid] = useState(false);
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -96,6 +92,9 @@ export function RubberExportDetailModal({
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const saveLockRef = useRef(false), verifyLockRef = useRef(false);
   const isDraft = details.status === "draft";
+  useEffect(() => {
+    if (!isDraft) setCurrentWeightInput(String(details.currentWeight ?? 0));
+  }, [isDraft, details.currentWeight]);
   const currentWeight = nullableNumber(currentWeightInput);
   const workRate = nullableNumber(workRateInput);
   const weightValid = isValidCurrentWeight(details.originalWeightTotal, currentWeight);
@@ -192,65 +191,9 @@ export function RubberExportDetailModal({
           {Boolean(details.estimatedAgeItemCount) && ` · มีอายุประมาณการ ${details.estimatedAgeItemCount} บิล`}
         </p>
 
-        {isDraft && (
-          <label className="flex items-start gap-3 rounded-md border border-black/10 bg-field/60 p-3 text-ink">
-            <input
-              type="checkbox"
-              checked={useTotalWeight}
-              onChange={(event) => {
-                const checked = event.target.checked;
-                setUseTotalWeight(checked);
-                if (checked) setCurrentWeightInput(String(details.originalWeightTotal));
-              }}
-              className="focus-ring mt-0.5 size-4 shrink-0 accent-leaf"
-            />
-            <span>
-              <span className="block text-sm font-semibold">
-                ใช้น้ำหนักสุทธิรวมเป็นน้ำหนักปัจจุบัน
-              </span>
-              <span className="mt-0.5 block text-pretty text-xs text-ink/60">
-                ใช้เมื่อน้ำหนักไม่เปลี่ยน · น้ำหนักลดลง 0%
-              </span>
-            </span>
-          </label>
-        )}
-
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="block">
-            <label htmlFor="rubber-export-current-weight" className="mb-1 block text-sm font-semibold text-ink/70">
-              น้ำหนักปัจจุบัน
-            </label>
-            <input
-              id="rubber-export-current-weight"
-              type="number"
-              min="0"
-              max={details.originalWeightTotal}
-              step="0.01"
-              value={currentWeightInput}
-              readOnly={!isDraft || useTotalWeight}
-              aria-invalid={isDraft && currentWeight !== null && !weightValid ? true : undefined}
-              aria-describedby={isDraft && currentWeight !== null && !weightValid
-                ? "rubber-export-weight-error"
-                : undefined}
-              onFocus={(event) => {
-                if (isDraft && !useTotalWeight && parseFloat(event.currentTarget.value) === 0) {
-                  setCurrentWeightInput("");
-                }
-              }}
-              onBlur={() => {
-                if (isDraft && !useTotalWeight && currentWeightInput.trim() === "") {
-                  setCurrentWeightInput("0");
-                }
-              }}
-              onChange={(event) => setCurrentWeightInput(event.currentTarget.value)}
-              className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
-            />
-            {currentWeight !== null && !weightValid && (
-              <span id="rubber-export-weight-error" role="alert" className="mt-1 block text-sm font-semibold text-red-600">
-                น้ำหนักปัจจุบันต้องมากกว่า 0 และไม่เกิน {number(details.originalWeightTotal)} กก.
-              </span>
-            )}
-          </div>
+        <RubberExportWeightEditor details={details} canAdjust={canVerify} busy={saving || verifying || showVerify} value={currentWeightInput}
+          onChange={setCurrentWeightInput} onInvalidChange={setWeightEntryInvalid} onBusyChange={setSaving} onSave={onSave} />
+        <fieldset disabled={saving || verifying || showVerify} className="grid gap-3 sm:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-sm font-semibold text-ink/70">ค่าทำงาน/กก.</span>
             <input
@@ -305,7 +248,7 @@ export function RubberExportDetailModal({
               className="focus-ring h-11 w-full rounded-md border border-black/10 px-3 read-only:bg-slate-100"
             />
           </label>
-        </div>
+        </fieldset>
 
         <p className="text-xs text-ink/55">
           ค่าทำงานและค่าดำเนินการรวม = น้ำหนักสุทธิรวม × ค่าทำงาน/กก. + ค่าดำเนินการอื่น
@@ -378,7 +321,7 @@ export function RubberExportDetailModal({
             <button
               type="button"
               onClick={onShare}
-              disabled={shareBusy}
+              disabled={shareBusy || saving || verifying}
               aria-label={`แชร์ PDF รายการส่งออกยาง ${details.exportNo}`}
               className="focus-ring inline-flex items-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-50"
             >
@@ -391,7 +334,7 @@ export function RubberExportDetailModal({
           {isDraft && (
             <button
               type="button"
-              disabled={saving || (currentWeight !== null && !weightValid) || !workInputsValid}
+              disabled={saving || verifying || showVerify || weightEntryInvalid || (currentWeight !== null && !weightValid) || !workInputsValid}
               onClick={() => {
                 if (saveLockRef.current) return; saveLockRef.current = true;
                 setSaveError(null);
@@ -410,7 +353,7 @@ export function RubberExportDetailModal({
           {isDraft && (
             <button
               type="button"
-              disabled={Boolean(verifyDisabledReason) || verifying}
+              disabled={Boolean(verifyDisabledReason) || saving || verifying || showVerify}
               title={verifyDisabledReason ?? "ตรวจสอบรายการ"}
               onClick={() => {
                 if (!verifyDisabledReason) setShowVerify(true);

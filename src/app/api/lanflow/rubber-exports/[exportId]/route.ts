@@ -18,6 +18,7 @@ const detailColumns = `
   verified_by_name, verified_at, sold_out_at, sold_out_by_name, deleted_by_name,
   deleted_at, report_lock_no, age_cutoff_at, average_age_hours,
   oldest_age_hours, estimated_age_item_count, locations(name),
+  export_vehicle_weigh_bill_reservations(count),
   rubber_export_items(
     id, source_report_item_id, source_bill_id, bill_date, bill_no,
     customer_name, eligibility_at, net_weight, paid_amount, rubber_value_amount
@@ -35,6 +36,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     { data: row, error },
     { data: ageDetail, error: ageError },
     { data: workTransferIds, error: workTransferError },
+    { data: weightAdjustments, error: adjustmentsError },
   ] = await Promise.all([
     result.supabase
       .from("rubber_exports")
@@ -44,11 +46,15 @@ export async function GET(request: NextRequest, context: RouteContext) {
       .maybeSingle(),
     result.supabase.rpc("get_rubber_export_age_detail", { p_export_id: exportId }),
     result.supabase.rpc("get_rubber_export_work_transfer_ids", { p_export_ids: [exportId] }),
+    result.supabase.from("rubber_export_weight_adjustments")
+      .select("id, previous_weight, current_weight, previous_loss_percent, loss_percent, actor_name, adjusted_at, note")
+      .eq("export_id", exportId).order("adjusted_at", { ascending: false }).order("id", { ascending: false }).limit(20),
   ]);
   if (error) return rubberExportErrorResponse(error.message);
   if (!row) return NextResponse.json({ error: "ไม่พบรายการส่งออก" }, { status: 404 });
   if (ageError) return rubberExportErrorResponse(ageError.message);
   if (workTransferError) return rubberExportErrorResponse(workTransferError.message);
+  if (adjustmentsError) return rubberExportErrorResponse(adjustmentsError.message);
 
   const age = (ageDetail ?? {}) as Record<string, any>;
   const itemAges = new Map(
@@ -76,6 +82,11 @@ export async function GET(request: NextRequest, context: RouteContext) {
   } as Record<string, any>);
   return NextResponse.json({
     ...summary,
+    weightAdjustments: (weightAdjustments ?? []).map((entry) => ({
+      id: entry.id, previousWeight: Number(entry.previous_weight), currentWeight: Number(entry.current_weight),
+      previousLossPercent: Number(entry.previous_loss_percent), lossPercent: Number(entry.loss_percent),
+      actorName: entry.actor_name, adjustedAt: entry.adjusted_at, note: entry.note,
+    })),
     items: row.rubber_export_items
       .map((item) => ({
         id: item.id,
