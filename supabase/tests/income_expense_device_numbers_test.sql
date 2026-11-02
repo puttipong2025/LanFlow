@@ -73,7 +73,7 @@ insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_
 insert into public.user_locations(user_id,location_id,is_primary) values('ae000000-0000-4000-8000-000000000033','ae000000-0000-4000-8000-000000000001',true);
 -- A pending proposal must keep its frozen issuer through a global retirement.
 select set_config('request.jwt.claim.sub',(select id::text from public.profiles where role='super_admin' and is_active limit 1),true);
-select public.reset_all_bill_devices(gen_random_uuid(),public.preview_bill_device_reset()->>'snapshot','รีเซ็ตทั้งหมด');
+select public.reset_all_bill_devices(gen_random_uuid(),public.preview_bill_device_reset()->>'snapshot','รีเซ็ตทั้งหมด','clear_registry_v1');
 select set_config('request.jwt.claim.sub','ae000000-0000-4000-8000-000000000033',true);
 select extensions.is((select public.decide_income_expense_approval_request((r->>'requestId')::uuid,'approved')->>'status' from inputs where id='approved'),'approved','pending create survives bulk device reset and uses same allocator');
 select set_config('request.jwt.claim.sub','ae000000-0000-4000-8000-000000000002',true);
@@ -81,7 +81,7 @@ select set_config('app.bypass_income_expense_approval','false',true);
 select extensions.is((select actor_user_id::text from private.income_expense_create_receipts where client_temp_id='ie-number-approved'),'ae000000-0000-4000-8000-000000000002','another manager approving preserves the original create receipt owner');
 select extensions.is((select public.sync_numbered_income_expense(p)->>'serverBillNo' from inputs where id='approved'),pg_temp.number_code('E-0001-261031-D01-4'),'approval result durable and exact');
 select extensions.ok((select numbering_metadata is not null from public.income_expense where client_temp_id='ie-number-approved'),'metadata saved after approval');
-select public.retire_rubber_bill_issuer((select (p->'billNumbering'->>'issuerId')::uuid from inputs where id='one'));
+-- The reset already deleted this issuer; its proof must still validate old work.
 update public.income_expense_approval_settings set approval_min_amount=null;
 insert into inputs select 'retired',p||'{"clientTempId":"ie-number-retired","idempotencyKey":"create:ie-number-retired:0"}'::jsonb,null from inputs where id='one';
 update inputs set r=public.sync_numbered_income_expense(p) where id='retired';

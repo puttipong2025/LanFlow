@@ -63,7 +63,7 @@ select private.process_rubber_queue(20);
 select extensions.is((select result->>'status' from private.rubber_queue_jobs where client_temp_id='number-approved'),'pending_approval','new numbering still obeys price approval');
 select extensions.is((select count(*) from private.rubber_bill_number_bindings where client_temp_id='number-approved'),0::bigint,'pending approval does not allocate final suffix');
 select set_config('request.jwt.claim.sub',(select id::text from public.profiles where role='super_admin' and is_active limit 1),true);
-select public.reset_all_bill_devices(gen_random_uuid(),public.preview_bill_device_reset()->>'snapshot','รีเซ็ตทั้งหมด');
+select public.reset_all_bill_devices(gen_random_uuid(),public.preview_bill_device_reset()->>'snapshot','รีเซ็ตทั้งหมด','clear_registry_v1');
 select set_config('request.jwt.claim.sub','af000000-0000-4000-8000-000000000002',true);
 update public.profiles set can_access_super_admin_features=true where id=auth.uid();
 select extensions.is(public.get_rubber_bill_operational_feed_v2('af000000-0000-4000-8000-000000000001','pending_approval')->'rows'->0->'numbering_metadata'->>'version','1','pending feed preserves explicit numbering metadata');

@@ -81,7 +81,9 @@ export async function prepareRubberBillIssuer(locationId: string, refresh = fals
         if (!validState(current) || current.installationId !== before.installationId || current.generationId !== before.generationId) return;
         const old = current.issuer?.code.slice(1).replace(/^0+/, "") ?? "";
         const next = issuer.code.slice(1).replace(/^0+/, "");
-        if (old.length > next.length || (old.length === next.length && old > next)) return;
+        const oldEpoch = current.issuer?.registryEpoch ?? 0, nextEpoch = issuer.registryEpoch ?? 0;
+        if (nextEpoch < oldEpoch || (nextEpoch === oldEpoch
+          && (old.length > next.length || (old.length === next.length && old > next)))) return;
         const same = current.issuer?.id === issuer.id;
         store.put({ ...current, issuer, checkedAt: Date.now(), counters: same ? current.counters : {},
           incomeExpenseStarted: true, incomeExpense: same && current.incomeExpense ? current.incomeExpense : { version: 1, hasIssued: false, counters: {}, reservations: {} } });

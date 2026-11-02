@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     if (!isDeviceResetRequest(body)) return error("ข้อมูลยืนยันไม่ถูกต้อง", 400);
     const requestId = body.requestId.toLowerCase();
     const result = await auth.supabase.rpc("reset_all_bill_devices", {
-      p_request_id: requestId, p_snapshot: body.snapshot, p_confirmation: body.confirmation,
+      p_request_id: requestId, p_snapshot: body.snapshot, p_confirmation: body.confirmation, p_mode: body.mode,
     });
     if (result.error) {
       if (result.error.code === "42501") return error("ไม่มีสิทธิ์", 403);

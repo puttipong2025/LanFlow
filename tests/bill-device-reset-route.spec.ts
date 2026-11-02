@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { loadSourceModule } from "./helpers/load-source-module";
 const id = "bd140000-0000-4000-8000-000000000021", snapshot = "a".repeat(64);
-const request = { requestId: id, snapshot, confirmation: "รีเซ็ตทั้งหมด" };
-const receipt = { requestId: id, snapshot, retiredCount: 2, completedAt: "2026-11-01T12:00:00Z" };
+const mode = "clear_registry_v1";
+const request = { mode, requestId: id, snapshot, confirmation: "รีเซ็ตทั้งหมด" };
+const receipt = { mode, requestId: id, snapshot, retiredCount: 2, completedAt: "2026-11-01T12:00:00Z" };
 function harness(data: unknown = receipt, code?: string, authorized = true, originAllowed = true) {
   const calls: { name: string; args: unknown }[] = [];
   const roles: string[][] = [];
@@ -10,7 +11,8 @@ function harness(data: unknown = receipt, code?: string, authorized = true, orig
     "src/app/api/lanflow/admin/rubber-bill-issuers/reset/route.ts", {
       "@/lib/server/auth": { requireRole: async (_request: Request, required: string[]) => {
         roles.push(required); return authorized ? { ok: true, supabase: { rpc: async (name: string, args: unknown) => {
-          calls.push({ name, args }); return { data, error: code ? { code } : null };
+          calls.push({ name, args });
+          return { data, error: code ? { code } : null };
         } } } : { ok: false, response: Response.json({ error: "denied" }, { status: 403 }) };
       } },
       "@/lib/server/sms-otp": { isSmsMutationAllowed: () => originAllowed, SMS_HEADERS: { "Cache-Control": "private, no-store" } },
@@ -34,7 +36,7 @@ for (const value of [null, {}, { ...request, confirmation: "รีเซ็ต" 
   });
 }
 test("valid preview includes zero and no-store", async () => {
-  const h = harness({ count: 0, snapshot }); const response = await h.route.GET(new Request("http://localhost/api/reset"));
+  const h = harness({ mode, count: 0, snapshot }); const response = await h.route.GET(new Request("http://localhost/api/reset"));
   expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toContain("no-store");
   expect(h.calls).toEqual([{ name: "preview_bill_device_reset", args: undefined }]);
 });
@@ -69,5 +71,37 @@ for (const completedAt of ["2026-11-01T12:00:00.123456+07:00", "2026-11-01T12:00
 test("exact receipt is returned unchanged and UUID is canonicalized", async () => {
   const h = harness(); const response = await h.route.POST(post({ ...request, requestId: id.toUpperCase() }));
   expect(response.status).toBe(200); expect(await response.json()).toEqual(receipt);
-  expect(h.calls[0]).toEqual({ name: "reset_all_bill_devices", args: { p_request_id: id, p_snapshot: snapshot, p_confirmation: request.confirmation } });
+  expect(h.calls).toEqual([{ name: "reset_all_bill_devices", args: {
+    p_request_id: id, p_snapshot: snapshot, p_confirmation: request.confirmation, p_mode: mode } }]);
+});
+
+test("a legacy retire-only backend cannot advertise readiness for clearing the registry", async () => {
+  const h = harness({ count: 2, snapshot });
+  expect((await h.route.GET(new Request("http://localhost/api/reset"))).status).toBe(503);
+});
+
+test("a retire-only acknowledgement cannot be reported as a successful registry clear", async () => {
+  const legacy = { requestId: id, snapshot, retiredCount: 2, completedAt: "2026-11-01T12:00:00Z" };
+  const h = harness(legacy);
+  expect((await h.route.POST(post({ ...request, mode: "clear_registry_v1" }))).status).toBe(503);
+});
+
+test("a cached retire-only client cannot start the newly destructive clear operation", async () => {
+  const legacy = { requestId: id, snapshot, confirmation: "รีเซ็ตทั้งหมด" };
+  const h = harness();
+  expect((await h.route.POST(post(legacy))).status).toBe(400); expect(h.calls).toHaveLength(0);
+});
+
+test("an old backend without the explicit-mode RPC is unavailable instead of using the legacy operation", async () => {
+  const h = harness(null, "PGRST202");
+  expect((await h.route.POST(post())).status).toBe(503);
+  expect(h.calls).toEqual([{ name: "reset_all_bill_devices", args: {
+    p_request_id: id, p_snapshot: snapshot, p_confirmation: request.confirmation, p_mode: mode } }]);
+});
+
+test("receipt replay performs no current-registry preview check", async () => {
+  const h = harness();
+  const response = await h.route.POST(post());
+  expect(response.status).toBe(200); expect(await response.json()).toEqual(receipt);
+  expect(h.calls.map(call => call.name)).toEqual(["reset_all_bill_devices"]);
 });

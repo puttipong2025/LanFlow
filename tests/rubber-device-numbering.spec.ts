@@ -8,22 +8,23 @@ import type { RubberBill } from "../src/types";
 
 const branch = "af000000-0000-4000-8000-000000000001";
 function harness(gate: (call: number) => Promise<void> = async () => {}) {
-  const browser = { indexedDB: new IDBFactory() }, registrations = new Map<string, { version: 1; id: string; code: string; locationId: string; deviceId: string }>();
+  const browser = { indexedDB: new IDBFactory() }, registrations = new Map<string, { version: 1; id: string; code: string; locationId: string; deviceId: string; registryEpoch: number }>();
   const devices = new Map<string, string>();
-  let calls = 0, replace = false;
+  let calls = 0, replace = false, registryEpoch = 0, resetCode: string | undefined;
   const newTab = (oldFormat = false) => loadSourceModule<typeof import("../src/lib/rubber-bills/numbering-idb")>("src/lib/rubber-bills/numbering-idb.ts", {
     ...(oldFormat ? { "./numbering-contract": { ...numberingContract,
       rubberBaseNumber: (date: string, sequence: number, code: string) => `${date.slice(2).replaceAll("-", "")}${String(sequence).padStart(4, "0")}-${code}` } } : {}),
     "@/lib/auth-fetch": { assertApiResponse: async (r: Response) => { if (!r.ok) throw new Error("Unavailable"); },
       authFetch: async (_url: string, init: RequestInit) => {
         calls++; const body = JSON.parse(String(init.body)), device = `${body.installationId}:${body.generationId}`, key = `${body.locationId}:${device}`;
-        if (!devices.has(device) || replace) { replace = false; devices.set(device, `D${String(calls).padStart(2, "0")}`); }
+        if (!devices.has(device) || replace) { replace = false; devices.set(device, resetCode ?? `D${String(calls).padStart(2, "0")}`); resetCode = undefined; }
         if (!registrations.has(key) || registrations.get(key)?.code !== devices.get(device)) {
-          registrations.set(key, { version: 1, id: crypto.randomUUID(), code: devices.get(device)!, locationId: body.locationId, deviceId: body.generationId }); }
+          registrations.set(key, { version: 1, id: crypto.randomUUID(), code: devices.get(device)!, locationId: body.locationId, deviceId: body.generationId, registryEpoch }); }
         const result = registrations.get(key); await gate(calls); return Response.json(result);
       } },
   }, { window: browser });
-  return { module: newTab(), newTab, browser, replace: () => { replace = true; }, calls: () => calls };
+  return { module: newTab(), newTab, browser, replace: () => { replace = true; }, calls: () => calls,
+    reset: () => { registryEpoch++; registrations.clear(); devices.clear(); resetCode = "D01"; } };
 }
 const bill = (id = crypto.randomUUID()): RubberBill => ({ id, clientTempId: id, localBillNo: "not-issued", billNo: "not-issued",
   locationId: branch, billDate: "2026-10-31", billType: "บิลเครื่องชั่งเล็ก", weighItems: [], syncStatus: "pending" } as unknown as RubberBill);
@@ -33,6 +34,12 @@ const event = (b: RubberBill, owner = "first") => ({ id: b.id, entity: "rubber_b
 test("numbering has no truncation after four local digits or two issuer digits", () => {
   expect(numberingContract.rubberBaseNumber("2026-10-31", 10000, "D100")).toBe("10000-261031-D100");
 });
+
+for (const registryEpoch of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1", null]) {
+  test(`registration rejects malformed reset epoch ${registryEpoch}`, () => {
+    expect(numberingContract.isRubberBillIssuer({ version: 1, id: crypto.randomUUID(), code: "D01", locationId: branch, registryEpoch })).toBe(false);
+  });
+}
 test("unregistered devices cannot create a base or claim readiness", async () => {
   const h = harness(), b = bill();
   expect(await h.module.rubberNumberingReady(branch)).toBe(false);
@@ -185,6 +192,38 @@ test("missing allocator root receives a new registration rather than resetting t
   expect(await h.module.rubberNumberingReady(branch)).toBe(false);
   await h.module.prepareRubberBillIssuer(branch);
   const next = bill(); expect((await h.module.enqueueNumberedRubberCreate(event(next), next)).bill.localBillNo).toBe("0001-261031-D02");
+});
+
+test("a registry reset accepts a lower code and restarts new bills while preserving old queued numbers", async () => {
+  const h = harness(); await h.module.prepareRubberBillIssuer(branch);
+  h.replace(); await h.module.prepareRubberBillIssuer(branch, true);
+  const old = bill(), queued = await h.module.enqueueNumberedRubberCreate(event(old), old);
+  expect(queued.bill.localBillNo).toBe("0001-261031-D02");
+  h.reset(); await h.module.prepareRubberBillIssuer(branch, true);
+  const next = bill(), result = await h.module.enqueueNumberedRubberCreate(event(next), next);
+  expect(result.bill.localBillNo).toBe("0001-261031-D01");
+  expect(result.bill.billNumbering?.issuerId).not.toBe(queued.bill.billNumbering?.issuerId);
+  expect(queued.event.payload.localBillNo).toBe("0001-261031-D02");
+});
+
+test("reusing the same code in a new registry epoch restarts its counter", async () => {
+  const h = harness(); await h.module.prepareRubberBillIssuer(branch);
+  for (let i = 0; i < 3; i++) { const b = bill(); await h.module.enqueueNumberedRubberCreate(event(b), b); }
+  h.reset(); await h.module.prepareRubberBillIssuer(branch, true);
+  const b = bill(); expect((await h.module.enqueueNumberedRubberCreate(event(b), b)).bill.localBillNo).toBe("0001-261031-D01");
+});
+
+test("a delayed higher code from before reset cannot overwrite the new epoch or its counter", async () => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const h = harness(async call => { if (call === 2) await held; });
+  await h.module.prepareRubberBillIssuer(branch); h.replace();
+  const oldResponse = h.module.prepareRubberBillIssuer(branch, true);
+  await expect.poll(h.calls).toBe(2);
+  h.reset(); const nextTab = h.newTab(); await nextTab.prepareRubberBillIssuer(branch, true);
+  const first = bill(); expect((await nextTab.enqueueNumberedRubberCreate(event(first), first)).bill.localBillNo).toBe("0001-261031-D01");
+  release(); await oldResponse;
+  const second = bill(); expect((await h.module.enqueueNumberedRubberCreate(event(second), second)).bill.localBillNo).toBe("0002-261031-D01");
 });
 test("an older registration response cannot downgrade a replacement or its counter", async () => {
   let release!: () => void;

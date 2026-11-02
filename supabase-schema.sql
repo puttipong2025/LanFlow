@@ -764,15 +764,14 @@ begin
     or payload->>'localBillNo' is distinct from b.base_number
     or payload->>'locationId' is distinct from b.location_id::text) then raise exception 'BILL_NUMBER_CHANGED'; end if;
   if m is null then return; end if;
+  perform pg_advisory_xact_lock_shared(hashtextextended('bill-issuer-registry',0));
   if jsonb_typeof(m)<>'object' or m->>'version' is distinct from '1'
     or jsonb_typeof(m->'sequence') is distinct from 'number'
     or (m->>'date') is null or (m->>'date') !~ '^\d{4}-\d{2}-\d{2}$'
     or payload->>'billOption' not in ('รายรับ','ค่าใช้จ่าย') then raise exception 'INVALID_BILL_NUMBER'; end if;
   d:=(m->>'date')::date; n:=(m->>'sequence')::bigint;
   prefix:=case payload->>'type' when 'income' then 'I' when 'expense' then 'E' end;
-  select id,location_id,code into i from (
-select id,location_id,code from private.rubber_bill_issuers union all
-select id,location_id,code from private.legacy_bill_issuer_refs) refs where id=(m->>'issuerId')::uuid;
+  select * into i from private.resolve_bill_number_issuer((m->>'issuerId')::uuid,(payload->>'locationId')::uuid,payload->>'localBillNo');
   if i.id is null or i.location_id is distinct from (payload->>'locationId')::uuid
     or n<1 or n>9007199254740991 or (m->>'sequence')::numeric<>n or d::text is distinct from m->>'date'
     or prefix is null or (prefix='I' and payload->>'billOption'<>'รายรับ')
@@ -874,14 +873,13 @@ begin
     (m is distinct from existing.numbering_metadata or payload->>'localBillNo' is distinct from existing.local_bill_no) then
     raise exception 'BILL_NUMBER_CHANGED'; end if;
   if m is null then return; end if;
+  perform pg_advisory_xact_lock_shared(hashtextextended('bill-issuer-registry',0));
   if jsonb_typeof(m)<>'object' or m->>'version' is distinct from '1'
     or jsonb_typeof(m->'sequence') is distinct from 'number'
     or (m->>'date') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'INVALID_BILL_NUMBER'; end if;
   d:=(m->>'date')::date; seq:=(m->>'sequence')::bigint;
   date_part:=to_char(d,'YYMMDD'); sequence_part:=lpad(seq::text,greatest(4,length(seq::text)),'0');
-  select id,location_id,code into i from (
-select id,location_id,code from private.rubber_bill_issuers union all
-select id,location_id,code from private.legacy_bill_issuer_refs) refs where id=(m->>'issuerId')::uuid;
+  select * into i from private.resolve_bill_number_issuer((m->>'issuerId')::uuid,(payload->>'locationId')::uuid,payload->>'localBillNo');
   if i.id is null or i.location_id is distinct from (payload->>'locationId')::uuid or seq<1
     or (m->>'sequence')::numeric<>seq or seq>9007199254740991 or d::text is distinct from m->>'date'
     or (payload->>'localBillNo' is distinct from date_part||sequence_part||'-'||i.code
@@ -1019,9 +1017,14 @@ CREATE OR REPLACE FUNCTION "private"."bill_device_reset_snapshot"() RETURNS "jso
     LANGUAGE "sql" STABLE
     SET "search_path" TO ''
     AS $$
-  select jsonb_build_object('count', count(*), 'snapshot',
-    encode(extensions.digest(coalesce(string_agg(id::text, ',' order by id), ''), 'sha256'), 'hex'))
-  from private.bill_issuer_devices where retired_at is null;
+  with identities as (
+    select 'device:' || id::text identity from private.bill_issuer_devices
+    union all select 'issuer:' || id::text from private.rubber_bill_issuers where device_id is null
+    union all select 'legacy:' || id::text from private.legacy_bill_issuer_refs
+  )
+  select jsonb_build_object('count', count(*), 'snapshot', encode(extensions.digest(
+    (select registry_epoch::text from private.bill_issuer_global_counter where id=true) || ':' ||
+    coalesce(string_agg(identity, ',' order by identity), ''), 'sha256'), 'hex')) from identities;
 $$;
 
 
@@ -6219,7 +6222,6 @@ SET default_tablespace = '';
 SET default_table_access_method = "heap";
 
 
-
 CREATE TABLE IF NOT EXISTS "public"."money_transfers" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "client_temp_id" "text",
@@ -7787,7 +7789,6 @@ $$;
 ALTER FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_id" "uuid", "p_claimed_version" bigint) OWNER TO "postgres";
 
 
-
 CREATE OR REPLACE FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -9226,6 +9227,26 @@ $$;
 
 
 ALTER FUNCTION "private"."reset_rubber_price_allowances"("p_now" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."resolve_bill_number_issuer"("p_id" "uuid", "p_location" "uuid", "p_base" "text") RETURNS TABLE("id" "uuid", "location_id" "uuid", "code" "text")
+    LANGUAGE "sql"
+    SET "search_path" TO ''
+    AS $_$
+  select refs.id, refs.location_id, refs.code from (
+    select i.id, i.location_id, i.code from private.rubber_bill_issuers i
+    union all select l.id, l.location_id, l.code from private.legacy_bill_issuer_refs l
+  ) refs where refs.id = p_id
+  union all
+  select p_id, p_location, substring(p_base from 'D[0-9]{2,18}$')
+  where exists (select 1 from private.bill_number_issuer_proofs proof where proof.digest =
+    encode(extensions.digest(p_id::text || ':' || p_location::text || ':' ||
+      substring(p_base from 'D[0-9]{2,18}$'), 'sha256'), 'hex'))
+  limit 1;
+$_$;
+
+
+ALTER FUNCTION "private"."resolve_bill_number_issuer"("p_id" "uuid", "p_location" "uuid", "p_base" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."resolve_rubber_bill_price_policy_before_queue"("p_location_id" "uuid") RETURNS TABLE("group_id" "uuid", "rule_source" "text", "central_price" numeric, "price_allowance" numeric, "effective_price_cap" numeric, "edit_window_minutes" integer, "price_rule_revision" bigint, "updated_by_name" "text", "updated_by_phone" "text", "updated_at" timestamp with time zone, "non_current_date_requires_approval" boolean)
@@ -16099,7 +16120,6 @@ $$;
 ALTER FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") OWNER TO "postgres";
 
 
-
 CREATE OR REPLACE FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text" DEFAULT NULL::"text", "p_expense_location_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public', 'private'
@@ -17419,7 +17439,6 @@ $$;
 
 
 ALTER FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "uuid") OWNER TO "postgres";
-
 
 
 CREATE OR REPLACE FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") RETURNS "jsonb"
@@ -23329,7 +23348,6 @@ $$;
 ALTER FUNCTION "public"."get_telegram_evidence_location_config"() OWNER TO "postgres";
 
 
-
 CREATE OR REPLACE FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -24238,7 +24256,7 @@ begin
   if not private.rubber_actor_active() or not exists (
     select 1 from public.profiles where id = auth.uid() and role = 'super_admin'
   ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
-  return private.bill_device_reset_snapshot();
+  return private.bill_device_reset_snapshot() || '{"mode":"clear_registry_v1"}'::jsonb;
 end $$;
 
 
@@ -24865,7 +24883,7 @@ begin
     update private.rubber_bill_issuers set last_seen_at=clock_timestamp(),last_user_id=auth.uid(),
       browser=coalesce(p_browser,''),platform=coalesce(p_platform,'') where id=i.id;
   end if;
-  return jsonb_build_object('id',i.id,'code',d.code,'locationId',p_location_id,'deviceId',d.id,'version',1);
+  return jsonb_build_object('id',i.id,'code',d.code,'locationId',p_location_id,'deviceId',d.id,'version',1,'registryEpoch',(select registry_epoch from private.bill_issuer_global_counter where id=true));
 end $$;
 
 
@@ -25866,11 +25884,44 @@ CREATE OR REPLACE FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uui
     SET "search_path" TO ''
     SET "lock_timeout" TO '3s'
     AS $_$
+declare receipt private.bill_device_reset_receipts;
+begin
+  if not private.rubber_actor_active() or not exists (
+    select 1 from public.profiles where id = auth.uid() and role = 'super_admin'
+  ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
+  if p_request_id is null or p_snapshot is null or p_snapshot !~ '^[a-f0-9]{64}$'
+    or p_confirmation is distinct from 'รีเซ็ตทั้งหมด' then
+    raise exception 'BILL_DEVICE_RESET_INVALID' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('bill-device-reset:' || p_request_id::text, 0));
+  select * into receipt from private.bill_device_reset_receipts where request_id = p_request_id;
+  if not found then
+    raise exception 'BILL_DEVICE_RESET_REQUIRES_CURRENT_UI' using errcode = '22023';
+  end if;
+  if receipt.actor_user_id is distinct from auth.uid() or receipt.snapshot is distinct from p_snapshot then
+    raise exception 'BILL_DEVICE_RESET_REQUEST_MISMATCH' using errcode = '22023';
+  end if;
+  return jsonb_build_object('requestId', receipt.request_id, 'snapshot', receipt.snapshot,
+    'retiredCount', receipt.retired_count, 'completedAt', receipt.completed_at, 'mode', receipt.reset_mode);
+end $_$;
+
+
+ALTER FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text", "p_mode" "text") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    SET "lock_timeout" TO '3s'
+    AS $_$
 declare receipt private.bill_device_reset_receipts; preview jsonb; finished timestamptz;
 begin
   if not private.rubber_actor_active() or not exists (
     select 1 from public.profiles where id = auth.uid() and role = 'super_admin'
   ) then raise exception 'FORBIDDEN' using errcode = '42501'; end if;
+  if p_mode is distinct from 'clear_registry_v1' then
+    raise exception 'BILL_DEVICE_RESET_REQUIRES_CURRENT_UI' using errcode = '22023';
+  end if;
   if p_request_id is null or p_snapshot is null or p_snapshot !~ '^[a-f0-9]{64}$'
     or p_confirmation is distinct from 'รีเซ็ตทั้งหมด' then
     raise exception 'BILL_DEVICE_RESET_INVALID' using errcode = '22023';
@@ -25891,21 +25942,29 @@ begin
       raise exception 'BILL_DEVICE_RESET_EMPTY' using errcode = 'PT409';
     end if;
     finished := clock_timestamp();
-    with changed as (
-      update private.bill_issuer_devices set retired_at = finished, retired_by = auth.uid()
-        where retired_at is null returning id
-    )
-    update private.rubber_bill_issuers link set retired_at = finished, retired_by = auth.uid()
-      from changed where link.device_id = changed.id and link.retired_at is null;
-    insert into private.bill_device_reset_receipts values
-      (p_request_id, auth.uid(), p_snapshot, (preview->>'count')::bigint, finished) returning * into receipt;
+    insert into private.bill_number_issuer_proofs(digest)
+      select encode(extensions.digest(id::text || ':' || location_id::text || ':' || code, 'sha256'), 'hex')
+      from (select id, location_id, code from private.rubber_bill_issuers
+        union all select id, location_id, code from private.legacy_bill_issuer_refs) refs
+      on conflict do nothing;
+    delete from private.rubber_bill_issuer_heads where true;
+    delete from private.rubber_bill_issuers where true;
+    delete from private.bill_issuer_device_heads where true;
+    delete from private.bill_issuer_devices where true;
+    delete from private.legacy_bill_issuer_refs where true;
+    delete from private.rubber_bill_issuer_counters where true;
+    update private.bill_issuer_global_counter set last_code = 0, registry_epoch = registry_epoch + 1 where id=true;
+    insert into private.bill_device_reset_receipts
+      (request_id, actor_user_id, snapshot, retired_count, completed_at, reset_mode) values
+      (p_request_id, auth.uid(), p_snapshot, (preview->>'count')::bigint, finished, 'clear_registry_v1') returning * into receipt;
   end if;
+  -- Keep the existing receipt field for safe replay across the upgrade.
   return jsonb_build_object('requestId', receipt.request_id, 'snapshot', receipt.snapshot,
-    'retiredCount', receipt.retired_count, 'completedAt', receipt.completed_at);
+    'retiredCount', receipt.retired_count, 'completedAt', receipt.completed_at, 'mode', receipt.reset_mode);
 end $_$;
 
 
-ALTER FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") OWNER TO "postgres";
+ALTER FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text", "p_mode" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."retire_rubber_bill_issuer"("p_id" "uuid") RETURNS "jsonb"
@@ -31962,6 +32021,8 @@ CREATE TABLE IF NOT EXISTS "private"."bill_device_reset_receipts" (
     "snapshot" "text" NOT NULL,
     "retired_count" bigint NOT NULL,
     "completed_at" timestamp with time zone NOT NULL,
+    "reset_mode" "text" DEFAULT 'legacy_v1'::"text" NOT NULL,
+    CONSTRAINT "bill_device_reset_receipts_reset_mode_check" CHECK (("reset_mode" = ANY (ARRAY['legacy_v1'::"text", 'clear_registry_v1'::"text"]))),
     CONSTRAINT "bill_device_reset_receipts_retired_count_check" CHECK (("retired_count" > 0)),
     CONSTRAINT "bill_device_reset_receipts_snapshot_check" CHECK (("snapshot" ~ '^[a-f0-9]{64}$'::"text"))
 );
@@ -31997,12 +32058,23 @@ ALTER TABLE "private"."bill_issuer_devices" OWNER TO "postgres";
 CREATE TABLE IF NOT EXISTS "private"."bill_issuer_global_counter" (
     "id" boolean DEFAULT true NOT NULL,
     "last_code" bigint NOT NULL,
+    "registry_epoch" integer DEFAULT 0 NOT NULL,
     CONSTRAINT "bill_issuer_global_counter_id_check" CHECK ("id"),
-    CONSTRAINT "bill_issuer_global_counter_last_code_check" CHECK ((("last_code" >= 0) AND ("last_code" <= '999999999999999999'::bigint)))
+    CONSTRAINT "bill_issuer_global_counter_last_code_check" CHECK ((("last_code" >= 0) AND ("last_code" <= '999999999999999999'::bigint))),
+    CONSTRAINT "bill_issuer_global_counter_registry_epoch_check" CHECK (("registry_epoch" >= 0))
 );
 
 
 ALTER TABLE "private"."bill_issuer_global_counter" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."bill_number_issuer_proofs" (
+    "digest" "text" NOT NULL,
+    CONSTRAINT "bill_number_issuer_proofs_digest_check" CHECK (("digest" ~ '^[a-f0-9]{64}$'::"text"))
+);
+
+
+ALTER TABLE "private"."bill_number_issuer_proofs" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "private"."browser_approvals" (
@@ -34025,6 +34097,11 @@ ALTER TABLE ONLY "private"."bill_issuer_devices"
 
 ALTER TABLE ONLY "private"."bill_issuer_global_counter"
     ADD CONSTRAINT "bill_issuer_global_counter_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "private"."bill_number_issuer_proofs"
+    ADD CONSTRAINT "bill_number_issuer_proofs_pkey" PRIMARY KEY ("digest");
 
 
 
@@ -38376,11 +38453,17 @@ REVOKE ALL ON FUNCTION "private"."rebuild_dashboard_branch_target"("p_location_i
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_after_attendance"("p_profile_id" "uuid", "p_actor" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_open_deductions_for_adjustment"("p_profile_id" "uuid", "p_actor" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
 
 
 
 REVOKE ALL ON FUNCTION "private"."rebuild_open_time_payroll_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_cause" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."rebuild_open_withdrawal_deductions"("p_profile_id" "uuid", "p_actor" "uuid", "p_withdrawal_id" "uuid", "p_adjustment_id" "uuid") FROM PUBLIC;
 
 
@@ -38402,6 +38485,9 @@ REVOKE ALL ON FUNCTION "private"."reject_expired_approval_request_replay"() FROM
 
 
 REVOKE ALL ON FUNCTION "private"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."report_creation_blockers"("p_location_id" "uuid", "p_cutoff_at" timestamp with time zone) FROM PUBLIC;
 
 
@@ -38439,6 +38525,10 @@ REVOKE ALL ON FUNCTION "private"."reserve_rubber_bill_ocr_source"("p_payload" "j
 
 
 REVOKE ALL ON FUNCTION "private"."reset_rubber_price_allowances"("p_now" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."resolve_bill_number_issuer"("p_id" "uuid", "p_location" "uuid", "p_base" "text") FROM PUBLIC;
 
 
 
@@ -38591,6 +38681,9 @@ REVOKE ALL ON FUNCTION "private"."telegram_badge_require_manager"() FROM PUBLIC;
 
 
 REVOKE ALL ON FUNCTION "private"."time_payroll_attendance_revision"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."time_payroll_branch_paid_amount"("p_source_amount" numeric, "p_contract_version" smallint, "p_channel" "text", "p_transfer_amount" numeric, "p_expense_location_id" "uuid") FROM PUBLIC;
 
 
@@ -38959,6 +39052,9 @@ GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval"("p_source_type" "
 
 
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_internal_20260829"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_expense_location_id" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."decide_time_tracking_approval_with_payment"("p_source_type" "text", "p_source_id" "uuid", "p_decision" "text", "p_comment" "text", "p_payment" "jsonb") TO "authenticated";
 
@@ -39045,6 +39141,9 @@ GRANT ALL ON FUNCTION "public"."delete_rubber_weight_alert_group"("p_group_id" "
 REVOKE ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."delete_time_tracking_source_permanently"("p_source_type" "text", "p_source_id" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."deliver_sms_challenge"("p_id" "uuid") TO "service_role";
 
@@ -39495,6 +39594,9 @@ GRANT ALL ON FUNCTION "public"."get_telegram_evidence_location_config"() TO "aut
 
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_attendance_month"("p_profile_id" "uuid", "p_month" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."get_time_payroll_debt_totals"() TO "authenticated";
 
@@ -39706,6 +39808,9 @@ GRANT ALL ON FUNCTION "public"."replace_rubber_export_items"("p_export_id" "uuid
 
 REVOKE ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb", "p_expected_revision" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."replace_time_payroll_attendance_exceptions"("p_profile_id" "uuid", "p_month" "text", "p_selections" "jsonb", "p_expected_revision" "text") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."replace_time_tracking_segments"("p_profile_id" "uuid", "p_selections" "jsonb", "p_full_snapshot" "jsonb", "p_comment" "text") FROM PUBLIC;
 
 
@@ -40010,6 +40115,11 @@ GRANT ALL ON FUNCTION "public"."reserve_sms_challenge"("p_user" "uuid", "p_sessi
 
 REVOKE ALL ON FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text", "p_mode" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."reset_all_bill_devices"("p_request_id" "uuid", "p_snapshot" "text", "p_confirmation" "text", "p_mode" "text") TO "authenticated";
 
 
 
@@ -40856,7 +40966,13 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT UPDATE ON 
 
 
 
+
+
+
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
+
+
+
 
 
 

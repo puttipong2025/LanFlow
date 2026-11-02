@@ -65,6 +65,9 @@ async function contextFor(browser: Browser, role = "super_admin"): Promise<Brows
     httpOnly: false, secure: false, sameSite: "Lax" as const })), origins: [] } });
 }
 async function openDevices(page: Page) {
+  // Employee management is outside this registry suite. The dedicated seed's
+  // SMS service hook cannot load that list; keep its toast out of dialog checks.
+  await page.route("**/api/lanflow/admin/users", route => route.fulfill({ json: { users: [] } }));
   await installThresholdAlertHandler(page); await page.goto("/");
   await page.getByRole("button", { name: "Admin", exact: true }).click();
   await page.getByRole("button", { name: "เครื่องออกบิล", exact: true }).click();
@@ -95,7 +98,7 @@ test("typed confirmation, all-branch preview, desktop/mobile layout and focus", 
     const button = page.getByRole("button", { name: "รีเซ็ตทั้งหมด", exact: true });
     await button.click();
     const preview = await (await context.request.get(endpoint)).json();
-    await expect(dialog(page)).toContainText(`${preview.count.toLocaleString("th-TH")} เครื่อง`);
+    await expect(dialog(page)).toContainText(`${preview.count.toLocaleString("th-TH")} รายการ`);
     const confirm = dialog(page).getByRole("button", { name: "ยืนยันรีเซ็ตทั้งหมด", exact: true });
     await expect(confirm).toBeDisabled(); await input(page).fill("wrong"); await expect(confirm).toBeDisabled();
     await input(page).fill("รีเซ็ตทั้งหมด"); await expect(confirm).toBeEnabled();
@@ -116,12 +119,12 @@ test("real changed registry returns conflict and clears typed confirmation befor
     const response = page.waitForResponse(value => value.url().endsWith(endpoint) && value.request().method() === "POST");
     await dialog(page).getByRole("button", { name: "ยืนยันรีเซ็ตทั้งหมด", exact: true }).click();
     expect((await response).status()).toBe(409);
-    await expect(dialog(page).getByRole("alert")).toContainText("รายชื่อเครื่องเปลี่ยน");
+    await expect(dialog(page).getByRole("alert").filter({ hasText: "รายชื่อเครื่องเปลี่ยน" })).toBeVisible();
     await expect(input(page)).toHaveValue("");
     await expect(dialog(page).getByRole("button", { name: "ยืนยันรีเซ็ตทั้งหมด", exact: true })).toBeDisabled();
     await input(page).fill("รีเซ็ตทั้งหมด");
     await dialog(page).getByRole("button", { name: "ยืนยันรีเซ็ตทั้งหมด", exact: true }).click();
-    await expect(dialog(page)).toBeHidden(); await expect(page.getByRole("status").filter({ hasText: "เลิกใช้รหัสเดิม" })).toBeVisible();
+    await expect(dialog(page)).toBeHidden(); await expect(page.getByRole("status").filter({ hasText: "ล้างทะเบียนรหัสเครื่อง" })).toBeVisible();
   } finally { await context.close(); }
 });
 test("response lost after real commit retries exact request and preserves replacement", async ({ browser }) => {
@@ -193,7 +196,7 @@ test("preview outage can retry and empty preview cannot reset", async ({ browser
     const page = await context.newPage(); await openDevices(page); let calls = 0;
     await page.route(`**${endpoint}`, route => {
       calls++; return route.fulfill({ status: calls === 1 ? 503 : 200, contentType: "application/json",
-        body: JSON.stringify(calls === 1 ? { error: "unavailable" } : { count: 0, snapshot: "a".repeat(64) }) });
+        body: JSON.stringify(calls === 1 ? { error: "unavailable" } : { mode: "clear_registry_v1", count: 0, snapshot: "a".repeat(64) }) });
     });
     await page.getByRole("button", { name: "รีเซ็ตทั้งหมด", exact: true }).click();
     await expect(dialog(page).getByRole("alert")).toContainText("โหลดจำนวนเครื่องไม่สำเร็จ");
@@ -204,11 +207,32 @@ test("preview outage can retry and empty preview cannot reset", async ({ browser
   } finally { await context.close(); }
 });
 
+test("legacy client commands and legacy preview responses cannot authorize a clear", async ({ browser }) => {
+  const context = await contextFor(browser);
+  try {
+    const page = await context.newPage(); await openDevices(page);
+    const before = await (await context.request.get(endpoint)).json();
+    const result = await context.request.post(endpoint, { headers: { origin: "http://127.0.0.1:3002" },
+      data: { requestId: crypto.randomUUID(), snapshot: before.snapshot, confirmation: "รีเซ็ตทั้งหมด" } });
+    expect(result.status()).toBe(400);
+    let commands = 0;
+    await page.route(`**${endpoint}`, async route => {
+      if (route.request().method() !== "GET") { commands++; return route.continue(); }
+      const response = await route.fetch(), legacy = await response.json(); delete legacy.mode;
+      await route.fulfill({ response, json: legacy });
+    });
+    await page.getByRole("button", { name: "รีเซ็ตทั้งหมด", exact: true }).click();
+    await expect(dialog(page).getByRole("alert")).toContainText("โหลดจำนวนเครื่องไม่สำเร็จ");
+    await expect(dialog(page).getByRole("button", { name: "ยืนยันรีเซ็ตทั้งหมด", exact: true })).toBeDisabled();
+    expect(commands).toBe(0); expect(await (await context.request.get(endpoint)).json()).toEqual(before);
+  } finally { await context.close(); }
+});
+
 test("offline income keeps its old number through reset, syncs once, and new work shares replacement across branches", async ({ browser }) => {
   test.setTimeout(150000);
   const context = await contextFor(browser), controller = await contextFor(browser), marker = `Reset offline ${crypto.randomUUID()}`;
   resetTestSql("update public.income_expense_approval_settings set approval_min_amount=null,non_current_date_requires_approval=false;update public.income_expense_approval_keywords set is_active=false;");
-  const issuer = (page: Page, location: string) => page.evaluate(id => new Promise<{ code: string }>(resolve => {
+  const issuer = (page: Page, location: string) => page.evaluate(id => new Promise<{ code: string; id: string; registryEpoch: number }>(resolve => {
     const request = indexedDB.open("lanflow_sync_db"); request.onsuccess = () => {
       const db = request.result, tx = db.transaction("rubber_bill_numbers"), read = tx.objectStore("rubber_bill_numbers").get(id);
       tx.oncomplete = () => { db.close(); resolve(read.result.issuer); };
@@ -242,19 +266,42 @@ test("offline income keeps its old number through reset, syncs once, and new wor
     }
     const before = await (await controller.request.get(endpoint)).json();
     const reset = await controller.request.post(endpoint, { headers: { origin: "http://127.0.0.1:3002" },
-      data: { requestId: crypto.randomUUID(), snapshot: before.snapshot, confirmation: "รีเซ็ตทั้งหมด" } });
+      data: { requestId: crypto.randomUUID(), snapshot: before.snapshot, confirmation: "รีเซ็ตทั้งหมด", mode: "clear_registry_v1" } });
     expect(reset.status(), await reset.text()).toBe(200);
     expect((await queue(page)).find(value => value.id === event.id)).toEqual(event);
+    // The still-offline machine does not know its registry was cleared yet.
+    // An offline reload opens the default offline module, so return to cash bills.
+    await page.getByRole("button", { name: "รับ-จ่าย", exact: true }).click();
+    await page.getByRole("button", { name: "เพิ่มรายรับ", exact: true }).click(); await confirmCurrentBranchIfRequired(page);
+    const laterModal = page.getByRole("dialog", { name: "เพิ่ม/แก้ไข บิลเงินสด", exact: true });
+    const laterRow = laterModal.locator("table tbody tr").first();
+    await laterRow.locator("input").first().fill(`${marker} after reset`);
+    await laterRow.locator('input[type="number"]').first().fill("19");
+    await laterModal.getByRole("button", { name: "บันทึกบิล", exact: true }).click(); await expect(laterModal).toBeHidden();
+    const later = (await queue(page)).find(value => value.payload.title === `${marker} after reset`)!;
+    expect(later).toBeTruthy(); expect(String(later.payload.localBillNo)).toContain(original.code);
+    expect(later.payload.billNumbering).toMatchObject({ issuerId: original.id, sequence: 2 });
     await context.setOffline(false);
     await expect.poll(() => resetTestSql(`select server_bill_no from public.income_expense where client_temp_id='${event.id}'`), { timeout: 60000 }).toBe(`${base}-1`);
+    await expect.poll(() => resetTestSql(`select server_bill_no from public.income_expense where client_temp_id='${later.id}'`), { timeout: 60000 }).toBe(`${later.payload.localBillNo}-1`);
     await page.locator("summary").filter({ hasText: /ออฟไลน์/ }).click();
     await page.getByRole("button", { name: "ตรวจความพร้อมอีกครั้ง" }).click();
-    await expect.poll(async () => (await issuer(page, branch)).code, { timeout: 20000 }).not.toBe(original.code);
+    await expect.poll(async () => (await issuer(page, branch)).id, { timeout: 20000 }).not.toBe(original.id);
     const replacement = await issuer(page, branch);
+    expect(replacement.registryEpoch).toBeGreaterThan(original.registryEpoch);
+    expect(resetTestSql(`select count(*) from private.rubber_bill_issuers where id='${original.id}'`)).toBe("0");
     const replay = await context.request.post("/api/lanflow/income-expense", { headers: { origin: "http://127.0.0.1:3002" }, data: event.payload });
     expect(replay.status(), await replay.text()).toBe(200);
     expect(resetTestSql(`select count(*) from public.income_expense where client_temp_id='${event.id}'`)).toBe("1");
     expect(resetTestSql(`select server_bill_no from public.income_expense where client_temp_id='${event.id}'`)).toBe(`${base}-1`);
+    await page.getByRole("button", { name: "เพิ่มรายรับ", exact: true }).click(); await confirmCurrentBranchIfRequired(page);
+    const newModal = page.getByRole("dialog", { name: "เพิ่ม/แก้ไข บิลเงินสด", exact: true });
+    const newRow = newModal.locator("table tbody tr").first();
+    await newRow.locator("input").first().fill(`${marker} new registration`);
+    await newRow.locator('input[type="number"]').first().fill("23");
+    await newModal.getByRole("button", { name: "บันทึกบิล", exact: true }).click(); await expect(newModal).toBeHidden();
+    await expect.poll(() => resetTestSql(`select numbering_metadata->>'sequence' from public.income_expense where title='${marker} new registration'`), { timeout: 60000 }).toBe("1");
+    expect(resetTestSql(`select local_bill_no from public.income_expense where title='${marker} new registration'`)).toMatch(new RegExp(`^I-0001-[0-9]{6}-${replacement.code}$`));
     await selectAppLocation(page, otherBranch); await waitForBillIssuer(page, otherBranch);
     expect((await issuer(page, otherBranch)).code).toBe(replacement.code);
   } finally { await context.setOffline(false); await context.close(); await controller.close(); }

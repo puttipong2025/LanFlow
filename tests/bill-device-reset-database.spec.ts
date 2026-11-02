@@ -12,7 +12,7 @@ const preview = () => json(resetTestSql(`begin;${auth}select public.preview_bill
 const register = (installation = crypto.randomUUID(), generation = crypto.randomUUID(), location = branch) =>
   run(`select public.register_rubber_bill_issuer('${location}','${installation}','${generation}')`).then(json);
 const reset = (snapshot: string, id = crypto.randomUUID()) =>
-  run(`select public.reset_all_bill_devices('${id}','${snapshot}','รีเซ็ตทั้งหมด')`).then(json);
+  run(`select public.reset_all_bill_devices('${id}','${snapshot}','รีเซ็ตทั้งหมด','clear_registry_v1')`).then(json);
 async function waitForGate() {
   await expect(async () => {
     expect(resetTestSql("select pg_try_advisory_xact_lock(hashtextextended('bill-issuer-registry',0));")).toBe("f");
@@ -39,13 +39,26 @@ test.afterAll(() => {
   restoreResetSeedActor();
 });
 test("two reset confirmations from one preview retire once; same-request replay preserves replacements", async () => {
-  const installation = crypto.randomUUID(), generation = crypto.randomUUID(); await register(installation, generation);
+  const installation = crypto.randomUUID(), generation = crypto.randomUUID(); const old = await register(installation, generation);
   const before = preview(), request = crypto.randomUUID();
   const results = await Promise.all([reset(before.snapshot, request), reset(before.snapshot, request)]);
   expect(results[0]).toEqual(results[1]); expect(results[0].retiredCount).toBe(before.count);
   const replacement = await register(installation, generation);
+  expect(replacement.code).toBe("D01"); expect(replacement.registryEpoch).toBeGreaterThan(old.registryEpoch);
   expect(await reset(before.snapshot, request)).toEqual(results[0]);
   expect(resetTestSql(`select retired_at is null from private.bill_issuer_devices where id='${replacement.deviceId}'`)).toBe("t");
+});
+
+test("number validation holds the registry gate until the old registration can become a proof", async () => {
+  const issuer = await register(), before = preview();
+  const payload = JSON.stringify({ operation: "create", clientTempId: "reset-concurrent-offline", locationId: branch,
+    txDate: "2026-11-02", type: "expense", billOption: "ค่าใช้จ่าย", localBillNo: `E-0001-261102-${issuer.code}`,
+    billNumbering: { version: 1, issuerId: issuer.id, date: "2026-11-02", sequence: 1 } });
+  const checking = run(`select private.assert_income_expense_numbering('${payload}'::jsonb);select pg_sleep(1)`);
+  await waitForGate(); const resetting = reset(before.snapshot);
+  await checking; expect((await resetting).retiredCount).toBe(before.count);
+  expect(resetTestSql(`select count(*) from private.rubber_bill_issuers where id='${issuer.id}'`)).toBe("0");
+  await run(`select private.assert_income_expense_numbering('${payload}'::jsonb)`);
 });
 test("two different requests from the same snapshot produce one success and one conflict", async () => {
   await register(); const before = preview();
@@ -57,7 +70,7 @@ test("register waits behind reset and cannot add an active branch link under the
   const installation = crypto.randomUUID(), generation = crypto.randomUUID(); const old = await register(installation, generation);
   const before = preview();
   const resetting = run(`select pg_advisory_xact_lock(hashtextextended('bill-issuer-registry',0));
-    select public.reset_all_bill_devices('${crypto.randomUUID()}','${before.snapshot}','รีเซ็ตทั้งหมด');select pg_sleep(1)`);
+    select public.reset_all_bill_devices('${crypto.randomUUID()}','${before.snapshot}','รีเซ็ตทั้งหมด','clear_registry_v1');select pg_sleep(1)`);
   await waitForGate();
   const registering = register(installation, generation, otherBranch);
   await resetting; const replacement = await registering;
@@ -74,9 +87,9 @@ test("registration already holding shared gate commits before reset validates sn
 test("individual retirement and bulk reset serialize without deadlock", async () => {
   const issuer = await register(), before = preview();
   const outcomes = await Promise.allSettled([reset(before.snapshot), run(`select public.retire_rubber_bill_issuer('${issuer.id}')`)]);
-  expect(outcomes[1].status).toBe("fulfilled");
+  if (outcomes[1].status === "rejected") expect(String(outcomes[1].reason)).toContain("ISSUER_NOT_FOUND");
   if (outcomes[0].status === "rejected") expect(String(outcomes[0].reason)).toContain("BILL_DEVICE_RESET_CONFLICT");
-  expect(resetTestSql(`select retired_at is not null from private.bill_issuer_devices where id='${issuer.deviceId}'`)).toBe("t");
+  expect(resetTestSql(`select count(*) from private.bill_issuer_devices where id='${issuer.deviceId}'`)).toBe("0");
 });
 test("bounded lock timeout leaves registry and receipt untouched", async () => {
   await register(); const before = preview(), request = crypto.randomUUID();

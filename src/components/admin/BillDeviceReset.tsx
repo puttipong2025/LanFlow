@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { authFetch } from "@/lib/auth-fetch";
-import { DEVICE_RESET_CONFIRMATION, isDeviceResetPreview, isDeviceResetReceipt, type DeviceResetPreview } from "@/lib/rubber-bills/device-reset-contract";
+import { DEVICE_RESET_CONFIRMATION, DEVICE_RESET_MODE, isDeviceResetPreview, isDeviceResetReceipt, type DeviceResetPreview } from "@/lib/rubber-bills/device-reset-contract";
 
 const endpoint = "/api/lanflow/admin/rubber-bill-issuers/reset";
 export function BillDeviceReset({ ownerUserId }: { ownerUserId: string }) {
@@ -35,7 +35,7 @@ export function BillDeviceReset({ ownerUserId }: { ownerUserId: string }) {
     lock.current = true; setSaving(true); setError("");
     try {
       const response = await authFetch(endpoint, { method: "POST", signal: AbortSignal.timeout(10000), headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestId, snapshot: preview.snapshot, confirmation: DEVICE_RESET_CONFIRMATION }) });
+        body: JSON.stringify({ mode: DEVICE_RESET_MODE, requestId, snapshot: preview.snapshot, confirmation: DEVICE_RESET_CONFIRMATION }) });
       const result: unknown = await response.json();
       if (response.status === 409 && result && typeof result === "object" && "errorCode" in result
         && result.errorCode === "DEVICE_RESET_CONFLICT") {
@@ -45,7 +45,7 @@ export function BillDeviceReset({ ownerUserId }: { ownerUserId: string }) {
       if (!response.ok || !isDeviceResetReceipt(result) || result.requestId !== requestId || result.snapshot !== preview.snapshot
         || result.retiredCount !== preview.count) throw new Error("ยังยืนยันผลไม่ได้ กรุณาตรวจผลคำสั่งเดิมอีกครั้ง");
       setUncertain(false); setOpen(false); setPreview(null); setConfirmation("");
-      setMessage(`เลิกใช้รหัสเดิม ${result.retiredCount.toLocaleString("th-TH")} เครื่องสำเร็จ`);
+      setMessage(`ล้างทะเบียนรหัสเครื่อง ${result.retiredCount.toLocaleString("th-TH")} รายการสำเร็จ`);
       void client.invalidateQueries({ queryKey: ["rubberBillIssuers", ownerUserId] });
     } catch (cause) {
       setUncertain(true); setError(cause instanceof Error ? cause.message : "ยังยืนยันผลไม่ได้ กรุณาตรวจผลคำสั่งเดิมอีกครั้ง");
@@ -55,12 +55,12 @@ export function BillDeviceReset({ ownerUserId }: { ownerUserId: string }) {
     <button type="button" onClick={show} className="focus-ring h-10 rounded-md border border-clay px-3 text-sm font-semibold text-clay">รีเซ็ตทั้งหมด</button>
     {message && <p role="status" className="text-pretty text-sm tabular-nums">{message} · เครื่องจะรับรหัสใหม่เมื่อตรวจทะเบียนสำเร็จครั้งถัดไป</p>}
     <AlertDialog open={open} title="รีเซ็ตรหัสเครื่องทั้งหมด?"
-      description="มีผลทุกสาขา ร่วมกับบิลยางและรับ–จ่าย รหัสใหม่จะนับต่อจากล่าสุด บิลเดิมและงานค้างยังอยู่ และไม่ระงับการเข้าสู่ระบบ"
+      description="ล้างทะเบียนทุกสาขารวมรหัสที่เลิกใช้แล้ว ร่วมกับบิลยางและรับ–จ่าย เริ่มแจก D01 และลำดับบิล 0001 ใหม่ บิลเดิมและงานค้างคงเลขเดิม โดยเลขท้ายจะนับต่อเมื่อฐานซ้ำ"
       confirmLabel={uncertain ? "ตรวจผลคำสั่งเดิม" : "ยืนยันรีเซ็ตทั้งหมด"} busy={saving}
       confirmDisabled={loading || !preview?.count || (!uncertain && confirmation !== DEVICE_RESET_CONFIRMATION)}
       onConfirm={() => void reset()} onCancel={() => { generation.current++; setLoading(false); setOpen(false); }}>
       {loading ? <p role="status" className="mt-4 text-pretty text-sm">กำลังโหลดจำนวนเครื่องทุกสาขา...</p>
-        : preview && <p className="mt-4 text-pretty text-sm tabular-nums">รหัสเครื่องที่ใช้งานอยู่ทั้งหมด <strong>{preview.count.toLocaleString("th-TH")} เครื่อง</strong>{preview.count === 0 && " · ไม่มีรหัสที่ต้องรีเซ็ต"}</p>}
+        : preview && <p className="mt-4 text-pretty text-sm tabular-nums">ทะเบียนรหัสเครื่องทั้งหมด รวมที่เลิกใช้แล้ว <strong>{preview.count.toLocaleString("th-TH")} รายการ</strong>{preview.count === 0 && " · ไม่มีรหัสที่ต้องรีเซ็ต"}</p>}
       {uncertain ? <p className="mt-3 text-pretty text-sm text-ink/70">กำลังตรวจคำสั่งเดิม การลองอีกครั้งจะไม่เริ่มรีเซ็ตรอบใหม่</p>
         : !!preview?.count && <label className="mt-4 grid gap-2 text-sm font-semibold">พิมพ์ “รีเซ็ตทั้งหมด” เพื่อยืนยัน
           <input value={confirmation} onChange={event => setConfirmation(event.target.value)} disabled={saving}
