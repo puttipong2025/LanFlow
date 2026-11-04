@@ -1,6 +1,19 @@
 # Branch bonus verification and review
 
-Work began after explicit user authorization. Current target is Local only; no Cloud migration, deploy, commit or push is part of this task. The latest follow-up plan is codingDO `10_Daily/2026-11-04.md`; `2026-11-03` records the original implementation. Tests use synthetic data and dedicated/disposable databases; source app data must not be reset.
+Work began after explicit user authorization. The latest follow-up plan is codingDO `10_Daily/2026-11-04.md`; `2026-11-03` records the original implementation. Tests use synthetic data and dedicated/disposable databases; source app data must not be reset. The Local-only boundary in the historical sections below describes implementation work before the separate 2026-11-04 request to push `main` and Supabase DB push.
+
+## Cloud database release — 2026-11-04
+
+The user explicitly authorized `push main supabase dB push`. Source commit `e01918f` contains the reviewed implementation. The linked project was independently verified as **LanFlow**, ref `psxwhhwjmolqperxrlzj`, matching `.env.production.local`; Git remote is `puttipong2025/LanFlow` and the release branch is `main`.
+
+- Preflight: production environment groups passed without printing values; migration checker passed; dry-run listed exactly `20261104010000` through `20261104016000`. The existing verified Local gates include 123 bonus SQL assertions, 22 Route tests, five concurrency cases, 11 browser workflows and `npm run verify` with 1,421 passed / two existing live-OCR skips.
+- A custom Cloud archive of `public`, `private`, `auth`, `storage` and `supabase_migrations` was created before mutation and its `pg_restore --list` validated. Receipt: **24,618,580 bytes**, SHA-256 `736fb405b382017eab1be73fbba00421d927a969466b986fec476ab134c3e946`. The archive and receipts remain under ignored `output/production-backups/branch-bonus-20261104-y4NlOK/`; they must never be uploaded or committed.
+- `supabase db push --linked --yes` applied all **seven** reviewed migrations. A subsequent `--dry-run` reports **Remote database is up to date**. Existing migration history is unchanged; no reset, seed, history repair or source-data copy was performed.
+- Independent Cloud catalog checks verified all six relevant public entrypoints, security-definer/search-path settings, authenticated/anon grants, bonus RLS, blocked direct authenticated writes and private receipt/calculator restrictions. An existing manager's authenticated SQL role can review actual REX; an ordinary role is rejected. The public REST signature resolves and an anonymous request is rejected with **401 / 42501**. These checks do not claim an HTTP sign-in for a manager or a completed production browser flow.
+- Counts and sorted row hashes for all **111 pre-existing public/auth/storage tables** match before/after. New bonus and batch counts are **zero**; no financial assessment or payment was created for verification.
+- The CLI reported an optional pg-delta catalog-cache warning about a missing certificate inside its local runtime after the successful push. Independent migration history, catalog, role/REST checks and the clean dry-run establish the installed Cloud state; no repeated mutation or project restart was needed.
+
+The matching web code is published by pushing `main` after these database checks. No separate Vercel CLI deployment or Edge Function change is part of this release request.
 
 ## Required REX / atomic batches — final Local verification, 2026-11-04
 

@@ -1,6 +1,6 @@
 # Branch bonus implementation contract
 
-User authorized the original implementation on 2026-11-03 and the required-inventory/batch follow-up on 2026-11-04. The current checklist is codingDO `10_Daily/2026-11-04.md`; `docs/branch-bonus-design.md` records the later decisions that supersede the earlier free selection. Local implementation does not authorize Cloud migration, deployment, commit or push.
+User authorized the original implementation on 2026-11-03 and the required-inventory/batch follow-up on 2026-11-04. The current checklist is codingDO `10_Daily/2026-11-04.md`; `docs/branch-bonus-design.md` records the later decisions that supersede the earlier free selection. A separate explicit request on 2026-11-04 authorized pushing `main` and Supabase DB push. All seven bonus migrations are now installed on the linked LanFlow Cloud project; see the release evidence in `docs/branch-bonus-verification.md`.
 
 ## Source map
 
