@@ -3,6 +3,12 @@
 This runbook prepares a production release without copying secrets into Git.
 Run the database steps before deploying the matching web build.
 
+The database test script pins Supabase CLI `2.118.0`, matching the setup version
+in `.github/workflows/quality-gates.yml`. Keep them aligned: an unversioned
+`npx supabase` can download a newer major version even when setup installed a
+different global CLI. CLI 3 rejects this project's existing `[inbucket]` config
+before the database tests start.
+
 ## 1. Preflight
 
 Use Node.js 20 or newer, then install the lockfile exactly and run:

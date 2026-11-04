@@ -13,7 +13,7 @@
     "verify": "npm run lint && npm run typecheck && npm run check:source-size && npm run check:time-tracking-imports && npm run test:auth-outage && npm run test:isolated && npm run build && node scripts/check-service-worker.mjs && node scripts/check-bundle-budget.mjs",
     "verify:full": "npm run test:db && npm run test:routes && npm run verify",
     "deploy:check": "node scripts/check-deployment-env.mjs && npm run verify",
-    "test:db": "npx supabase test db --local && npm run test:db:concurrency",
+    "test:db": "npx --yes supabase@2.118.0 test db --local && npm run test:db:concurrency",
     "test:db:concurrency": "playwright test --config=playwright.database.config.ts",
     "test:isolated": "playwright test --config=playwright.isolated.config.ts",
     "test:ui-smoke": "playwright test --config=playwright.ui-smoke.config.ts",

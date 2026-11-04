@@ -15,6 +15,10 @@ The user explicitly authorized `push main supabase dB push`. Source commit `e019
 
 The matching web code is published by pushing `main` after these database checks. No separate Vercel CLI deployment or Edge Function change is part of this release request.
 
+### Release CI follow-up
+
+The first pushed head `9a98d03` passed the web gate and Vercel deployment. Its database gate failed **before SQL tests started**: setup used CLI 2.118.0 and successfully replayed all migrations, but the unversioned `npx supabase test db` downloaded CLI 3.0.0, which rejects the existing `[inbucket]` config. The completed job log provides the runnable failing command and excludes migration/startup failures. Pin `test:db` to the same 2.118.0 as setup; preserve the project config and applied migrations. This is a test-runner version-resolution correction, not a Cloud schema repair.
+
 ## Required REX / atomic batches — final Local verification, 2026-11-04
 
 The user authorized all follow-up phases and confirmed retaining actual A → A operating costs. The existing calculator/source projection/history guard remain authoritative; the new layer derives required inventory and disjoint assessment periods and confirms the whole batch. `20261104016000_branch_bonus_batches.sql` closes fresh writes through legacy confirm while retaining exact receipt recovery. New snapshots carry `requestVersion=batch-v1` for display; the formula remains v2.
