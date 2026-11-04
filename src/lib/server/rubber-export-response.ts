@@ -25,6 +25,7 @@ export function canAdministerRubberExports(auth: AuthTokenPayload, locationId: s
 
 export function rubberExportErrorResponse(message: string) {
   const locked = cashCountLockResponse(message); if (locked) return locked;
+  if (/^BONUS_(HISTORY_LOCKED|SOURCE_CHANGED):/.test(message)) return NextResponse.json({ error: message.replace(/^BONUS_[A-Z_]+:\s*/, "") }, { status: 409 });
   if (message.includes("RUBBER_EXPORT_PRECISION")) {
     return NextResponse.json(
       { error: "น้ำหนักและค่าใช้จ่ายรองรับทศนิยมไม่เกิน 2 ตำแหน่ง" },

@@ -1,6 +1,6 @@
 "use client";
 import { useBrowserApprovals } from "@/hooks/useBrowserApprovals";
-
+import { withBonusLeaveGuard } from "@/lib/branch-bonus/navigation";
 import { ShieldCheck } from "lucide-react";
 import dynamic from "next/dynamic";
 import { toast } from "sonner";
@@ -129,6 +129,7 @@ const CashCountModule = dynamic(
   () => import("@/components/cash-counts/CashCountModule").then((module) => module.CashCountModule),
   { loading: ModuleLoadingState },
 );
+const BranchBonusModule = dynamic(() => import("@/components/branch-bonus/BranchBonusModule").then(m => m.BranchBonusModule), { loading: ModuleLoadingState });
 export function LanFlowApp() {
   const auth = useAuthContext();
   if (auth.profile?.role === "user") return <UserTimePayrollApp />;
@@ -419,13 +420,11 @@ function BusinessLanFlowApp() {
       setActiveTab("dashboard");
     }
   }, [activeTab, canAccessMoneyTransfer]);
-
   useEffect(() => {
-    if ((activeTab === "reports" || activeTab === "rubber-export" || activeTab === "cash-count") && !canAccessReports) {
+    if (((activeTab === "reports" || activeTab === "rubber-export" || activeTab === "cash-count") && !canAccessReports) || (activeTab === "branch-bonus" && !canManageSystemFeatures(profile))) {
       setActiveTab("dashboard");
     }
-  }, [activeTab, canAccessReports]);
-
+  }, [activeTab, canAccessReports, profile]);
   useEffect(() => {
     if (!isTabBlockedOffline(activeTab, online)) return;
     const message = getOfflineTabBlockMessage(activeTab);
@@ -608,7 +607,7 @@ function BusinessLanFlowApp() {
 
   function changeSelectedLocation(locationId: string) {
     if (locationId !== selectedLocationId && !isDeviceOnline()) return false;
-    setSelectedLocationId(locationId);
+    withBonusLeaveGuard(() => setSelectedLocationId(locationId));
     return true;
   }
 
@@ -665,13 +664,13 @@ function BusinessLanFlowApp() {
           selectedLocationId={selectedLocationId}
           locationBadgeTotals={locationBadgeTotals}
           onLocationChange={changeSelectedLocation}
-          onLogout={auth.logout}
+          onLogout={() => withBonusLeaveGuard(() => void auth.logout())}
           online={online} businessCacheStatus={businessCacheStatus}
           serviceUnavailable={serviceUnavailable}
         />
         <NavigationTabs
           activeTab={activeTab}
-          onTabChange={setActiveTab}
+          onTabChange={tab => withBonusLeaveGuard(() => setActiveTab(tab))}
           profile={profile}
           moduleBadgeCounts={selectedModuleBadgeCounts}
           online={online}
@@ -726,7 +725,7 @@ function BusinessLanFlowApp() {
                 : null
             }
             onInitialExportHandled={() => setPendingRubberExportSource(null)}
-            onOpenReports={() => setActiveTab("reports")}
+            onOpenReports={() => setActiveTab("reports")} onOpenBranchBonus={canManageSystemFeatures(profile) ? () => setActiveTab("branch-bonus") : undefined}
             requestBranchCreate={requestBranchCreate}
           />
         )}
@@ -769,6 +768,7 @@ function BusinessLanFlowApp() {
             online={online}
           />
         )}
+        {activeTab === "branch-bonus" && canManageSystemFeatures(profile) && <BranchBonusModule key={`${profile.id}:${selectedLocation.id}`} selectedLocation={selectedLocation} profile={profile} online={online} onOpenSource={id => withBonusLeaveGuard(() => openRubberExportSource(id,selectedLocation.id))} />}
         {activeTab === "acid-stock" && (
           <AcidStockModule
             selectedLocation={selectedLocation}

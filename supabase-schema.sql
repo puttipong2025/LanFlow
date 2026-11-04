@@ -13,19 +13,69 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
+CREATE EXTENSION IF NOT EXISTS "pg_cron" WITH SCHEMA "pg_catalog";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_net" WITH SCHEMA "extensions";
+
+
+
+
+
+
 CREATE SCHEMA IF NOT EXISTS "private";
 
 
 ALTER SCHEMA "private" OWNER TO "postgres";
 
 
-CREATE SCHEMA IF NOT EXISTS "public";
-
-
-ALTER SCHEMA "public" OWNER TO "pg_database_owner";
-
-
 COMMENT ON SCHEMA "public" IS 'standard public schema';
+
+
+
+CREATE EXTENSION IF NOT EXISTS "btree_gist" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "moddatetime" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_stat_statements" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "supabase_vault" WITH SCHEMA "vault";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
+
+
+
 
 
 
@@ -1031,6 +1081,318 @@ $$;
 ALTER FUNCTION "private"."bill_device_reset_snapshot"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_batch_calculate"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb", "p_as_of" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare review jsonb; part jsonb; expected jsonb; snap jsonb; snaps jsonb:='[]'; seen text[]:='{}';
+  k text; w numeric; target numeric; i jsonb;
+begin
+  review:=private.branch_bonus_review(p_location);
+  if review->>'fingerprint' is distinct from p_review then raise exception 'BONUS_SOURCE_CHANGED: ชุด REX เปลี่ยนแล้ว กรุณาตรวจใหม่'; end if;
+  if (review->>'requiredCount')::integer=0 or (review->>'blockedCount')::integer>0 then
+    raise exception 'BONUS_SOURCE_CHANGED: ต้องตรวจ REX ทุกใบให้อยู่ในประวัติและมีน้ำหนักลดลงก่อน';
+  end if;
+  if jsonb_typeof(p_periods) is distinct from 'array' or jsonb_array_length(p_periods)<>jsonb_array_length(review->'periods')
+    or jsonb_array_length(p_periods)>100 then raise exception 'BONUS_INVALID: ช่วงประเมินไม่ครบหรือเกิน 100 ช่วง'; end if;
+  if exists(select 1 from jsonb_array_elements(p_periods) v where jsonb_typeof(v) is distinct from 'object'
+    or jsonb_typeof(v->'input') is distinct from 'object' or jsonb_typeof(v->'input'->'excludedKeys') is distinct from 'array') then
+    raise exception 'BONUS_INVALID: ข้อมูลแต่ละช่วงไม่ถูกต้อง'; end if;
+  if (select coalesce(sum(jsonb_array_length(v->'input'->'excludedKeys')),0) from jsonb_array_elements(p_periods) v)>50000 then
+    raise exception 'BONUS_INVALID: รายการยกเว้นรวมเกินขอบเขต'; end if;
+  for part in select value from jsonb_array_elements(p_periods) loop
+    if part->>'key'=any(seen) then raise exception 'BONUS_INVALID: ช่วงประเมินซ้ำ'; end if;
+    select value into expected from jsonb_array_elements(review->'periods') where value->>'key'=part->>'key';
+    i:=part->'input';
+    if expected is null or i->'exportIds' is distinct from expected->'exportIds' then
+      raise exception 'BONUS_SOURCE_CHANGED: ต้องรวม REX ทุกใบของแต่ละช่วง'; end if;
+    seen:=array_append(seen,part->>'key');
+    if jsonb_typeof(i->'rate') is distinct from 'number' or (i->>'rate')::numeric<>round((i->>'rate')::numeric,2) then
+      raise exception 'BONUS_INVALID: อัตราต่อกิโลกรัมใช้ทศนิยมไม่เกิน 2 ตำแหน่ง'; end if;
+    foreach k in array array['burden','loss','counts'] loop
+      if jsonb_typeof(i->'metrics'->k->'weight') is distinct from 'number' then raise exception 'BONUS_INVALID: สัดส่วนไม่ถูกต้อง'; end if;
+      w:=(i->'metrics'->k->>'weight')::numeric;
+      if w<>trunc(w) then raise exception 'BONUS_INVALID: สัดส่วนต้องเป็นจำนวนเต็ม'; end if;
+      if w>0 and k<>'counts' and jsonb_typeof(i->'metrics'->k->'target')='number' then
+        target:=(i->'metrics'->k->>'target')::numeric;
+        if target<0 or target>99999999999 or target<>round(target,2) then raise exception 'BONUS_INVALID: เป้าใช้ทศนิยมไม่เกิน 2 ตำแหน่ง'; end if;
+      end if;
+    end loop;
+    snap:=private.branch_bonus_calculate(p_location,i,p_as_of)||jsonb_build_object('requestVersion','batch-v1');
+    snaps:=snaps||jsonb_build_array(jsonb_build_object('key',part->>'key','input',i,'snapshot',snap));
+  end loop;
+  return snaps;
+exception when invalid_text_representation or numeric_value_out_of_range then
+  raise exception 'BONUS_INVALID: ข้อมูลประเมินไม่ถูกต้อง';
+end $$;
+
+
+ALTER FUNCTION "private"."branch_bonus_batch_calculate"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb", "p_as_of" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_calculate"("p_location" "uuid", "p_input" "jsonb", "p_as_of" timestamp with time zone) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare ids uuid[]; a date; b date; cutoff timestamptz; exports jsonb; sources jsonb; gaps jsonb; changes jsonb;
+  expenses numeric; purchases numeric; counts numeric; original numeric; loss numeric;
+  rate numeric; weights numeric:=0; adjustment numeric:=0; metrics jsonb:='[]'; issues jsonb:='[]';
+  k text; w numeric; target numeric; actual numeric; relative numeric; tier numeric;
+  base numeric; suggested numeric; fp text; overlap boolean; all_complete boolean; burden_complete boolean; count_complete boolean;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  if p_input is null or jsonb_typeof(p_input) is distinct from 'object'
+    or jsonb_typeof(p_input->'exportIds') is distinct from 'array'
+    or jsonb_typeof(p_input->'excludedKeys') is distinct from 'array' or jsonb_typeof(p_input->'excludedGroups') is distinct from 'array'
+    or jsonb_typeof(p_input->'metrics') is distinct from 'object'
+    or jsonb_typeof(p_input->'rate') is distinct from 'number' then
+    raise exception 'BONUS_INVALID: ข้อมูลประเมินไม่ครบ';
+  end if;
+  if jsonb_array_length(p_input->'exportIds') not between 1 and 5000
+    or jsonb_array_length(p_input->'excludedKeys')>50000 or jsonb_array_length(p_input->'excludedGroups')>6
+    or exists(select 1 from jsonb_array_elements(p_input->'excludedKeys') v where jsonb_typeof(v)<>'string')
+    or exists(select 1 from jsonb_array_elements_text(p_input->'excludedGroups') v where v not in ('expense','withdrawal','payroll','transport','work','fee')) then
+    raise exception 'BONUS_INVALID: รายการหรือการยกเว้นไม่ถูกต้อง';
+  end if;
+  select array_agg(distinct value::uuid order by value::uuid) into ids
+    from jsonb_array_elements_text(p_input->'exportIds');
+  if cardinality(ids)<>jsonb_array_length(p_input->'exportIds') then raise exception 'BONUS_INVALID: REX ซ้ำ'; end if;
+  if exists(select 1 from unnest(ids) x left join public.rubber_exports e on e.id=x
+    where e.id is null or e.location_id<>p_location or not private.branch_bonus_history(e.id)
+      or e.current_weight is null or e.current_weight<=0 or e.current_weight>=e.original_weight_total) then
+    raise exception 'BONUS_SOURCE_CHANGED: เลือกได้เฉพาะ REX ในประวัติที่มีน้ำหนักลดลงจริงและพร้อมประเมิน กรุณาโหลดรายการใหม่';
+  end if;
+  select min((created_at at time zone 'Asia/Bangkok')::date),max((created_at at time zone 'Asia/Bangkok')::date),
+    sum(original_weight_total),sum(original_weight_total-current_weight),
+    jsonb_agg(jsonb_build_object('id',id,'exportNo',export_no,'createdAt',created_at,
+      'originalWeight',original_weight_total,'currentWeight',current_weight,
+      'lossPercent',(original_weight_total-current_weight)/original_weight_total*100) order by id)
+    into a,b,original,loss,exports from public.rubber_exports where id=any(ids);
+  if b>(p_as_of at time zone 'Asia/Bangkok')::date then raise exception 'BONUS_INVALID: REX อยู่ในอนาคต'; end if;
+  cutoff:=least(p_as_of, (b+1)::timestamp at time zone 'Asia/Bangkok');
+  select exists(select 1 from public.branch_bonuses x where x.location_id=p_location
+    and x.period_start<=b and x.period_end>=a) into overlap;
+  -- One statement snapshot for every source, regardless of REST row limits.
+  select coalesce(jsonb_agg(jsonb_build_object('key',r.key,'id',r.id,'kind',r.kind,
+    'date',r.business_date,'occurredAt',r.occurred_at,'label',r.label,'amount',r.amount,
+    'included',case when r.kind in ('purchase','count') then true else
+      not (p_input->'excludedKeys' ? r.key or p_input->'excludedGroups' ? r.kind) end)
+    order by r.business_date,r.kind,r.id),'[]') into sources
+  from private.branch_bonus_source_rows r where r.location_id=p_location and r.business_date between a and b
+    and r.recorded_at<=p_as_of and r.occurred_at<=cutoff
+    and (overlap or not exists(select 1 from private.branch_bonus_sources seen where seen.location_id=p_location and seen.source_key=r.key));
+  select coalesce(jsonb_agg(jsonb_build_object('kind',kind,'date',business_date) order by business_date,kind),'[]')
+    into gaps from private.branch_bonus_source_gaps where location_id=p_location and business_date between a and b;
+  select coalesce(sum((v->>'amount')::numeric) filter(where v->>'kind' not in ('purchase','count') and (v->>'included')::boolean),0),
+    coalesce(sum((v->>'amount')::numeric) filter(where v->>'kind'='purchase'),0),
+    coalesce(sum((v->>'amount')::numeric) filter(where v->>'kind'='count'),0)
+    into expenses,purchases,counts from jsonb_array_elements(sources) v;
+  rate:=(p_input->>'rate')::numeric;
+  if rate<0 or rate>1000 or rate<>round(rate,4) then raise exception 'BONUS_INVALID: อัตราต่อกิโลกรัมไม่ถูกต้อง'; end if;
+  base:=round(original*rate,2);
+  if rate=0 then issues:=issues||jsonb_build_array('กรุณากำหนดอัตราโบนัสมากกว่า 0'); end if;
+  all_complete:=jsonb_array_length(gaps)=0;
+  burden_complete:=not exists(select 1 from jsonb_array_elements(gaps) g where g->>'kind'<>'count'
+    and (g->>'kind'='purchase' or not p_input->'excludedGroups' ? (g->>'kind')));
+  count_complete:=not exists(select 1 from jsonb_array_elements(gaps) g where g->>'kind'='count');
+  foreach k in array array['burden','loss','counts'] loop
+    if jsonb_typeof(p_input->'metrics'->k) is distinct from 'object' or jsonb_typeof(p_input->'metrics'->k->'weight') is distinct from 'number' then
+      raise exception 'BONUS_INVALID: สัดส่วนไม่ถูกต้อง';
+    end if;
+    w:=(p_input->'metrics'->k->>'weight')::numeric;
+    if w<0 or w>100 or w<>round(w,2) then raise exception 'BONUS_INVALID: สัดส่วนต้องอยู่ระหว่าง 0–100'; end if;
+    weights:=weights+w;
+    if w=0 then continue; end if; -- Do not even parse a disabled target.
+    target:=null;
+    if k='counts' then target:=(b-a+1);
+    elsif jsonb_typeof(p_input->'metrics'->k->'target')='number' then target:=(p_input->'metrics'->k->>'target')::numeric; end if;
+    actual:=case k when 'burden' then case when purchases>0 then expenses/purchases*100 end
+      when 'loss' then loss/original*100 else counts end;
+    if (k='burden' and not burden_complete) or (k='counts' and not count_complete) then actual:=null; end if;
+    relative:=null; tier:=null;
+    if target is null or target<=0 then
+      issues:=issues||jsonb_build_array('กรุณากำหนดเป้าที่ถูกต้องสำหรับ '||case k when 'burden' then 'ภาระดำเนินงาน' when 'loss' then 'น้ำหนักลดลง' else 'จำนวนรายการนับเงิน' end);
+    elsif actual is null then
+      issues:=issues||jsonb_build_array(case when k='burden' and purchases=0 then 'ยอดซื้อเป็นศูนย์ จึงคำนวณภาระดำเนินงานไม่ได้' else 'ข้อมูลต้นทางไม่ครบ จึงประเมินด้านนี้ไม่ได้' end);
+    else
+      relative:=case k when 'counts' then (actual-target)/target*100 else (target-actual)/target*100 end;
+      tier:=case when relative>=20 then 20 when relative>=5 then 10 when relative<=-20 then -20 when relative<=-5 then -10 else 0 end;
+      adjustment:=adjustment+tier*w/100;
+    end if;
+    metrics:=metrics||jsonb_build_array(jsonb_build_object('key',k,'weight',w,'target',target,'actual',actual,
+      'relative',relative,'adjustment',tier));
+  end loop;
+  if weights<>100 then issues:=issues||jsonb_build_array('สัดส่วนรวมต้องเท่ากับ 100%'); end if;
+  if overlap then issues:=issues||jsonb_build_array('ช่วงวันที่ซ้อนกับผลโบนัสที่ยืนยันแล้ว'); end if;
+  suggested:=round(base*(1+adjustment/100),2);
+  if suggested>9999999999.99 then issues:=issues||jsonb_build_array('ยอดโบนัสเกินขอบเขตที่ระบบรองรับ กรุณาลดอัตราต่อกิโลกรัม'); end if;
+  select coalesce(jsonb_agg(to_jsonb(c) order by c.bonus_id,c.source_key),'[]') into changes from private.branch_bonus_changes(p_location) c;
+  fp:=md5(jsonb_build_object('sources',sources,'exports',exports,'gaps',gaps,'changes',changes,'input',p_input,
+    'start',a,'end',b,'formula','branch-bonus-v2')::text);
+  return jsonb_build_object('periodStart',a,'periodEnd',b,'periodDays',b-a+1,'asOf',cutoff,'formulaVersion','branch-bonus-v2',
+    'exports',exports,'allSources',sources,'observedChanges',changes,'overlap',overlap,'gaps',gaps,'complete',all_complete,'sourceFingerprint',fp,
+    'weight',original,'expenseTotal',expenses,'purchaseTotal',purchases,'countTotal',counts,
+    'burdenActual',case when purchases>0 and burden_complete then expenses/purchases*100 end,
+    'countActual',case when count_complete then counts end,
+    'lossActual',loss/original*100,'metrics',metrics,'rate',rate,'base',base,'adjustment',adjustment,
+    'suggestedAmount',suggested,'issues',issues,'canConfirm',jsonb_array_length(issues)=0,
+    'scenarios',case when weights=100 and not exists(select 1 from jsonb_array_elements(metrics) m where m->>'adjustment' is null)
+      then (select jsonb_agg(jsonb_build_object('rate',r,'base',round(original*r,2),
+        'adjustmentAmount',round(original*r*(1+adjustment/100),2)-round(original*r,2),
+        'amount',round(original*r*(1+adjustment/100),2)) order by r) from (values (.01::numeric),(.02::numeric),(.03::numeric)) rates(r)) else '[]'::jsonb end);
+exception when invalid_text_representation or numeric_value_out_of_range then
+  raise exception 'BONUS_INVALID: รูปแบบตัวเลขหรือรายการไม่ถูกต้อง';
+end $$;
+
+
+ALTER FUNCTION "private"."branch_bonus_calculate"("p_location" "uuid", "p_input" "jsonb", "p_as_of" timestamp with time zone) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_changes"("p_location" "uuid") RETURNS TABLE("bonus_id" "uuid", "source_key" "text", "label" "text", "old_amount" numeric, "new_amount" numeric, "unknown" boolean, "observed_source" "jsonb", "old_included" boolean, "period_start" "date", "period_end" "date", "old_date" "date", "new_date" "date")
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  with origins as (select * from public.branch_bonuses where location_id=p_location),
+  original as (select b.id origin_id,v->>'key' source_key,v source
+    from origins b cross join lateral jsonb_array_elements(b.snapshot->'allSources') v),
+  observed as (select distinct on(o.origin_bonus_id,o.source_key) o.origin_bonus_id origin_id,o.source_key,o.observed_source source
+    from private.branch_bonus_observations o join public.branch_bonuses b on b.id=o.bonus_id
+    where b.location_id=p_location order by o.origin_bonus_id,o.source_key,b.created_at desc,b.id desc),
+  baseline as (select coalesce(a.origin_id,o.origin_id) origin_id,coalesce(a.source_key,o.source_key) source_key,
+    case when o.origin_id is not null then o.source else a.source end source
+    from original a full join observed o using(origin_id,source_key)),
+  current_sources as (select b.id origin_id,r.key source_key,jsonb_build_object('key',r.key,'id',r.id,'kind',r.kind,
+    'date',r.business_date,'occurredAt',r.occurred_at,'label',r.label,'amount',r.amount,
+    'included',r.kind in ('purchase','count') or not (b.input->'excludedKeys' ? r.key or b.input->'excludedGroups' ? r.kind)) source
+    from origins b join private.branch_bonus_source_rows r on r.location_id=p_location
+      and (r.business_date between b.period_start and b.period_end
+        or exists(select 1 from baseline a where a.origin_id=b.id and a.source_key=r.key))
+      and not exists(select 1 from private.branch_bonus_sources seen where seen.location_id=p_location
+        and seen.source_key=r.key and seen.origin_bonus_id<>b.id)),
+  differences as (select coalesce(a.origin_id,c.origin_id) origin_id,coalesce(a.source_key,c.source_key) source_key,
+    a.source old_source,c.source new_source from baseline a full join current_sources c using(origin_id,source_key)
+    where (a.source->>'amount')::numeric is distinct from (c.source->>'amount')::numeric
+      or a.source->>'date' is distinct from c.source->>'date')
+  select d.origin_id,d.source_key,coalesce(d.new_source->>'label',d.old_source->>'label',d.source_key),
+    (d.old_source->>'amount')::numeric,(d.new_source->>'amount')::numeric,
+    (d.old_source is null or d.new_source is null) and exists(select 1 from private.branch_bonus_source_gaps g join origins b on b.id=d.origin_id
+      where g.location_id=p_location and (d.new_source is null or g.business_date between b.period_start and b.period_end)
+        and g.kind=split_part(d.source_key,':',1)),d.new_source,(d.old_source->>'included')::boolean,
+    b.period_start,b.period_end,(d.old_source->>'date')::date,(d.new_source->>'date')::date
+  from differences d join origins b on b.id=d.origin_id;
+$$;
+
+
+ALTER FUNCTION "private"."branch_bonus_changes"("p_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_history"("p_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select exists(select 1 from public.rubber_exports e where e.id=p_id and e.status='verified'
+    and (e.sold_out_at is not null or exists(select 1 from public.rubber_bills b
+      where b.source_rubber_export_id=e.id and b.record_status='active')));
+$$;
+
+
+ALTER FUNCTION "private"."branch_bonus_history"("p_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_present"("p_snapshot" "jsonb") RETURNS "jsonb"
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  select (p_snapshot-'allSources'-'observedChanges')||jsonb_build_object(
+    'periodDays',(p_snapshot->>'periodEnd')::date-(p_snapshot->>'periodStart')::date+1,
+    'changeCount',jsonb_array_length(coalesce(p_snapshot->'observedChanges','[]')),
+    'changes',coalesce((select jsonb_agg(v-'observed_source') from (select v from jsonb_array_elements(coalesce(p_snapshot->'observedChanges','[]')) v limit 50) x),'[]'),
+    'expenses',coalesce((select jsonb_agg(v order by n) from jsonb_array_elements(p_snapshot->'allSources') with ordinality t(v,n)
+      where v->>'kind' not in ('purchase','count') and n in (select n2 from jsonb_array_elements(p_snapshot->'allSources') with ordinality t2(v2,n2) where v2->>'kind' not in ('purchase','count') order by n2 limit 50)),'[]'::jsonb),
+    'purchases',coalesce((select jsonb_agg(v) from (select v from jsonb_array_elements(p_snapshot->'allSources') v where v->>'kind'='purchase' limit 50) x),'[]'),
+    'counts',coalesce((select jsonb_agg(v) from (select v from jsonb_array_elements(p_snapshot->'allSources') v where v->>'kind'='count' limit 50) x),'[]'),
+    'sourceCounts',(select jsonb_build_object('expenses',count(*) filter(where v->>'kind' not in ('purchase','count')),
+      'purchases',count(*) filter(where v->>'kind'='purchase'),'counts',count(*) filter(where v->>'kind'='count')) from jsonb_array_elements(p_snapshot->'allSources') v),
+    'selectedSourceCounts',(select jsonb_build_object('expenses',count(*) filter(where v->>'kind' not in ('purchase','count') and (v->>'included')::boolean),
+      'purchases',count(*) filter(where v->>'kind'='purchase' and (v->>'included')::boolean),
+      'counts',count(*) filter(where v->>'kind'='count' and (v->>'included')::boolean)) from jsonb_array_elements(p_snapshot->'allSources') v),
+    'expenseGroups',coalesce((select jsonb_agg(jsonb_build_object('kind',kind,'amount',amount,'includedAmount',included))
+      from (select v->>'kind' kind,sum((v->>'amount')::numeric) amount,
+        sum(case when (v->>'included')::boolean then (v->>'amount')::numeric else 0 end) included
+        from jsonb_array_elements(p_snapshot->'allSources') v where v->>'kind' not in ('purchase','count') group by v->>'kind') g),'[]'));
+$$;
+
+
+ALTER FUNCTION "private"."branch_bonus_present"("p_snapshot" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_require_manager"("p_location" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  if not coalesce(public.can_access_super_admin_features(), false) then
+    raise exception 'BONUS_FORBIDDEN: ไม่มีสิทธิ์จัดการโบนัส';
+  end if;
+  if not exists(select 1 from public.locations where id=p_location) then
+    raise exception 'BONUS_INVALID: ไม่พบสาขา';
+  end if;
+end $$;
+
+
+ALTER FUNCTION "private"."branch_bonus_require_manager"("p_location" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."branch_bonus_review"("p_location" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare inventory jsonb; periods jsonb;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  with classified as (
+    select e.*,old.id old_bonus,
+      exists(select 1 from public.rubber_bills b where b.source_rubber_export_id=e.id
+        and b.location_id=e.location_id and b.record_status='active') self_receipt,
+      private.branch_bonus_history(e.id) history,
+      (select count(*) from public.branch_bonuses b where b.location_id=p_location
+        and b.period_end<(e.created_at at time zone 'Asia/Bangkok')::date) window_key
+    from public.rubber_exports e left join lateral (
+      select b.id from public.branch_bonuses b where b.location_id=p_location
+        and (e.created_at at time zone 'Asia/Bangkok')::date between b.period_start and b.period_end
+      order by b.period_start,b.id limit 1
+    ) old on true
+    where e.location_id=p_location and not exists(select 1 from private.branch_bonus_exports x where x.export_id=e.id)
+  ) select coalesce(jsonb_agg(jsonb_build_object('id',id,'exportNo',export_no,'createdAt',created_at,
+    'originalWeight',original_weight_total,'currentWeight',current_weight,
+    'lossPercent',case when original_weight_total>0 then (original_weight_total-current_weight)/original_weight_total*100 end,
+    'history',history,'bonusId',old_bonus,'windowKey',window_key,
+    'kind',case when self_receipt then 'self' when old_bonus is not null then 'leftover' else 'required' end,
+    'issues',case when self_receipt or old_bonus is not null then '[]'::jsonb else
+      (case when history then '[]'::jsonb else '["ยังไม่อยู่ในประวัติ"]'::jsonb end)||
+      (case when original_weight_total>0 and current_weight>0 and current_weight<original_weight_total
+        then '[]'::jsonb else '["น้ำหนักที่ลดลงต้องมากกว่า 0 และน้ำหนักปัจจุบันต้องพร้อม"]'::jsonb end) end)
+    order by created_at desc,id desc),'[]') into inventory from classified;
+  if (select count(*) from jsonb_array_elements(inventory) v where v->>'kind'='required')>5000 then
+    raise exception 'BONUS_INVALID: มี REX รอตรวจเกิน 5,000 รายการ กรุณาติดต่อผู้ดูแลก่อนดำเนินการ';
+  end if;
+  select coalesce(jsonb_agg(jsonb_build_object('key',window_key::text,'exportIds',ids,'periodStart',a,'periodEnd',b,'periodDays',b-a+1)
+    order by a),'[]') into periods from (
+    select v->>'windowKey' window_key,jsonb_agg(v->>'id' order by v->>'id') ids,
+      min(((v->>'createdAt')::timestamptz at time zone 'Asia/Bangkok')::date) a,
+      max(((v->>'createdAt')::timestamptz at time zone 'Asia/Bangkok')::date) b
+    from jsonb_array_elements(inventory) v where v->>'kind'='required' group by v->>'windowKey'
+  ) groups;
+  return jsonb_build_object('rows',inventory,'periods',periods,
+    'requiredCount',(select count(*) from jsonb_array_elements(inventory) v where v->>'kind'='required'),
+    'blockedCount',(select count(*) from jsonb_array_elements(inventory) v where v->>'kind'='required' and jsonb_array_length(v->'issues')>0),
+    'fingerprint',md5(jsonb_build_object('rows',inventory,'periods',periods)::text));
+end $$;
+
+
+ALTER FUNCTION "private"."branch_bonus_review"("p_location" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") RETURNS "jsonb"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -1872,6 +2234,56 @@ $$;
 
 
 ALTER FUNCTION "private"."can_view_profile"("target_user" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."capture_branch_bonus_source_loss"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare j jsonb := to_jsonb(old); loc uuid; d date; kind text;
+begin
+  -- A lost weigh line can make an otherwise retained purchase disappear.
+  if tg_table_name='rubber_bill_items' then
+    if j->>'item_type'<>'weigh' then return old; end if;
+    select to_jsonb(b) into j from public.rubber_bills b where b.id=(j->>'bill_id')::uuid;
+    if j is null then return old; end if;
+  end if;
+  if j->>'record_status'='deleted' or j->>'status'='deleted' or j->>'cancelled_at' is not null then return old; end if;
+  -- Authenticated business corrections retain their existing deletion semantics.
+  -- A future bulk purge must call the explicit gap marker even with an actor.
+  if auth.uid() is not null then return old; end if;
+  if exists(select 1 from public.document_deletion_audits where source_id=(j->>'id')::uuid) then return old; end if;
+  if tg_table_name='income_expense' and (j->>'type'<>'expense' or j->>'sync_status'<>'synced' or coalesce((j->>'cost')::numeric,0)<=0) then return old; end if;
+  if tg_table_name in ('rubber_bills','rubber_bill_items') and (j->>'source_rubber_export_id' is not null
+    or not private.rubber_bill_is_payable((j->>'id')::uuid) or private.rubber_bill_has_pending_approval((j->>'id')::uuid)) then return old; end if;
+  if tg_table_name='financial_transactions' and (j->>'type'<>'WITHDRAWAL' or j->>'status'<>'APPROVED') then return old; end if;
+  if tg_table_name='payroll_slips' and j->>'status'<>'APPROVED' then return old; end if;
+  if tg_table_name='rubber_exports' and (j->>'status'<>'verified' or coalesce((j->>'work_total')::numeric,0)<=0) then return old; end if;
+  if tg_table_name='money_transfer_slips' and coalesce((j->>'fee')::numeric,0)<=0 then return old; end if;
+  if tg_table_name='money_transfers' then
+    if j->>'transfer_status'='cancelled' then return old; end if;
+    insert into private.branch_bonus_source_gaps(location_id,business_date,kind)
+      select (j->>'location_id')::uuid,(transaction_date at time zone 'Asia/Bangkok')::date,'fee'
+      from public.money_transfer_slips where transfer_id=(j->>'id')::uuid and fee>0 on conflict do nothing;
+    if j->>'transfer_type'<>'transport' or coalesce((j->>'transport_cost')::numeric,0)<=0 then return old; end if;
+  end if;
+  loc := coalesce((j->>'location_id')::uuid,(j->>'expense_location_id')::uuid);
+  kind := case tg_table_name when 'income_expense' then 'expense' when 'rubber_bills' then 'purchase' when 'rubber_bill_items' then 'purchase'
+    when 'cash_counts' then 'count' when 'financial_transactions' then 'withdrawal'
+    when 'payroll_slips' then 'payroll' when 'rubber_exports' then 'work'
+    when 'money_transfers' then 'transport' else 'fee' end;
+  d := coalesce((j->>'tx_date')::date,(j->>'bill_date')::date,
+    (coalesce((j->>'approved_at')::timestamptz,(j->>'verified_at')::timestamptz,
+      (j->>'transaction_date')::timestamptz,(j->>'created_at')::timestamptz) at time zone 'Asia/Bangkok')::date);
+  if tg_table_name='money_transfer_slips' then
+    select location_id into loc from public.money_transfers where id=(j->>'transfer_id')::uuid;
+  end if;
+  if loc is not null and d is not null then perform private.mark_branch_bonus_source_gap(loc,d,kind); end if;
+  return old;
+end $$;
+
+
+ALTER FUNCTION "private"."capture_branch_bonus_source_loss"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."capture_dashboard_money_source"() RETURNS "trigger"
@@ -4616,6 +5028,55 @@ $$;
 ALTER FUNCTION "private"."guard_approved_rubber_bill_request_history"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."guard_branch_bonus_history"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare ids uuid[]:='{}'; j jsonb; v_export_id uuid;
+begin
+  for j in select value from jsonb_array_elements(jsonb_build_array(
+    case when tg_op<>'INSERT' then to_jsonb(old) end,
+    case when tg_op<>'DELETE' then to_jsonb(new) end)) where value<>'null'::jsonb loop
+    ids:=array_append(ids,case tg_table_name when 'rubber_exports' then (j->>'id')::uuid else (j->>'source_rubber_export_id')::uuid end);
+  end loop;
+  foreach v_export_id in array ids loop
+    if v_export_id is not null and exists(select 1 from private.branch_bonus_exports x where x.export_id=v_export_id)
+      and not private.branch_bonus_history(v_export_id) then
+      raise exception 'BONUS_HISTORY_LOCKED: รายการนี้ใช้ในผลโบนัสแล้ว กรุณาลบผลโบนัสที่เกี่ยวข้องก่อนนำออกจากประวัติ';
+    end if;
+  end loop;
+  return null;
+end $$;
+
+
+ALTER FUNCTION "private"."guard_branch_bonus_history"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."guard_branch_bonus_truncate"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare kinds text[];
+begin
+  if (tg_table_name='rubber_exports' and exists(select 1 from private.branch_bonus_exports))
+    or (tg_table_name='rubber_bills' and exists(select 1 from private.branch_bonus_exports x
+      join public.rubber_exports e on e.id=x.export_id where e.sold_out_at is null)) then
+    raise exception 'BONUS_HISTORY_LOCKED: กรุณาลบผลโบนัสที่เกี่ยวข้องก่อนล้างรายการที่ทำให้ REX ออกจากประวัติ';
+  end if;
+  kinds:=case tg_table_name when 'income_expense' then array['expense'] when 'rubber_bills' then array['purchase']
+    when 'rubber_bill_items' then array['purchase'] when 'cash_counts' then array['count']
+    when 'financial_transactions' then array['withdrawal'] when 'payroll_slips' then array['payroll']
+    when 'rubber_exports' then array['work'] when 'money_transfers' then array['transport','fee'] else array['fee'] end;
+  insert into private.branch_bonus_source_gaps(location_id,business_date,kind)
+    select distinct location_id,business_date,kind from private.branch_bonus_source_rows
+    where kind=any(kinds) and location_id is not null on conflict do nothing;
+  return null;
+end $$;
+
+
+ALTER FUNCTION "private"."guard_branch_bonus_truncate"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."guard_branch_receipt_bill"() RETURNS "trigger"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -6116,6 +6577,35 @@ $$;
 ALTER FUNCTION "private"."latest_withdrawal_target"("p_withdrawal_id" "uuid") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "private"."lock_branch_bonus_history_change"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare ids uuid[]:='{}'; j jsonb; loc uuid;
+begin
+  for j in select value from jsonb_array_elements(jsonb_build_array(
+    case when tg_op<>'INSERT' then to_jsonb(old) end,
+    case when tg_op<>'DELETE' then to_jsonb(new) end)) where value<>'null'::jsonb loop
+    if j->>'source_rubber_export_id' is not null then
+      select location_id into loc from public.rubber_exports where id=(j->>'source_rubber_export_id')::uuid;
+      -- Existing cash_count_movement_guard already serializes the own branch.
+      -- Only a cross-branch receipt needs this additional source-branch fence.
+      if loc is distinct from (j->>'location_id')::uuid then ids:=array_append(ids,loc); end if;
+    end if;
+  end loop;
+  for loc in select distinct x from unnest(ids) x where x is not null order by x loop
+    if not pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtextextended(loc::text,0)) then
+      raise exception 'BONUS_SOURCE_CHANGED: รายการกำลังถูกใช้งาน กรุณาลองอีกครั้ง';
+    end if;
+  end loop;
+  if tg_op='DELETE' then return old; end if;
+  return new;
+end $$;
+
+
+ALTER FUNCTION "private"."lock_branch_bonus_history_change"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -6138,6 +6628,18 @@ $$;
 
 
 ALTER FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."mark_branch_bonus_source_gap"("p_location" "uuid", "p_day" "date", "p_kind" "text") RETURNS "void"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  insert into private.branch_bonus_source_gaps(location_id,business_date,kind)
+  values(p_location,p_day,p_kind) on conflict do nothing;
+$$;
+
+
+ALTER FUNCTION "private"."mark_branch_bonus_source_gap"("p_location" "uuid", "p_day" "date", "p_kind" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "private"."mark_dashboard_dirty"("p_location_id" "uuid") RETURNS "void"
@@ -13558,6 +14060,91 @@ $$;
 ALTER FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."confirm_branch_bonus"("p_location" "uuid", "p_id" "uuid", "p_input" "jsonb", "p_expected" "text", "p_final_amount" numeric DEFAULT NULL::numeric) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare receipt private.branch_bonus_request_receipts%rowtype; fingerprint text;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  fingerprint:=md5(jsonb_build_object('input',p_input,'expected',p_expected,'final',p_final_amount)::text);
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('branch-bonus-request:'||p_id::text,0));
+  select * into receipt from private.branch_bonus_request_receipts where id=p_id;
+  if not found then raise exception 'BONUS_SOURCE_CHANGED: คำขอเดิมยังไม่ได้บันทึก กรุณาตรวจ REX ทั้งหมดใหม่'; end if;
+  if receipt.actor_id<>auth.uid() or receipt.location_id<>p_location or receipt.fingerprint<>fingerprint then
+    raise exception 'BONUS_CONFLICT: คำขอเดิมมีข้อมูลต่างกัน'; end if;
+  if receipt.bonus_id is null then raise exception 'BONUS_CONFLICT: ผลโบนัสนี้ถูกลบแล้ว กรุณาเริ่มรายการใหม่'; end if;
+  return public.get_branch_bonus(p_location,receipt.bonus_id);
+end $$;
+
+
+ALTER FUNCTION "public"."confirm_branch_bonus"("p_location" "uuid", "p_id" "uuid", "p_input" "jsonb", "p_expected" "text", "p_final_amount" numeric) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."confirm_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid", "p_review" "text", "p_periods" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare fingerprint text; batch private.branch_bonus_batches%rowtype; snaps jsonb; part jsonb; snap jsonb; expected jsonb;
+  result_ids uuid[]:='{}'; result_id uuid; actor_name text; changes_saved boolean:=false;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  if p_id is null then raise exception 'BONUS_INVALID: ไม่มีรหัสคำขอ'; end if;
+  fingerprint:=md5(jsonb_build_object('review',p_review,'periods',p_periods)::text);
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('branch-bonus-batch:'||p_id::text,0));
+  select * into batch from private.branch_bonus_batches where id=p_id;
+  if found then
+    if batch.actor_id<>auth.uid() or batch.location_id<>p_location or batch.fingerprint<>fingerprint then
+      raise exception 'BONUS_CONFLICT: คำขอเดิมมีข้อมูลต่างกัน'; end if;
+    return public.get_branch_bonus_batch(p_location,p_id);
+  end if;
+  perform private.lock_report_locations(array[p_location]);
+  -- Calculate ALL snapshots before the first write changes the observations.
+  snaps:=private.branch_bonus_batch_calculate(p_location,p_review,p_periods,clock_timestamp());
+  for part in select value from jsonb_array_elements(snaps) loop
+    snap:=part->'snapshot';
+    select value into expected from jsonb_array_elements(p_periods) where value->>'key'=part->>'key';
+    if snap->>'sourceFingerprint' is distinct from expected->>'expected' then
+      raise exception 'BONUS_SOURCE_CHANGED: ข้อมูลเปลี่ยนแล้ว กรุณาตรวจยอดทุกช่วงใหม่'; end if;
+    if not (snap->>'canConfirm')::boolean then raise exception 'BONUS_INVALID: ทุกช่วงต้องกำหนดเป้าและสัดส่วนให้ครบ'; end if;
+    if expected->'finalAmount' is not null and expected->'finalAmount'<>'null'::jsonb and (
+      jsonb_typeof(expected->'finalAmount')<>'number' or (expected->>'finalAmount')::numeric<0
+      or (expected->>'finalAmount')::numeric>9999999999.99
+      or (expected->>'finalAmount')::numeric<>round((expected->>'finalAmount')::numeric,2)) then
+      raise exception 'BONUS_INVALID: ยอดโบนัสสุดท้ายไม่ถูกต้อง'; end if;
+  end loop;
+  select name into actor_name from public.profiles where id=auth.uid() and is_active;
+  for part in select value from jsonb_array_elements(snaps) loop
+    snap:=part->'snapshot';result_id:=gen_random_uuid();result_ids:=array_append(result_ids,result_id);
+    select value into expected from jsonb_array_elements(p_periods) where value->>'key'=part->>'key';
+    snap:=snap||jsonb_build_object('finalAmount',coalesce((expected->>'finalAmount')::numeric,(snap->>'suggestedAmount')::numeric));
+    insert into public.branch_bonuses(id,location_id,period_start,period_end,input,request_fingerprint,snapshot,created_by_user_id,created_by_name)
+      values(result_id,p_location,(snap->>'periodStart')::date,(snap->>'periodEnd')::date,part->'input',fingerprint,snap,auth.uid(),actor_name);
+    insert into private.branch_bonus_exports(bonus_id,export_id)
+      select result_id,(v->>'id')::uuid from jsonb_array_elements(snap->'exports') v;
+    insert into private.branch_bonus_sources(bonus_id,origin_bonus_id,location_id,source_key)
+      select result_id,result_id,p_location,v->>'key' from jsonb_array_elements(snap->'allSources') v;
+    -- Shared old differences are acknowledged once, owned by the first result.
+    if not changes_saved then
+      insert into private.branch_bonus_observations(bonus_id,origin_bonus_id,source_key,observed_source)
+        select result_id,(v->>'bonus_id')::uuid,v->>'source_key',nullif(v->'observed_source','null'::jsonb)
+        from jsonb_array_elements(snap->'observedChanges') v where not (v->>'unknown')::boolean;
+      insert into private.branch_bonus_sources(bonus_id,origin_bonus_id,location_id,source_key)
+        select result_id,(v->>'bonus_id')::uuid,p_location,v->>'source_key' from jsonb_array_elements(snap->'observedChanges') v
+        where not (v->>'unknown')::boolean on conflict(location_id,source_key) do nothing;
+      changes_saved:=true;
+    end if;
+  end loop;
+  insert into private.branch_bonus_batches values(p_id,auth.uid(),p_location,fingerprint,result_ids);
+  return public.get_branch_bonus_batch(p_location,p_id);
+exception when invalid_text_representation or numeric_value_out_of_range then
+  raise exception 'BONUS_INVALID: ข้อมูลยืนยันไม่ถูกต้อง';
+end $$;
+
+
+ALTER FUNCTION "public"."confirm_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid", "p_review" "text", "p_periods" "jsonb") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."correct_time_payroll_period_start"("p_profile_id" "uuid", "p_period_id" "uuid", "p_start_on" "date") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -16753,6 +17340,21 @@ $$;
 ALTER FUNCTION "public"."deduct_debts_daily"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."delete_branch_bonus"("p_location" "uuid", "p_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  perform private.lock_report_locations(array[p_location]);
+  delete from public.branch_bonuses where id=p_id and location_id=p_location;
+  return jsonb_build_object('id',p_id,'deleted',true);
+end $$;
+
+
+ALTER FUNCTION "public"."delete_branch_bonus"("p_location" "uuid", "p_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO ''
@@ -18169,6 +18771,112 @@ $$;
 
 
 ALTER FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_adjustments"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_bonus"("p_location" "uuid", "p_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare b public.branch_bonuses%rowtype;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  select * into b from public.branch_bonuses where id=p_id and location_id=p_location;
+  if not found then raise exception 'BONUS_NOT_FOUND: ไม่พบผลโบนัส'; end if;
+  return private.branch_bonus_present(b.snapshot)||jsonb_build_object('id',b.id,'input',b.input,
+    'createdAt',b.created_at,'createdByName',b.created_by_name);
+end $$;
+
+
+ALTER FUNCTION "public"."get_branch_bonus"("p_location" "uuid", "p_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare batch private.branch_bonus_batches%rowtype;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  select * into batch from private.branch_bonus_batches where id=p_id and location_id=p_location and actor_id=auth.uid();
+  if not found then raise exception 'BONUS_NOT_FOUND: ไม่พบคำขอเดิม'; end if;
+  return jsonb_build_object('id',batch.id,'results',coalesce((select jsonb_agg(public.get_branch_bonus(p_location,x) order by n)
+    from unnest(batch.result_ids) with ordinality t(x,n) where exists(select 1 from public.branch_bonuses b where b.id=x)),'[]'),
+    'deletedIds',coalesce((select jsonb_agg(x order by n) from unnest(batch.result_ids) with ordinality t(x,n)
+      where not exists(select 1 from public.branch_bonuses b where b.id=x)),'[]'));
+end $$;
+
+
+ALTER FUNCTION "public"."get_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_bonus_candidates"("p_location" "uuid", "p_before" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_before_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare rows jsonb; more boolean;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  with page as (select e.* from public.rubber_exports e where e.location_id=p_location
+    and private.branch_bonus_history(e.id)
+    and (p_before is null or (e.created_at,e.id)<(p_before,p_before_id))
+    order by e.created_at desc,e.id desc limit 51),
+  visible as (select * from page order by created_at desc,id desc limit 50)
+  select coalesce(jsonb_agg(jsonb_build_object('id',e.id,'exportNo',e.export_no,'createdAt',e.created_at,
+    'originalWeight',e.original_weight_total,'currentWeight',e.current_weight,
+    'lossPercent',case when e.current_weight is not null then (e.original_weight_total-e.current_weight)/e.original_weight_total*100 end,
+    'ready',e.current_weight>0 and e.current_weight<e.original_weight_total,
+    'bonusId',(select bonus_id from private.branch_bonus_exports where export_id=e.id)) order by e.created_at desc,e.id desc),'[]'),
+    (select count(*)>50 from page) into rows,more from visible e;
+  return jsonb_build_object('rows',rows,'hasMore',more);
+end $$;
+
+
+ALTER FUNCTION "public"."get_branch_bonus_candidates"("p_location" "uuid", "p_before" timestamp with time zone, "p_before_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_bonus_changes"("p_location" "uuid", "p_offset" integer DEFAULT 0) RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare result jsonb;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  if p_offset is null or p_offset<0 then raise exception 'BONUS_INVALID: หน้ารายการไม่ถูกต้อง'; end if;
+  with changes as (select * from private.branch_bonus_changes(p_location))
+  select jsonb_build_object('rows',coalesce(jsonb_agg(to_jsonb(c)-'observed_source'),'[]'),
+      'hasMore',(select count(*)>p_offset::bigint+50 from changes)) into result
+    from (select * from changes order by bonus_id,source_key offset p_offset limit 50) c;
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."get_branch_bonus_changes"("p_location" "uuid", "p_offset" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_branch_bonus_source_page"("p_location" "uuid", "p_input" "jsonb", "p_section" "text", "p_offset" integer DEFAULT 0, "p_bonus_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare snap jsonb; result jsonb;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  if p_section not in ('expenses','purchases','counts','changes') or p_offset<0 then raise exception 'BONUS_INVALID: หน้ารายการไม่ถูกต้อง'; end if;
+  if p_bonus_id is null then snap:=private.branch_bonus_calculate(p_location,p_input,clock_timestamp());
+  else select snapshot into snap from public.branch_bonuses where id=p_bonus_id and location_id=p_location; end if;
+  if snap is null then raise exception 'BONUS_NOT_FOUND: ไม่พบผลโบนัส'; end if;
+  if p_section='changes' then
+    return jsonb_build_object('sourceFingerprint',snap->>'sourceFingerprint','rows',coalesce((select jsonb_agg(v-'observed_source')
+      from (select v from jsonb_array_elements(coalesce(snap->'observedChanges','[]')) v offset p_offset limit 50) x),'[]'));
+  end if;
+  select jsonb_build_object('rows',coalesce(jsonb_agg(v order by n),'[]'),'sourceFingerprint',snap->>'sourceFingerprint') into result
+  from (select v,n from jsonb_array_elements(snap->'allSources') with ordinality t(v,n)
+    where case p_section when 'purchases' then v->>'kind'='purchase' when 'counts' then v->>'kind'='count'
+      else v->>'kind' not in ('purchase','count') end order by n offset p_offset limit 50) x;
+  return result;
+end $$;
+
+
+ALTER FUNCTION "public"."get_branch_bonus_source_page"("p_location" "uuid", "p_input" "jsonb", "p_section" "text", "p_offset" integer, "p_bonus_id" "uuid") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."get_branch_create_confirmation_minutes"() RETURNS integer
@@ -23854,6 +24562,27 @@ $$;
 ALTER FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."list_branch_bonuses"("p_location" "uuid", "p_before" timestamp with time zone DEFAULT NULL::timestamp with time zone, "p_before_id" "uuid" DEFAULT NULL::"uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare rows jsonb; more boolean;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  with page as (select * from public.branch_bonuses where location_id=p_location
+    and (p_before is null or (created_at,id)<(p_before,p_before_id)) order by created_at desc,id desc limit 51),
+  visible as (select * from page order by created_at desc,id desc limit 50)
+  select coalesce(jsonb_agg(jsonb_build_object('id',id,'periodStart',period_start,'periodEnd',period_end,
+    'createdAt',created_at,'createdByName',created_by_name,'finalAmount',snapshot->'finalAmount',
+    'suggestedAmount',snapshot->'suggestedAmount','weight',snapshot->'weight') order by created_at desc,id desc),'[]'),
+    (select count(*)>50 from page) into rows,more from visible;
+  return jsonb_build_object('rows',rows,'hasMore',more);
+end $$;
+
+
+ALTER FUNCTION "public"."list_branch_bonuses"("p_location" "uuid", "p_before" timestamp with time zone, "p_before_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") RETURNS "jsonb"
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO ''
@@ -24344,6 +25073,33 @@ end $$;
 
 
 ALTER FUNCTION "public"."preview_bill_device_reset"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."preview_branch_bonus"("p_location" "uuid", "p_input" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+begin return private.branch_bonus_present(private.branch_bonus_calculate(p_location,p_input,clock_timestamp())); end $$;
+
+
+ALTER FUNCTION "public"."preview_branch_bonus"("p_location" "uuid", "p_input" "jsonb") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."preview_branch_bonus_batch"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+declare snaps jsonb;
+begin
+  perform private.branch_bonus_require_manager(p_location);
+  perform private.lock_report_locations(array[p_location]);
+  snaps:=private.branch_bonus_batch_calculate(p_location,p_review,p_periods,clock_timestamp());
+  return jsonb_build_object('periods',(select jsonb_agg(jsonb_build_object('key',v->>'key',
+    'preview',private.branch_bonus_present(v->'snapshot')) order by v->>'key') from jsonb_array_elements(snaps) v));
+end $$;
+
+
+ALTER FUNCTION "public"."preview_branch_bonus_batch"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."preview_rubber_export"("p_location_id" "uuid", "p_selected_report_item_ids" "uuid"[]) RETURNS "jsonb"
@@ -26145,6 +26901,17 @@ $$;
 
 
 ALTER FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."review_branch_bonus"("p_location" "uuid") RETURNS "jsonb"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+  select private.branch_bonus_review(p_location);
+$$;
+
+
+ALTER FUNCTION "public"."review_branch_bonus"("p_location" "uuid") OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."report_batches" (
@@ -32160,6 +32927,236 @@ CREATE TABLE IF NOT EXISTS "private"."bill_number_issuer_proofs" (
 ALTER TABLE "private"."bill_number_issuer_proofs" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "private"."branch_bonus_batches" (
+    "id" "uuid" NOT NULL,
+    "actor_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "fingerprint" "text" NOT NULL,
+    "result_ids" "uuid"[] NOT NULL
+);
+
+
+ALTER TABLE "private"."branch_bonus_batches" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."branch_bonus_exports" (
+    "bonus_id" "uuid" NOT NULL,
+    "export_id" "uuid" NOT NULL
+);
+
+
+ALTER TABLE "private"."branch_bonus_exports" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."branch_bonus_observations" (
+    "bonus_id" "uuid" NOT NULL,
+    "origin_bonus_id" "uuid" NOT NULL,
+    "source_key" "text" NOT NULL,
+    "observed_source" "jsonb"
+);
+
+
+ALTER TABLE "private"."branch_bonus_observations" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."branch_bonus_request_receipts" (
+    "id" "uuid" NOT NULL,
+    "actor_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "fingerprint" "text" NOT NULL,
+    "bonus_id" "uuid"
+);
+
+
+ALTER TABLE "private"."branch_bonus_request_receipts" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."branch_bonus_source_gaps" (
+    "location_id" "uuid" NOT NULL,
+    "business_date" "date" NOT NULL,
+    "kind" "text" NOT NULL,
+    "detected_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL
+);
+
+
+ALTER TABLE "private"."branch_bonus_source_gaps" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."cash_counts" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "session_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "cutoff_at" timestamp with time zone NOT NULL,
+    "actual_counts" "jsonb" NOT NULL,
+    "actual_total" numeric(14,2) NOT NULL,
+    "difference_total" numeric(14,2) NOT NULL,
+    "formula_version" "text" NOT NULL,
+    "status" "text" DEFAULT 'active'::"text" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_by_phone" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "deleted_by_user_id" "uuid",
+    "deleted_by_name" "text",
+    "deleted_by_phone" "text",
+    "deleted_at" timestamp with time zone,
+    "count_no" "text" NOT NULL,
+    "system_balance" numeric(14,2),
+    "account_balance" numeric(14,2) DEFAULT 0 NOT NULL,
+    "counted_total" numeric(14,2) NOT NULL,
+    "checked_by_user_id" "uuid",
+    "checked_by_name" "text",
+    "checked_at" timestamp with time zone,
+    CONSTRAINT "cash_counts_account_balance_check" CHECK (("account_balance" >= (0)::numeric)),
+    CONSTRAINT "cash_counts_actual_matches_counts" CHECK (("actual_total" = "private"."cash_count_total"("actual_counts"))),
+    CONSTRAINT "cash_counts_actual_shape" CHECK ("private"."cash_count_counts_valid"("actual_counts")),
+    CONSTRAINT "cash_counts_actual_total_check" CHECK (("actual_total" >= (0)::numeric)),
+    CONSTRAINT "cash_counts_check1" CHECK (((("status" = 'active'::"text") AND ("deleted_at" IS NULL) AND ("deleted_by_user_id" IS NULL)) OR (("status" = 'deleted'::"text") AND ("deleted_at" IS NOT NULL) AND ("deleted_by_user_id" IS NOT NULL)))),
+    CONSTRAINT "cash_counts_counted_total_matches" CHECK (("counted_total" = ("actual_total" + "account_balance"))),
+    CONSTRAINT "cash_counts_ledger_difference_matches" CHECK ((("system_balance" IS NULL) OR ("difference_total" = ("counted_total" - "system_balance")))),
+    CONSTRAINT "cash_counts_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
+);
+
+
+ALTER TABLE "public"."cash_counts" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."money_transfer_slips" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "transfer_id" "uuid" NOT NULL,
+    "amount" numeric(14,2) DEFAULT 0 NOT NULL,
+    "reference_number" "text",
+    "fee" numeric(12,2) DEFAULT 0 NOT NULL,
+    "sender_name" "text",
+    "receiver_name" "text",
+    "transaction_date" timestamp with time zone,
+    "slip_image_url" "text",
+    "sort_order" integer DEFAULT 0 NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "input_method" "text",
+    "ocr_fingerprint" "text",
+    CONSTRAINT "money_transfer_slips_input_contract_check" CHECK ((("input_method" IS NULL) OR (("input_method" = 'manual'::"text") AND ("reference_number" IS NULL) AND ("ocr_fingerprint" IS NULL)) OR (("input_method" = 'ocr'::"text") AND (NULLIF(TRIM(BOTH FROM "reference_number"), ''::"text") IS NOT NULL) AND ("ocr_fingerprint" IS NOT NULL)))),
+    CONSTRAINT "money_transfer_slips_input_method_check" CHECK ((("input_method" IS NULL) OR ("input_method" = ANY (ARRAY['manual'::"text", 'ocr'::"text"]))))
+);
+
+
+ALTER TABLE "public"."money_transfer_slips" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "private"."branch_bonus_source_rows" AS
+ SELECT ('expense:'::"text" || ("e"."id")::"text") AS "key",
+    'expense'::"text" AS "kind",
+    "e"."id",
+    "e"."location_id",
+    "e"."tx_date" AS "business_date",
+    "e"."created_at" AS "recorded_at",
+    (("e"."tx_date")::timestamp without time zone AT TIME ZONE 'Asia/Bangkok'::"text") AS "occurred_at",
+    "e"."title" AS "label",
+    "e"."cost" AS "amount"
+   FROM "public"."income_expense" "e"
+  WHERE (("e"."record_status" = 'active'::"public"."record_status") AND ("e"."sync_status" = 'synced'::"public"."sync_status") AND ("e"."type" = 'expense'::"public"."transaction_type") AND ("e"."cost" > (0)::numeric))
+UNION ALL
+ SELECT ('withdrawal:'::"text" || "f"."id") AS "key",
+    'withdrawal'::"text" AS "kind",
+    "f"."id",
+    "f"."expense_location_id" AS "location_id",
+    (("f"."approved_at" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" AS "business_date",
+    "f"."created_at" AS "recorded_at",
+    "f"."approved_at" AS "occurred_at",
+    COALESCE(NULLIF("f"."description", ''::"text"), 'เงินเบิก'::"text") AS "label",
+    "f"."amount"
+   FROM "public"."financial_transactions" "f"
+  WHERE (("f"."type" = 'WITHDRAWAL'::"public"."financial_transaction_type") AND ("f"."status" = 'APPROVED'::"public"."approval_status") AND ("f"."cancelled_at" IS NULL) AND ("f"."amount" > (0)::numeric))
+UNION ALL
+ SELECT ('payroll:'::"text" || "p"."id") AS "key",
+    'payroll'::"text" AS "kind",
+    "p"."id",
+    "p"."expense_location_id" AS "location_id",
+    (("p"."approved_at" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" AS "business_date",
+    "p"."created_at" AS "recorded_at",
+    "p"."approved_at" AS "occurred_at",
+    ('เงินเดือน '::"text" || "p"."month") AS "label",
+    "p"."net_pay" AS "amount"
+   FROM "public"."payroll_slips" "p"
+  WHERE (("p"."status" = 'APPROVED'::"public"."approval_status") AND ("p"."cancelled_at" IS NULL) AND ("p"."net_pay" > (0)::numeric))
+UNION ALL
+ SELECT ('transport:'::"text" || "m"."id") AS "key",
+    'transport'::"text" AS "kind",
+    "m"."id",
+    "m"."location_id",
+    (("m"."created_at" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" AS "business_date",
+    "m"."created_at" AS "recorded_at",
+    "m"."created_at" AS "occurred_at",
+    ('ขนส่ง '::"text" || COALESCE("m"."transport_staff_name", ''::"text")) AS "label",
+    "m"."transport_cost" AS "amount"
+   FROM "public"."money_transfers" "m"
+  WHERE (("m"."transfer_type" = 'transport'::"text") AND ("m"."record_status" = 'active'::"public"."record_status") AND ("m"."transfer_status" <> 'cancelled'::"text") AND ("m"."transport_cost" > (0)::numeric))
+UNION ALL
+ SELECT ('work:'::"text" || "e"."id") AS "key",
+    'work'::"text" AS "kind",
+    "e"."id",
+    "e"."location_id",
+    (("e"."verified_at" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" AS "business_date",
+    "e"."created_at" AS "recorded_at",
+    "e"."verified_at" AS "occurred_at",
+    ('ค่าทำงาน '::"text" || "e"."export_no") AS "label",
+    "e"."work_total" AS "amount"
+   FROM "public"."rubber_exports" "e"
+  WHERE (("e"."status" = 'verified'::"text") AND ("e"."work_total" > (0)::numeric))
+UNION ALL
+ SELECT ('fee:'::"text" || "s"."id") AS "key",
+    'fee'::"text" AS "kind",
+    "s"."id",
+    "m"."location_id",
+    (("s"."transaction_date" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" AS "business_date",
+    "s"."created_at" AS "recorded_at",
+    "s"."transaction_date" AS "occurred_at",
+    ('ค่าธรรมเนียม '::"text" || COALESCE("s"."reference_number", ("s"."id")::"text")) AS "label",
+    "s"."fee" AS "amount"
+   FROM ("public"."money_transfer_slips" "s"
+     JOIN "public"."money_transfers" "m" ON (("m"."id" = "s"."transfer_id")))
+  WHERE (("m"."record_status" = 'active'::"public"."record_status") AND ("m"."transfer_status" <> 'cancelled'::"text") AND ("s"."fee" > (0)::numeric))
+UNION ALL
+ SELECT ('purchase:'::"text" || "b"."id") AS "key",
+    'purchase'::"text" AS "kind",
+    "b"."id",
+    "b"."location_id",
+    "b"."bill_date" AS "business_date",
+    "b"."created_at" AS "recorded_at",
+    (("b"."bill_date")::timestamp without time zone AT TIME ZONE 'Asia/Bangkok'::"text") AS "occurred_at",
+    COALESCE("b"."server_bill_no", "b"."bill_no") AS "label",
+    "b"."net_total" AS "amount"
+   FROM "public"."rubber_bills" "b"
+  WHERE (("b"."source_rubber_export_id" IS NULL) AND "private"."rubber_bill_is_payable"("b"."id") AND (NOT "private"."rubber_bill_has_pending_approval"("b"."id")))
+UNION ALL
+ SELECT ('count:'::"text" || "c"."id") AS "key",
+    'count'::"text" AS "kind",
+    "c"."id",
+    "c"."location_id",
+    (("c"."created_at" AT TIME ZONE 'Asia/Bangkok'::"text"))::"date" AS "business_date",
+    "c"."created_at" AS "recorded_at",
+    "c"."created_at" AS "occurred_at",
+    "c"."count_no" AS "label",
+    (1)::numeric AS "amount"
+   FROM "public"."cash_counts" "c"
+  WHERE ("c"."status" = 'active'::"text");
+
+
+ALTER VIEW "private"."branch_bonus_source_rows" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "private"."branch_bonus_sources" (
+    "bonus_id" "uuid" NOT NULL,
+    "origin_bonus_id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "source_key" "text" NOT NULL
+);
+
+
+ALTER TABLE "private"."branch_bonus_sources" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "private"."browser_approvals" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -32721,6 +33718,24 @@ CREATE TABLE IF NOT EXISTS "public"."admin_account_audit_logs" (
 ALTER TABLE "public"."admin_account_audit_logs" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."branch_bonuses" (
+    "id" "uuid" NOT NULL,
+    "location_id" "uuid" NOT NULL,
+    "period_start" "date" NOT NULL,
+    "period_end" "date" NOT NULL,
+    "input" "jsonb" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "snapshot" "jsonb" NOT NULL,
+    "created_by_user_id" "uuid" NOT NULL,
+    "created_by_name" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "clock_timestamp"() NOT NULL,
+    CONSTRAINT "branch_bonuses_check" CHECK (("period_end" >= "period_start"))
+);
+
+
+ALTER TABLE "public"."branch_bonuses" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."branch_create_guard_settings" (
     "singleton" boolean DEFAULT true NOT NULL,
     "confirmation_minutes" integer DEFAULT 15 NOT NULL,
@@ -32877,45 +33892,6 @@ CREATE TABLE IF NOT EXISTS "public"."cash_count_sessions" (
 
 
 ALTER TABLE "public"."cash_count_sessions" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."cash_counts" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "session_id" "uuid" NOT NULL,
-    "location_id" "uuid" NOT NULL,
-    "cutoff_at" timestamp with time zone NOT NULL,
-    "actual_counts" "jsonb" NOT NULL,
-    "actual_total" numeric(14,2) NOT NULL,
-    "difference_total" numeric(14,2) NOT NULL,
-    "formula_version" "text" NOT NULL,
-    "status" "text" DEFAULT 'active'::"text" NOT NULL,
-    "created_by_user_id" "uuid" NOT NULL,
-    "created_by_name" "text" NOT NULL,
-    "created_by_phone" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "deleted_by_user_id" "uuid",
-    "deleted_by_name" "text",
-    "deleted_by_phone" "text",
-    "deleted_at" timestamp with time zone,
-    "count_no" "text" NOT NULL,
-    "system_balance" numeric(14,2),
-    "account_balance" numeric(14,2) DEFAULT 0 NOT NULL,
-    "counted_total" numeric(14,2) NOT NULL,
-    "checked_by_user_id" "uuid",
-    "checked_by_name" "text",
-    "checked_at" timestamp with time zone,
-    CONSTRAINT "cash_counts_account_balance_check" CHECK (("account_balance" >= (0)::numeric)),
-    CONSTRAINT "cash_counts_actual_matches_counts" CHECK (("actual_total" = "private"."cash_count_total"("actual_counts"))),
-    CONSTRAINT "cash_counts_actual_shape" CHECK ("private"."cash_count_counts_valid"("actual_counts")),
-    CONSTRAINT "cash_counts_actual_total_check" CHECK (("actual_total" >= (0)::numeric)),
-    CONSTRAINT "cash_counts_check1" CHECK (((("status" = 'active'::"text") AND ("deleted_at" IS NULL) AND ("deleted_by_user_id" IS NULL)) OR (("status" = 'deleted'::"text") AND ("deleted_at" IS NOT NULL) AND ("deleted_by_user_id" IS NOT NULL)))),
-    CONSTRAINT "cash_counts_counted_total_matches" CHECK (("counted_total" = ("actual_total" + "account_balance"))),
-    CONSTRAINT "cash_counts_ledger_difference_matches" CHECK ((("system_balance" IS NULL) OR ("difference_total" = ("counted_total" - "system_balance")))),
-    CONSTRAINT "cash_counts_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'deleted'::"text"])))
-);
-
-
-ALTER TABLE "public"."cash_counts" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."cash_transfer_delete_requests" (
@@ -33510,29 +34486,6 @@ CREATE TABLE IF NOT EXISTS "public"."money_transfer_items" (
 
 
 ALTER TABLE "public"."money_transfer_items" OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."money_transfer_slips" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "transfer_id" "uuid" NOT NULL,
-    "amount" numeric(14,2) DEFAULT 0 NOT NULL,
-    "reference_number" "text",
-    "fee" numeric(12,2) DEFAULT 0 NOT NULL,
-    "sender_name" "text",
-    "receiver_name" "text",
-    "transaction_date" timestamp with time zone,
-    "slip_image_url" "text",
-    "sort_order" integer DEFAULT 0 NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "input_method" "text",
-    "ocr_fingerprint" "text",
-    CONSTRAINT "money_transfer_slips_input_contract_check" CHECK ((("input_method" IS NULL) OR (("input_method" = 'manual'::"text") AND ("reference_number" IS NULL) AND ("ocr_fingerprint" IS NULL)) OR (("input_method" = 'ocr'::"text") AND (NULLIF(TRIM(BOTH FROM "reference_number"), ''::"text") IS NOT NULL) AND ("ocr_fingerprint" IS NOT NULL)))),
-    CONSTRAINT "money_transfer_slips_input_method_check" CHECK ((("input_method" IS NULL) OR ("input_method" = ANY (ARRAY['manual'::"text", 'ocr'::"text"]))))
-);
-
-
-ALTER TABLE "public"."money_transfer_slips" OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."profiles" (
@@ -34218,6 +35171,41 @@ ALTER TABLE ONLY "private"."bill_number_issuer_proofs"
 
 
 
+ALTER TABLE ONLY "private"."branch_bonus_batches"
+    ADD CONSTRAINT "branch_bonus_batches_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_exports"
+    ADD CONSTRAINT "branch_bonus_exports_export_id_key" UNIQUE ("export_id");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_exports"
+    ADD CONSTRAINT "branch_bonus_exports_pkey" PRIMARY KEY ("bonus_id", "export_id");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_observations"
+    ADD CONSTRAINT "branch_bonus_observations_pkey" PRIMARY KEY ("bonus_id", "origin_bonus_id", "source_key");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_request_receipts"
+    ADD CONSTRAINT "branch_bonus_request_receipts_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_source_gaps"
+    ADD CONSTRAINT "branch_bonus_source_gaps_pkey" PRIMARY KEY ("location_id", "business_date", "kind");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_sources"
+    ADD CONSTRAINT "branch_bonus_sources_pkey" PRIMARY KEY ("location_id", "source_key");
+
+
+
 ALTER TABLE ONLY "private"."browser_approvals"
     ADD CONSTRAINT "browser_approvals_pkey" PRIMARY KEY ("id");
 
@@ -34385,6 +35373,11 @@ ALTER TABLE ONLY "public"."stock_products"
 
 ALTER TABLE ONLY "public"."admin_account_audit_logs"
     ADD CONSTRAINT "admin_account_audit_logs_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_bonuses"
+    ADD CONSTRAINT "branch_bonuses_pkey" PRIMARY KEY ("id");
 
 
 
@@ -35018,6 +36011,18 @@ ALTER TABLE ONLY "public"."user_locations"
 
 
 
+CREATE INDEX "branch_bonus_observations_origin" ON "private"."branch_bonus_observations" USING "btree" ("origin_bonus_id", "source_key");
+
+
+
+CREATE INDEX "branch_bonus_sources_bonus" ON "private"."branch_bonus_sources" USING "btree" ("bonus_id");
+
+
+
+CREATE INDEX "branch_bonus_sources_origin" ON "private"."branch_bonus_sources" USING "btree" ("origin_bonus_id");
+
+
+
 CREATE INDEX "browser_approvals_pending" ON "private"."browser_approvals" USING "btree" ("user_id") WHERE ("state" = 'pending'::"text");
 
 
@@ -35063,6 +36068,10 @@ CREATE INDEX "admin_account_audit_target_created_idx" ON "public"."admin_account
 
 
 CREATE UNIQUE INDEX "admin_account_password_request_unique" ON "public"."admin_account_audit_logs" USING "btree" ("request_id") WHERE ("request_id" IS NOT NULL);
+
+
+
+CREATE INDEX "branch_bonuses_location_period" ON "public"."branch_bonuses" USING "btree" ("location_id", "period_start", "period_end");
 
 
 
@@ -35534,6 +36543,10 @@ CREATE OR REPLACE TRIGGER "stamp_rubber_command_resolution" BEFORE INSERT OR UPD
 
 
 
+CREATE OR REPLACE TRIGGER "aa_branch_bonus_history_lock" BEFORE INSERT OR DELETE OR UPDATE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."lock_branch_bonus_history_change"();
+
+
+
 CREATE OR REPLACE TRIGGER "archive_terminal_approval_request" BEFORE DELETE ON "public"."income_expense_approval_requests" FOR EACH ROW EXECUTE FUNCTION "private"."archive_terminal_approval_request"();
 
 
@@ -35555,6 +36568,50 @@ CREATE OR REPLACE TRIGGER "assign_rubber_bill_formula_version" BEFORE INSERT OR 
 
 
 CREATE OR REPLACE TRIGGER "assign_rubber_bill_item_sequence" BEFORE INSERT ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."assign_rubber_bill_item_sequence"();
+
+
+
+CREATE CONSTRAINT TRIGGER "branch_bonus_history_guard" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_bills" DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION "private"."guard_branch_bonus_history"();
+
+
+
+CREATE CONSTRAINT TRIGGER "branch_bonus_history_guard" AFTER INSERT OR DELETE OR UPDATE ON "public"."rubber_exports" DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION "private"."guard_branch_bonus_history"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."cash_counts" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."financial_transactions" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."income_expense" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."money_transfer_slips" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."money_transfers" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."payroll_slips" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."rubber_bill_items" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."rubber_bills" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
+
+
+
+CREATE OR REPLACE TRIGGER "branch_bonus_truncate" BEFORE TRUNCATE ON "public"."rubber_exports" FOR EACH STATEMENT EXECUTE FUNCTION "private"."guard_branch_bonus_truncate"();
 
 
 
@@ -36002,8 +37059,84 @@ CREATE OR REPLACE TRIGGER "rubber_bills_lock_location" BEFORE UPDATE ON "public"
 
 
 
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."cash_counts" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."financial_transactions" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."income_expense" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."money_transfer_slips" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."money_transfers" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."payroll_slips" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."rubber_bill_items" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."rubber_bills" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
+CREATE OR REPLACE TRIGGER "z_branch_bonus_source_loss" BEFORE DELETE ON "public"."rubber_exports" FOR EACH ROW EXECUTE FUNCTION "private"."capture_branch_bonus_source_loss"();
+
+
+
 ALTER TABLE ONLY "private"."bill_issuer_device_heads"
     ADD CONSTRAINT "bill_issuer_device_heads_device_id_fkey" FOREIGN KEY ("device_id") REFERENCES "private"."bill_issuer_devices"("id");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_exports"
+    ADD CONSTRAINT "branch_bonus_exports_bonus_id_fkey" FOREIGN KEY ("bonus_id") REFERENCES "public"."branch_bonuses"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_observations"
+    ADD CONSTRAINT "branch_bonus_observations_bonus_id_fkey" FOREIGN KEY ("bonus_id") REFERENCES "public"."branch_bonuses"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_observations"
+    ADD CONSTRAINT "branch_bonus_observations_origin_bonus_id_fkey" FOREIGN KEY ("origin_bonus_id") REFERENCES "public"."branch_bonuses"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_request_receipts"
+    ADD CONSTRAINT "branch_bonus_request_receipts_bonus_id_fkey" FOREIGN KEY ("bonus_id") REFERENCES "public"."branch_bonuses"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_source_gaps"
+    ADD CONSTRAINT "branch_bonus_source_gaps_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_sources"
+    ADD CONSTRAINT "branch_bonus_sources_bonus_id_fkey" FOREIGN KEY ("bonus_id") REFERENCES "public"."branch_bonuses"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_sources"
+    ADD CONSTRAINT "branch_bonus_sources_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
+
+
+
+ALTER TABLE ONLY "private"."branch_bonus_sources"
+    ADD CONSTRAINT "branch_bonus_sources_origin_bonus_id_fkey" FOREIGN KEY ("origin_bonus_id") REFERENCES "public"."branch_bonuses"("id") ON DELETE CASCADE;
 
 
 
@@ -36119,6 +37252,11 @@ ALTER TABLE ONLY "public"."admin_account_audit_logs"
 
 ALTER TABLE ONLY "public"."admin_account_audit_logs"
     ADD CONSTRAINT "admin_account_audit_logs_target_user_id_fkey" FOREIGN KEY ("target_user_id") REFERENCES "public"."profiles"("id");
+
+
+
+ALTER TABLE ONLY "public"."branch_bonuses"
+    ADD CONSTRAINT "branch_bonuses_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id");
 
 
 
@@ -37057,6 +38195,13 @@ ALTER TABLE "public"."admin_account_audit_logs" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "branch transfer delete requests read" ON "public"."branch_transfer_delete_requests" FOR SELECT TO "authenticated" USING (("private"."can_access_super_admin_features"() OR ("requested_by_user_id" = "auth"."uid"())));
+
+
+
+ALTER TABLE "public"."branch_bonuses" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "branch_bonuses_manager_read" ON "public"."branch_bonuses" FOR SELECT TO "authenticated" USING ("public"."can_access_super_admin_features"());
 
 
 
@@ -38024,6 +39169,17 @@ CREATE POLICY "user_locations_update_scoped_admin" ON "public"."user_locations" 
 
 
 
+
+
+ALTER PUBLICATION "supabase_realtime" OWNER TO "postgres";
+
+
+
+
+
+
+
+
 GRANT USAGE ON SCHEMA "private" TO "authenticated";
 
 
@@ -38032,6 +39188,747 @@ GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -38115,6 +40012,34 @@ REVOKE ALL ON FUNCTION "private"."bill_device_reset_snapshot"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "private"."branch_bonus_batch_calculate"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb", "p_as_of" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."branch_bonus_calculate"("p_location" "uuid", "p_input" "jsonb", "p_as_of" timestamp with time zone) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."branch_bonus_changes"("p_location" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."branch_bonus_history"("p_id" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."branch_bonus_present"("p_snapshot" "jsonb") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."branch_bonus_require_manager"("p_location" "uuid") FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."branch_bonus_review"("p_location" "uuid") FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."calculate_dashboard_summary"("p_location_id" "uuid") FROM PUBLIC;
 
 
@@ -38179,6 +40104,10 @@ REVOKE ALL ON FUNCTION "private"."can_use_cash_count"("p_location_id" "uuid") FR
 
 REVOKE ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "private"."can_view_profile"("target_user" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "private"."capture_branch_bonus_source_loss"() FROM PUBLIC;
 
 
 
@@ -38370,6 +40299,14 @@ REVOKE ALL ON FUNCTION "private"."get_money_weight_threshold_alert_check"() FROM
 
 
 
+REVOKE ALL ON FUNCTION "private"."guard_branch_bonus_history"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."guard_branch_bonus_truncate"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."guard_cash_count_movement"() FROM PUBLIC;
 
 
@@ -38481,7 +40418,15 @@ REVOKE ALL ON FUNCTION "private"."latest_withdrawal_target"("p_withdrawal_id" "u
 
 
 
+REVOKE ALL ON FUNCTION "private"."lock_branch_bonus_history_change"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "private"."lock_report_locations"("p_location_ids" "uuid"[]) FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."mark_branch_bonus_source_gap"("p_location" "uuid", "p_day" "date", "p_kind" "text") FROM PUBLIC;
 
 
 
@@ -39046,6 +40991,16 @@ GRANT ALL ON FUNCTION "public"."configure_telegram_badge_dispatcher"("p_edge_url
 
 
 
+REVOKE ALL ON FUNCTION "public"."confirm_branch_bonus"("p_location" "uuid", "p_id" "uuid", "p_input" "jsonb", "p_expected" "text", "p_final_amount" numeric) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."confirm_branch_bonus"("p_location" "uuid", "p_id" "uuid", "p_input" "jsonb", "p_expected" "text", "p_final_amount" numeric) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."confirm_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid", "p_review" "text", "p_periods" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."confirm_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid", "p_review" "text", "p_periods" "jsonb") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."correct_time_payroll_period_start"("p_profile_id" "uuid", "p_period_id" "uuid", "p_start_on" "date") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."correct_time_payroll_period_start"("p_profile_id" "uuid", "p_period_id" "uuid", "p_start_on" "date") TO "authenticated";
 
@@ -39221,6 +41176,11 @@ REVOKE ALL ON FUNCTION "public"."deduct_debts_daily"() FROM PUBLIC;
 
 
 
+REVOKE ALL ON FUNCTION "public"."delete_branch_bonus"("p_location" "uuid", "p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delete_branch_bonus"("p_location" "uuid", "p_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delete_cash_alert_group"("p_group_id" "uuid") TO "authenticated";
 
@@ -39358,6 +41318,31 @@ REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_rubber_queue
 
 
 REVOKE ALL ON FUNCTION "public"."get_actionable_badge_counts_before_withdrawal_adjustments"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_bonus"("p_location" "uuid", "p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_bonus"("p_location" "uuid", "p_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_bonus_batch"("p_location" "uuid", "p_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_bonus_candidates"("p_location" "uuid", "p_before" timestamp with time zone, "p_before_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_bonus_candidates"("p_location" "uuid", "p_before" timestamp with time zone, "p_before_id" "uuid") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_bonus_changes"("p_location" "uuid", "p_offset" integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_bonus_changes"("p_location" "uuid", "p_offset" integer) TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."get_branch_bonus_source_page"("p_location" "uuid", "p_input" "jsonb", "p_section" "text", "p_offset" integer, "p_bonus_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."get_branch_bonus_source_page"("p_location" "uuid", "p_input" "jsonb", "p_section" "text", "p_offset" integer, "p_bonus_id" "uuid") TO "authenticated";
 
 
 
@@ -39808,6 +41793,11 @@ GRANT ALL ON FUNCTION "public"."is_telegram_evidence_dispatch_enabled"() TO "ser
 
 
 
+REVOKE ALL ON FUNCTION "public"."list_branch_bonuses"("p_location" "uuid", "p_before" timestamp with time zone, "p_before_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."list_branch_bonuses"("p_location" "uuid", "p_before" timestamp with time zone, "p_before_id" "uuid") TO "authenticated";
+
+
+
 REVOKE ALL ON FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."list_browser_approvals"("p_actor" "uuid") TO "service_role";
 
@@ -39875,6 +41865,16 @@ GRANT ALL ON FUNCTION "public"."prepare_sms_phone_change"("p_actor" "uuid", "p_t
 
 REVOKE ALL ON FUNCTION "public"."preview_bill_device_reset"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."preview_bill_device_reset"() TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."preview_branch_bonus"("p_location" "uuid", "p_input" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_branch_bonus"("p_location" "uuid", "p_input" "jsonb") TO "authenticated";
+
+
+
+REVOKE ALL ON FUNCTION "public"."preview_branch_bonus_batch"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."preview_branch_bonus_batch"("p_location" "uuid", "p_review" "text", "p_periods" "jsonb") TO "authenticated";
 
 
 
@@ -40285,6 +42285,11 @@ GRANT ALL ON FUNCTION "public"."revert_rubber_export_to_draft"("p_export_id" "uu
 
 
 
+REVOKE ALL ON FUNCTION "public"."review_branch_bonus"("p_location" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."review_branch_bonus"("p_location" "uuid") TO "authenticated";
+
+
+
 GRANT ALL ON TABLE "public"."report_batches" TO "service_role";
 GRANT SELECT ON TABLE "public"."report_batches" TO "authenticated";
 
@@ -40670,7 +42675,39 @@ GRANT ALL ON FUNCTION "public"."withdraw_time_tracking_withdrawal_adjustment"("p
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 GRANT ALL ON TABLE "private"."approval_request_replay_guards" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."cash_counts" TO "service_role";
+GRANT SELECT ON TABLE "public"."cash_counts" TO "authenticated";
+
+
+
+GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "authenticated";
+GRANT ALL ON TABLE "public"."money_transfer_slips" TO "service_role";
 
 
 
@@ -40745,6 +42782,11 @@ GRANT ALL ON TABLE "public"."admin_account_audit_logs" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."branch_bonuses" TO "service_role";
+GRANT SELECT ON TABLE "public"."branch_bonuses" TO "authenticated";
+
+
+
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."branch_create_guard_settings" TO "service_role";
 
 
@@ -40781,11 +42823,6 @@ GRANT ALL ON TABLE "public"."cash_count_bank_evidence" TO "service_role";
 
 
 GRANT ALL ON TABLE "public"."cash_count_sessions" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."cash_counts" TO "service_role";
-GRANT SELECT ON TABLE "public"."cash_counts" TO "authenticated";
 
 
 
@@ -40909,12 +42946,6 @@ GRANT SELECT ON TABLE "public"."money_transfer_cash_details" TO "authenticated";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_items" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_items" TO "authenticated";
 GRANT ALL ON TABLE "public"."money_transfer_items" TO "service_role";
-
-
-
-GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "anon";
-GRANT SELECT,REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."money_transfer_slips" TO "authenticated";
-GRANT ALL ON TABLE "public"."money_transfer_slips" TO "service_role";
 
 
 
@@ -41113,6 +43144,12 @@ GRANT ALL ON TABLE "public"."transport_staffs" TO "service_role";
 GRANT REFERENCES,TRIGGER,TRUNCATE,MAINTAIN ON TABLE "public"."user_locations" TO "anon";
 GRANT ALL ON TABLE "public"."user_locations" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_locations" TO "service_role";
+
+
+
+
+
+
 
 
 

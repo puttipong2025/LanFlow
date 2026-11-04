@@ -27,7 +27,6 @@ import type { RequestBranchCreate } from "@/hooks/useBranchCreateGuard";
 import { isDeviceOnline } from "@/lib/connectivity";
 
 type DetailTarget = Pick<RubberExportSummary, "id" | "exportNo">;
-
 function editableBills(
   details: RubberExportDetails,
   availableBills: RubberExportAvailableBill[],
@@ -50,7 +49,6 @@ function editableBills(
     || left.billId.localeCompare(right.billId)
   );
 }
-
 function editPreview(details: RubberExportDetails): RubberExportPreviewDisplay {
   return {
     itemCount: details.items.length,
@@ -121,7 +119,7 @@ export function RubberExportsModule({
   online,
   initialExportId,
   onInitialExportHandled,
-  onOpenReports,
+  onOpenReports, onOpenBranchBonus,
   requestBranchCreate,
 }: {
   selectedLocation: Location;
@@ -129,6 +127,7 @@ export function RubberExportsModule({
   initialExportId?: string | null;
   onInitialExportHandled?: () => void;
   onOpenReports: () => void;
+  onOpenBranchBonus?: () => void;
   requestBranchCreate: RequestBranchCreate;
 }) {
   const [view, setView] = useState<"active" | "history" | "deletions">("active");
@@ -303,12 +302,13 @@ export function RubberExportsModule({
       toast.success(pendingSale.soldOut ? "ขายยางออกแล้ว" : "ยกเลิกขายแล้ว");
       setPendingSale(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "เปลี่ยนสถานะขายไม่สำเร็จ");
+      const message = error instanceof Error ? error.message : "เปลี่ยนสถานะขายไม่สำเร็จ";
+      if (message.includes("ใช้ในผลโบนัส")) setPendingSale(null);
+      toast.error(message, message.includes("ใช้ในผลโบนัส") && onOpenBranchBonus ? { action: { label: "ดูผลโบนัส", onClick: onOpenBranchBonus } } : undefined);
     } finally {
       saleLockRef.current = false; setSelling(false);
     }
   }
-
   async function revertToDraft() {
     if (!pendingRevert || !online || revertLockRef.current || pendingRevert.reportLockNo) return; revertLockRef.current = true;
     setReverting(true);

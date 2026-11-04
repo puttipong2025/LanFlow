@@ -1,0 +1,77 @@
+# Branch bonus implementation contract
+
+User authorized the original implementation on 2026-11-03 and the required-inventory/batch follow-up on 2026-11-04. The current checklist is codingDO `10_Daily/2026-11-04.md`; `docs/branch-bonus-design.md` records the later decisions that supersede the earlier free selection. Local implementation does not authorize Cloud migration, deployment, commit or push.
+
+## Source map
+
+All dates are Bangkok calendar dates. New assessments include every unused REX of the branch, including active work, with no per-REX exclusion. Used REX are hidden. Active receipts back into the originating branch exclude that REX from weight/readiness/dates; cross-branch receipts do not. Unlinked REX inside already confirmed periods are informational leftovers, outside new calculations and readiness. Each remaining group before/between/after confirmed intervals derives minimum/maximum `created_at` dates independently. Every required REX must be verified **history** with positive original/current weight and raw positive loss before proceeding. History means sold OR linked to an active receiving rubber bill, not a `status` value. The user confirmed that actual operating costs of same-branch returns remain period expenses; excluding the REX does not exclude its real cost.
+
+## Required inventory and atomic batches
+
+`20261104016000_branch_bonus_batches.sql` adds `review_branch_bonus`, `preview_branch_bonus_batch`, `confirm_branch_bonus_batch`, and `get_branch_bonus_batch`. GET `view=review` returns the complete bounded inventory with required/leftover/self classifications, all failure reasons, aggregate counts, periods and a review fingerprint. Up to 5,000 required REX and 100 periods are accepted; client rendering is paged at 50 but readiness always uses every row. POST `previewBatch`/`confirmBatch` take that fingerprint and every period's canonical input. Exclusions are capped at 50,000 across the batch. Period IDs must match the exact required membership determined by the server, not a client-supplied date range or subtotal.
+
+Each period has independent rate, targets, weights, exclusions and optional final amount. New rates and burden/loss targets use two decimals; weights are integers and sum to 100 within each period. Count targets remain inclusive days, including days without REX. New text decimal controls round on blur, support focus-zero, and reject invalid text without turning it into a valid zero final amount. Saved results use `requestVersion=batch-v1` for two-decimal rate/integer weight display while legacy snapshots retain meaningful old precision. The numeric formula remains `branch-bonus-v2`.
+
+Preview and confirm reuse the existing branch serialization. Confirmation checks and calculates **all snapshots before the first write**, including the old-difference fingerprints, using one batch time. Only then does one transaction persist every result, membership, history lock and batch receipt. Shared observations/considered old sources belong to the first result once; every snapshot still records the evidence reviewed. A failure during any later insert rolls back the entire batch. Never implement this by looping the old mutating confirmation function or independent HTTP calls.
+
+Batch receipts store actor, branch, exact request fingerprint and result IDs. Same requests replay without recalculating changed inventory; mismatched identities/payloads conflict. Results may be deleted independently: replay reports surviving results plus `deletedIds` and never resurrects a deleted result. No draft server archive, payment or cancellation snapshot is introduced.
+
+The old `confirm_branch_bonus` is receipt-only. A never-committed old request must return to the new mandatory review; it cannot create a selected subset via the old HTTP route or direct RPC. Its legacy parser and stored input precision remain intact so an already committed request with four-decimal rate or fractional weights can resolve its original receipt exactly. New strict batch validation must not rewrite that old intent.
+
+The UI checks current inventory again on Next. New/changed REX return the user to review, and blocked rows cannot be skipped by dismissing their dialog. A conclusive confirmation error returns to the first step, invalidates the preview and clears manual final overrides. Ambiguous network/server failures instead retain and disable the same pending request for recovery after reload. Changing branch is guarded and each owner/branch has separate intent storage. Source details and old results open only on user action; expense/source pagination retains fingerprint validation.
+
+The first step exposes the existing reload action even before a review has loaded successfully. A failed initial review or a rejected pending request resumed after reload must remain recoverable in the same form. Working/loading/pending fieldset guards still disable conflicting actions; a manual retry does not bypass server readiness checks.
+
+| Kind | Identity / owner branch | Recognition date | Amount and eligibility |
+| --- | --- | --- | --- |
+| General expense | income_expense.id / location_id | tx_date | active synced expense.cost, once |
+| Withdrawal | financial_transactions.id / expense_location_id | approved_at | approved uncancelled WITHDRAWAL.amount, including unpaid transfers |
+| Payroll | payroll_slips.id / expense_location_id | approved_at | approved uncancelled net_pay, including unpaid transfers |
+| Transport | money_transfers.id / location_id | created_at | transport.transport_cost, active noncancelled source; never add its payment principal again |
+| Export work | rubber_exports.id / location_id | verified_at | verified work_total for branch/external/off_system; full source amount, not rounded bank payment |
+| Bank fee | money_transfer_slips.id / parent transfer.location_id | transaction_date | fee once per actual slip on active noncancelled transfer, including a bundle parent |
+| Purchases | rubber_bills.id / location_id | bill_date | net_total passing rubber_bill_is_payable and no pending approval; internal receiving bills are not purchases |
+| Cash counts | cash_counts.id / location_id | created_at (successful submission) | active completed records, not sessions/cutoff time; no cadence/discrepancy/daily cap |
+
+Source keys are kind + UUID. Do not infer identity from title, amount or date. Existing Income/Expense rows and balances are untouched. Old dates count full days; current day ends at server calculation time. Preview fingerprints exclude the advancing clock itself, but include the underlying rows and choices. Confirm recomputes at current server time: new/changed records require review again, not silent repricing.
+
+## Calculation and APIs
+
+The database calculator is shared by preview/confirm. Client-side work is input/display only. Burden and loss use positive owner-entered targets. As confirmed on 2026-11-04, the count target is derived by the server as `periodEnd - periodStart + 1`: one record per inclusive Bangkok calendar day, including days between selected REX dates. Its field is read-only with a gray explanation linked by aria-describedby. Actual counts remain all eligible submitted records; this does not cap records per day or add cadence scoring. Zero weight skips target validation and division; sum weights must be 100. Purchases=0 makes burden unavailable, not zero: the owner must fix data or explicitly set that weight to zero. Empty cash count data is zero only when coverage is complete.
+
+Formula `branch-bonus-v2` derives count targets independently of any submitted target; saved v1 results retain their original manual target. Valid legacy request targets remain canonicalized unchanged for exact replay; unfinished unused count targets do not block a new assessment. `periodDays` is returned for display. `selectedSourceCounts` counts included sources across every page, while existing `sourceCounts` still counts all evidence for pagination. Unchecked expenses/categories decrease the disclosure count without hiding or deleting their rows. These changes use forward `20261104015000_branch_bonus_day_target_and_selected_counts.sql`.
+
+Candidate/list/source detail reads use stable ordering and pages. Scalar JSON aggregation calculates totals over all rows, avoiding PostgREST row caps. Failure never returns a partial total as complete. Save sufficient source snapshots for evidence, not a second business archive.
+
+Route offsets must fit a nonnegative PostgreSQL integer; SQL page lookahead adds 50 in bigint arithmetic so the maximum valid offset stays readable. Source exclusions validate both kind and the complete UUID, normalize UUID case and reject duplicate identities after normalization. An accepted exclusion must match the database source key rather than silently leave the amount included.
+
+API `/api/lanflow/branch-bonuses`: manager-only GET list/candidates/detail/review/batch; POST preview/sources/delete, receipt-only legacy confirm, and new previewBatch/confirmBatch. All responses are private/no-store; unexpected transports return opaque 503. Same actor+UUID+payload retries return the same saved result; changed payload conflicts. Duplicate request clicks are synchronously claimed and disabled; ambiguous failures retain the same intent for retry.
+
+## History lock and consistency
+
+Only selected REX in a successfully saved bonus receive membership locks. Viewing/previewing/unselected rows do not. Confirm, source mutations and deletion serialize through existing branch advisory locks. A database guard rejects every change that would make a linked REX leave history, including undo sale, removing/reassigning/deleting its last active receipt or deleting the REX. It evaluates the resulting history predicate, not a UI label. Deleting the bonus removes only its memberships; existing report/WEX locks remain. Snapshot confirmation never creates a payment.
+
+The aggregate is read as one SQL statement after locking. Existing cash movement guards retain their blocking own-branch serialization. Only cross-branch receipt mutations acquire an additional nonblocking source-branch lock, avoiding inversion when the destination is already locked. The post-mutation history constraint checks both sides. API/UI display a clear Thai lock reason.
+
+## Changes and coverage
+
+Prior sources/late arrivals in confirmed intervals are an informational difference list, separate from current metrics. Never automatically convert differences to a bonus deduction or re-add old bills. Removing a bonus removes its comparison baseline. Known source loss makes differences uncheckable, not zero. Compare current source projection with the saved source projection; keep old snapshots immutable.
+
+Confirmed assessments record the known differences considered at confirmation. Subsequent differences use the latest considered value (100 → 120 considered; later 130 displays 120 → 130), avoiding repeated full differences. The UI states that confirmation considers the whole detected set, including subsequent pages; the owner still chooses every money adjustment. Unknown/purged differences are not acknowledged as zero. Deleting the considering assessment restores the prior baseline; deleting the originating assessment removes its pending comparisons. These observations are small source projections, not cancellation history or automatic payments.
+
+Every included or excluded source identity is marked considered for that branch. If its business date later moves into a new assessment, do not count the whole document again: find its current value by identity for the difference panel, even outside the original date range. Known late arrivals considered through that panel also receive membership. Membership links both the considering and originating assessments so deleting either releases the appropriate state. This is separate from REX history locks and does not lock ordinary expense edits.
+
+No app workflow currently purges active business source history: temporary retention excludes business sources. Record a coverage gap for unauthenticated physical source erasure without the app's deletion audit, or via a private coverage marker called by any future purge path. Existing authenticated business corrections and audited cancellation/deletion retain their normal exclusion semantics. A gap blocks recalculation of the affected metric/source/date range; it does not erase confirmed snapshots. Do not claim completeness for imports/erasure performed outside these guarded paths; a future purge must mark its scope first, including when run by an authenticated administrator. History-locked selected REX still cannot be removed until their bonuses are deleted.
+
+Coverage markers cascade when an otherwise deletable branch is physically removed. They must not introduce a separate branch deletion lock; saved bonuses retain their restrictive branch reference. The forward migration `20261104013000_branch_bonus_gap_branch_cleanup.sql` preserves this existing cleanup contract.
+
+Forward migration `20261104014000_branch_bonus_source_loss_and_pagination.sql` also captures unaudited physical loss of purchase weigh lines: losing the last line makes the retained bill fail payable eligibility, so coverage must be recorded before the child disappears. Authenticated business corrections and audited parent deletion retain their existing semantics. A missing known source with a coverage gap of the same branch/kind is conservatively unknown even if its date was moved outside the original interval; date-only coverage cannot prove an intentionally deleted identity. Known changes never adjust money automatically.
+
+Difference details use a native disclosure closed by default, shown only after its heading is clicked. The user confirmed this behavior on 2026-11-04. A failed REX sale reversal shows the Thai bonus lock reason; system managers can use its "ดูผลโบนัส" action to open the branch bonus list. Close the sale confirmation dialog before offering this action, since a modal makes an outside toast inaccessible.
+
+## Verification / experiment ledger
+
+- Initial trace: current lists are paginated (cash counts 50); history is sold OR receipt, not a status; cost and bank payment can differ; cash movement guards already take branch advisory locks. Therefore use full SQL aggregate + dedicated candidates and reuse guards.
+- Source contract is an implementation choice derived from existing source meanings and the user's successful-record counting rule. Any observed contradiction must be resolved before shipping the affected behavior.
+- Reproduced an overly broad try-lock changing unrelated sale contention into BONUS_SOURCE_CHANGED. A deterministic started-session barrier ruled out source eligibility/permissions and exposed the pre-mutation guard. Removed the redundant REX/own-branch try-lock, retaining the existing blocking fence and only adding a cross-branch receipt fence. The concurrency regression verifies this alongside same-request/overlap/history-exit races.
+- Required checks: known 10,400 example; +/-5/20 boundaries; 0% skips division; raw loss rounded to 0.00; purchase zero; 51 counts/101 historical REX/1,001 expenses; permissions; idempotent concurrent confirm; interval overlap; history locks on both relationship sides; source change conflict; snapshot/source loss; no money side effects; real UI/mobile/focus/duplicate clicks.

@@ -42,6 +42,7 @@ test("simultaneous registrations across branches share one nonrecycled code name
       delete from private.rubber_bill_issuers where location_id in (${locations});
       delete from private.rubber_bill_issuer_counters where location_id in (${locations});
       delete from public.user_locations where user_id='${actor}';delete from auth.users where id='${actor}';
+      delete from public.profiles where id='${actor}';
       delete from public.locations where id in (${locations});`);
   }
 });
@@ -95,6 +96,6 @@ test("concurrent public business creates with one base get distinct suffixes; ex
       delete from private.rubber_bill_issuer_heads where location_id='${location}';
       delete from private.rubber_bill_issuers where location_id='${location}';
       delete from private.rubber_bill_issuer_counters where location_id='${location}';
-      delete from auth.users where id='${actor}';delete from public.locations where id='${location}';`);
+      delete from auth.users where id='${actor}';delete from public.profiles where id='${actor}';delete from public.locations where id='${location}';`);
   }
 });

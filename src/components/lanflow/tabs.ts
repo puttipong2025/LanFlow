@@ -13,7 +13,7 @@ import {
   Clock
 } from "lucide-react";
 
-export type Tab = "dashboard" | "rubber" | "rubber-evidence" | "rubber-export" | "cash" | "cash-count" | "acid-stock" | "customers" | "transport" | "money-transfer" | "reports" | "admin" | "time-tracking";
+export type Tab = "dashboard" | "rubber" | "rubber-evidence" | "rubber-export" | "cash" | "cash-count" | "acid-stock" | "customers" | "transport" | "money-transfer" | "reports" | "admin" | "time-tracking" | "branch-bonus";
 
 export const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: "dashboard", label: "ภาพรวม", icon: ClipboardList },
@@ -28,5 +28,6 @@ export const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ s
   { id: "time-tracking", label: "เวลาและเงินเดือน", icon: Clock },
   { id: "reports", label: "รายงาน", icon: Printer },
   { id: "cash-count", label: "นับเงิน", icon: CircleDollarSign },
+  { id: "branch-bonus", label: "โบนัสสาขา", icon: Banknote },
   { id: "admin", label: "Admin", icon: ShieldCheck }
 ];

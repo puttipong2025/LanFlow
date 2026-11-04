@@ -8,6 +8,7 @@ import { getOfflineTabBlockMessage } from "@/lib/offline-module-policy";
 export function canViewNavigationTab(tab: Tab, profile: Profile) {
   if (tab === "admin") return canManageSystemFeatures(profile) || ["super_admin", "admin"].includes(profile.role);
   if (tab === "money-transfer") return canUseMoneyTransfer(profile);
+  if (tab === "branch-bonus") return canManageSystemFeatures(profile);
   if (tab === "reports" || tab === "rubber-export" || tab === "cash-count") return canUseReports(profile);
   return true;
 }

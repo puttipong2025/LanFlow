@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/branch-bonus-route.spec.ts',
     '**/bill-device-reset-route.spec.ts',
     '**/income-expense-fifth-scan.spec.ts',
     '**/income-expense-fourth-scan.spec.ts',
