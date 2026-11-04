@@ -135,14 +135,26 @@ update private.rubber_queue_jobs set accepted_at=(((clock_timestamp() at time zo
 select private.process_rubber_queue(20);
 select extensions.is((select result->>'status' from private.rubber_queue_jobs where command_id='ac000000-0000-4000-8000-000000000017'),'synced','overnight execution uses admitted Bangkok date');
 
-update public.rubber_bills set created_at=clock_timestamp()-interval '10 minutes' where client_temp_id='central-priced-create';
+-- Keep the historical admission and bill on the same Bangkok day, even when
+-- this test runs just after midnight. Execution is always outside the window.
+with fixture as (select ((((clock_timestamp() at time zone 'Asia/Bangkok')::date-1)+time '23:50:00') at time zone 'Asia/Bangkok') created_at)
+update public.rubber_bills b set created_at=f.created_at,bill_date=(f.created_at at time zone 'Asia/Bangkok')::date
+from fixture f where b.client_temp_id='central-priced-create';
 update public.rubber_bill_approval_settings set ungrouped_edit_window_minutes=5 where id=true;
 insert into queue_results values('edit-window',public.submit_rubber_queue(jsonb_build_object('centralQueue',true,'contractVersion',2,
  'commandId','ac000000-0000-4000-8000-000000000018','idempotencyKey','ac000000-0000-4000-8000-000000000018',
  'operation','delete','expectedCommandGeneration',1,'expectedQueueVersion',1,'expectedRevisionNo',1,
  'locationId','ac000000-0000-4000-8000-000000000001','clientTempId','central-priced-create')));
-update private.rubber_queue_jobs set accepted_at=clock_timestamp()-interval '9 minutes'
- where command_id='ac000000-0000-4000-8000-000000000018';
+update private.rubber_queue_jobs j set accepted_at=b.created_at+interval '1 minute'
+ from public.rubber_bills b where j.command_id='ac000000-0000-4000-8000-000000000018' and b.client_temp_id='central-priced-create';
+select extensions.ok((select clock_timestamp()>b.created_at+interval '5 minutes'
+ and j.accepted_at between b.created_at and b.created_at+interval '5 minutes'
+ from private.rubber_queue_jobs j cross join public.rubber_bills b
+ where j.command_id='ac000000-0000-4000-8000-000000000018' and b.client_temp_id='central-priced-create'),
+ 'edit-window fixture is valid at admission and expired at execution');
+select extensions.is((select bill_date from public.rubber_bills where client_temp_id='central-priced-create'),
+ (select (accepted_at at time zone 'Asia/Bangkok')::date from private.rubber_queue_jobs where command_id='ac000000-0000-4000-8000-000000000018'),
+ 'edit-window fixture uses the admitted Bangkok calendar day');
 select private.process_rubber_queue(20);
 select extensions.is((select result->>'status' from private.rubber_queue_jobs where command_id='ac000000-0000-4000-8000-000000000018'),'synced','execution delay does not expire the admitted edit window');
 
