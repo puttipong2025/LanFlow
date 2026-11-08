@@ -17,6 +17,7 @@ import { formatBangkokDateTime } from "@/lib/bangkok-date";
 
 import {
   getMoneyTransferReceiptSourceDetails,
+  isMoneyTransferMissingError,
   loadMoneyTransferDetail,
   type MoneyTransferStatusFilter,
   type MoneyTransferKindFilter,
@@ -132,14 +133,11 @@ export function MoneyTransferModule({
   const [page, setPage] = useState(1);
   const branchReceipts = useBranchTransferReceipts(profile.id, locationId, branchReceiptId, { includePending: false });
   const offlineMessage = "โอนเงินใช้ได้เมื่อออนไลน์เท่านั้น";
+  const canManageSystem = profile.role === "super_admin" || profile.canAccessSystemManager === true;
   const branchRecipientLocations = useMemo(() => locations.filter((location) => (
     location.active
-    && (
-      profile.role === "super_admin"
-      || profile.canAccessSystemManager === true
-      || profile.locationIds.includes(location.id)
-    )
-  )), [locations, profile.canAccessSystemManager, profile.locationIds, profile.role]);
+    && (canManageSystem || profile.locationIds.includes(location.id))
+  )), [canManageSystem, locations, profile.locationIds]);
   const transferRows = useMemo(() => transfers.map((transfer) => ({
     transfer,
     summary: getMoneyTransferPaymentSummary(transfer),
@@ -216,11 +214,21 @@ export function MoneyTransferModule({
     deleteTransfer.mutate(deleteConfirmTransfer, {
       onSuccess: (result) => {
         setDeleteConfirmTransfer(null);
-        setToastMsg(result?.status === "pending_approval"
+        setToastMsg(result.status === "pending_approval"
           ? "ส่งคำขอลบให้ผู้จัดการระบบแล้ว"
           : "ลบรายการโอนเงินสำเร็จ");
       },
       onError: (err) => {
+        if (isMoneyTransferMissingError(err)) {
+          setDeleteConfirmTransfer(null);
+          setToastMsg("ไม่พบรายการโอนแล้ว ระบบกำลังโหลดรายการล่าสุด");
+          return;
+        }
+        if (err.message.startsWith("MT_REVISION_CONFLICT:")) {
+          setDeleteConfirmTransfer(null);
+          setToastMsg("รายการโอนถูกเปลี่ยนแล้ว กรุณาตรวจสอบข้อมูลล่าสุดก่อนลบอีกครั้ง");
+          return;
+        }
         console.error("Failed to delete transfer:", err);
         const reportLockedMessage = getMoneyTransferReportLockedDeleteMessage(err);
         if (reportLockedMessage) {
@@ -567,19 +575,13 @@ export function MoneyTransferModule({
                           </button>
                         )}
                         {!t.isPaymentBundle && t.transferType !== "rubber_export_work" && t.transferType !== "time_payroll"
-                          && (t.transferType !== "branch" || t.createdByUserId === profile.id) && <button
+                          && (t.transferType !== "branch"
+                            || t.createdByUserId === profile.id
+                            || (Boolean(t.createdByUserId)
+                              && t.receiptContractVersion === 1
+                              && canManageSystem)) && <button
                           type="button"
-                          onClick={() => {
-                            if (t.reportLockNo) {
-                              setToastMsg(`ล็อกโดยรายงาน ${t.reportLockNo} — ต้องลบรายงานล่าสุดตามลำดับก่อน`);
-                              return;
-                            }
-                            if (!online) {
-                              setToastMsg(offlineMessage);
-                              return;
-                            }
-                            setDeleteConfirmTransfer(t);
-                          }}
+                          onClick={() => setDeleteConfirmTransfer(t)}
                           disabled={!online || Boolean(t.reportLockNo) || isLegacyBranchTransfer}
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-clay px-3 text-xs font-semibold text-white hover:bg-clay/90 disabled:cursor-not-allowed disabled:opacity-40"
                           title={isLegacyBranchTransfer
@@ -788,7 +790,9 @@ export function MoneyTransferModule({
       <AlertDialog
         open={Boolean(deleteConfirmTransfer)}
         title="ยืนยันการลบ"
-        description="คุณแน่ใจหรือไม่ว่าต้องการลบรายการโอนเงินนี้? บิลยาง/ใบชั่งที่เลือกไว้จะสามารถเลือกใช้ใหม่ได้"
+        description={canManageSystem && deleteConfirmTransfer?.branchReceiptStatus === "received"
+          ? "รายการนี้ยืนยันรับเงินแล้ว หากลบ ระบบจะตัดรายการออกจากยอดจ่ายของสาขาต้นทางและยอดรับของสาขาปลายทาง"
+          : "คุณแน่ใจหรือไม่ว่าต้องการลบรายการโอนเงินนี้? บิลยาง/ใบชั่งที่เลือกไว้จะสามารถเลือกใช้ใหม่ได้"}
         confirmLabel="ลบ"
         busy={deleteTransfer.isPending}
         onCancel={() => setDeleteConfirmTransfer(null)}

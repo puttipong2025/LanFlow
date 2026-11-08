@@ -1,9 +1,15 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_V1_TO_V8_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const POSTGRES_INTEGER_MIN = -2_147_483_648;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 const POSTGRES_NUMERIC_12_2_MAX = 9_999_999_999.99;
 
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+export function isUuidV1ToV8(value: unknown): value is string {
+  return typeof value === "string" && UUID_V1_TO_V8_PATTERN.test(value);
 }
 
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -22,11 +28,15 @@ export function isIsoTimestamp(value: unknown): value is string {
     === calendarDate;
 }
 
-export function isNonNegativePostgresInteger(value: unknown): value is number {
+export function isPostgresInteger(value: unknown): value is number {
   return typeof value === "number"
     && Number.isInteger(value)
-    && value >= 0
+    && value >= POSTGRES_INTEGER_MIN
     && value <= POSTGRES_INTEGER_MAX;
+}
+
+export function isNonNegativePostgresInteger(value: unknown): value is number {
+  return isPostgresInteger(value) && value >= 0;
 }
 
 export function isSafePositiveInteger(value: unknown): value is number {

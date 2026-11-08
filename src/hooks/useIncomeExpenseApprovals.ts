@@ -3,7 +3,10 @@ import { incomeApprovalBillNumber } from "@/lib/income-expense/numbering-contrac
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { buildIncomeExpensePayload } from "@/lib/income-expense/build-income-expense-payload";
-import { INCOME_EXPENSE_FEED_QUERY_KEY } from "@/lib/income-expense/query-keys";
+import {
+  INCOME_EXPENSE_APPROVAL_REQUESTS_QUERY_KEY as REQUESTS_KEY,
+  INCOME_EXPENSE_FEED_QUERY_KEY,
+} from "@/lib/income-expense/query-keys";
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { authFetch } from "@/lib/auth-fetch";
 import { bangkokDateString } from "@/lib/bangkok-date";
@@ -35,7 +38,6 @@ import type {
 
 const KEYWORDS_KEY = "incomeExpenseApprovalKeywords";
 const SETTINGS_KEY = "incomeExpenseApprovalSettings";
-const REQUESTS_KEY = "incomeExpenseApprovalRequests";
 const APPROVAL_HISTORY_LIMIT = 80;
 
 type ApprovalSubmitResult = {

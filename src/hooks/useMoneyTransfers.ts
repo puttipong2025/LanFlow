@@ -2,7 +2,8 @@
 
 import { useInfiniteQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 
-import { invalidateMoneyFlowLocation, invalidateMoneyFlowLocations } from "@/lib/money-flow/invalidation";
+import { invalidateMoneyFlowLocations } from "@/lib/money-flow/invalidation";
+import { INCOME_EXPENSE_APPROVAL_REQUESTS_QUERY_KEY } from "@/lib/income-expense/query-keys";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { CASH_COUNT_OVERDUE_MESSAGE, isCashCountOverdueError } from "@/lib/cash-count-lock";
@@ -306,10 +307,14 @@ export function useMoneyTransferList({
     statusCounts: query.data?.pages[0]?.statusCounts ?? {},
     hasMore: Boolean(query.hasNextPage),
     loadMore: query.fetchNextPage,
-    isLoading: query.isLoading,
     isLoadingMore: query.isFetchingNextPage,
-    error: query.error,
   };
+}
+
+export function isMoneyTransferMissingError(error: Error) {
+  return error.message === "Money transfer not found"
+    || error.message === "MONEY_TRANSFER_NOT_FOUND"
+    || error.message.startsWith("MT_NOT_FOUND:");
 }
 
 export async function loadMoneyTransferDetail(transferId: string) {
@@ -357,7 +362,6 @@ export function useMoneyTransferMutations(
 ) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
-  const refresh = () => invalidateMoneyFlowLocation(queryClient, { ownerUserId, locationId });
   const refreshSavedLocations = (saved: MoneyTransfer, submitted: MoneyTransfer) =>
     invalidateMoneyFlowLocations(queryClient, ownerUserId, [
       locationId,
@@ -412,13 +416,29 @@ export function useMoneyTransferMutations(
         p_expected_revision: revisionNo ?? 0,
       });
       if (error) throw new Error(error.message || "ลบรายการโอนเงินไม่สำเร็จ");
-      const result = data as { status?: "deleted" | "pending_approval"; requestId?: string } | null;
-      if (!result || !["deleted", "pending_approval"].includes(result.status ?? "")) {
+      const status = (data as { status?: unknown } | null)?.status;
+      if (status !== "deleted" && status !== "pending_approval") {
         throw new Error("ลบรายการโอนเงินไม่สำเร็จ");
       }
-      return result;
+      return { status, transfer };
     },
-    onSuccess: refresh,
+    onError: (error) => {
+      if (isMoneyTransferMissingError(error) || /^(?:MT_REVISION_CONFLICT|(?:MT_)?REPORT_LOCKED):/.test(error.message)) {
+        void queryClient.invalidateQueries({
+          queryKey: [...moneyFlowQueryKeys.moneyTransferListRoot(), locationId],
+        });
+      }
+    },
+    onSuccess: ({ transfer }) => Promise.all([
+      invalidateMoneyFlowLocations(queryClient, ownerUserId, [
+        locationId,
+        transfer.locationId,
+        transfer.targetLocationId,
+      ]),
+      ...(transfer.transferType === "branch" ? [
+        queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_APPROVAL_REQUESTS_QUERY_KEY] }),
+      ] : []),
+    ]),
   });
   return { addTransfer, updateTransfer, updateWorkTransferSlips, deleteTransfer };
 }

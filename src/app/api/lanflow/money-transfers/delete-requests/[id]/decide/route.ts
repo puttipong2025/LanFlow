@@ -27,13 +27,17 @@ async function decide(request: Request, params: Promise<{ id: string }>) {
     return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
   }
   const comment = payload.comment?.trim() || null;
-  if (comment && comment.length > 500) {
+  if (comment && (comment.includes("\u0000") || /[\uD800-\uDFFF]/u.test(comment))) {
+    return NextResponse.json({ error: "เหตุผลมีอักขระที่ระบบไม่รองรับ" }, { status: 400 });
+  }
+  // Match PostgreSQL char_length for Unicode comments.
+  if (comment && !/^[\s\S]{1,500}$/u.test(comment)) {
     return NextResponse.json({ error: "เหตุผลยาวเกินไป" }, { status: 400 });
   }
   const { data, error } = await auth.supabase.rpc("decide_branch_transfer_delete_request", {
     p_request_id: requestId,
     p_decision: payload.decision,
-    p_comment: comment || null,
+    p_comment: comment,
   });
   if (error) {
     if (/เฉพาะผู้จัดการระบบ|ไม่มีสิทธิ์/.test(error.message)) {

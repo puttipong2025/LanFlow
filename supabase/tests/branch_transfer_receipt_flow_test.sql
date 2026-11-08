@@ -13,6 +13,10 @@ insert into public.profiles (id, phone, name, role, is_active, can_access_money_
   ('82000000-0000-4000-8000-000000000003', '0898200003', 'Unrelated Receiver', 'admin', true, false, false),
   ('82000000-0000-4000-8000-000000000004', '0898200004', 'System Manager', 'admin', true, true, true);
 
+insert into public.profiles (id, phone, name, role, is_active)
+values ('82000000-0000-4000-8000-000000000005', '0898200005', 'Super Admin', 'super_admin', true)
+on conflict do nothing;
+
 insert into public.user_locations (user_id, location_id, is_primary) values
   ('82000000-0000-4000-8000-000000000001', '81000000-0000-4000-8000-000000000001', true),
   ('82000000-0000-4000-8000-000000000001', '81000000-0000-4000-8000-000000000002', false),
@@ -46,6 +50,82 @@ update public.money_transfers
 set branch_receipt_status = null
 where id = '83000000-0000-4000-8000-000000000090';
 
+insert into public.money_transfers (
+  id, client_temp_id, idempotency_key, location_id, target_location_id,
+  target_location_name, net_amount_to_pay, transfer_type, transfer_status,
+  created_by_user_id, created_by_name, created_by_phone, accounting_date,
+  created_at, updated_at
+)
+select
+  '83000000-0000-4000-8000-000000000093',
+  'branch-legacy-same-location', 'branch-legacy-same-location',
+  target_location_id, target_location_id, target_location_name, net_amount_to_pay,
+  transfer_type, transfer_status, created_by_user_id, created_by_name,
+  created_by_phone, accounting_date, created_at, updated_at
+from public.money_transfers
+where id = '83000000-0000-4000-8000-000000000090';
+
+update public.profiles
+set can_access_money_transfer = true
+where id = '82000000-0000-4000-8000-000000000003';
+select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000003', true);
+select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000003","role":"authenticated"}', true);
+set local role authenticated;
+select extensions.throws_like(
+  format('select public.save_money_transfer(%L::jsonb)', jsonb_build_object(
+    'id', candidate.id,
+    'operation', 'update', 'receiptContractVersion', 1, 'transferType', 'branch',
+    'locationId', '81000000-0000-4000-8000-000000000002',
+    'targetLocationId', '81000000-0000-4000-8000-000000000002'
+  )),
+  'MT_NOT_FOUND:%',
+  candidate.description
+)
+from (values
+  ('83000000-0000-4000-8000-000000000093', 'the save RPC hides a legacy transfer in an inaccessible branch'),
+  ('83000000-0000-4000-8000-000000000094', 'the save RPC returns the same error for an unknown transfer')
+) as candidate(id, description);
+select extensions.throws_like(
+  format('select public.get_money_transfer_detail(%L::uuid)', candidate.id),
+  'Money transfer not found',
+  candidate.description
+)
+from (values
+  ('83000000-0000-4000-8000-000000000093', 'the detail RPC hides a transfer in an inaccessible branch'),
+  ('83000000-0000-4000-8000-000000000094', 'the detail RPC returns the same error for an unknown transfer')
+) as candidate(id, description);
+select extensions.throws_like(
+  format('select public.request_branch_money_transfer_delete(%L::uuid, 0)', candidate.id),
+  'MT_NOT_FOUND:%',
+  candidate.description
+)
+from (values
+  ('83000000-0000-4000-8000-000000000093', 'the branch delete RPC hides a transfer in an inaccessible branch'),
+  ('83000000-0000-4000-8000-000000000094', 'the branch delete RPC returns the same error for an unknown transfer')
+) as candidate(id, description);
+select extensions.throws_like(
+  format('select public.delete_money_transfer(%L::uuid, 0)', candidate.id),
+  'MONEY_TRANSFER_DELETE_FORBIDDEN',
+  candidate.description
+)
+from (values
+  ('83000000-0000-4000-8000-000000000093', 'the general delete RPC denies an inaccessible transfer'),
+  ('83000000-0000-4000-8000-000000000094', 'the general delete RPC also denies an unknown transfer')
+) as candidate(id, description);
+select extensions.throws_like(
+  format('select public.get_money_transfer_receipt_source_details(%L::uuid)', candidate.id),
+  'Money transfer not found',
+  candidate.description
+)
+from (values
+  ('83000000-0000-4000-8000-000000000093', 'the source details RPC hides an inaccessible transfer'),
+  ('83000000-0000-4000-8000-000000000094', 'the source details RPC returns the same error for an unknown transfer')
+) as candidate(id, description);
+reset role;
+update public.profiles
+set can_access_money_transfer = false
+where id = '82000000-0000-4000-8000-000000000003';
+
 select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000001', true);
 select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
 set local role authenticated;
@@ -55,6 +135,37 @@ select extensions.throws_like($$
     '83000000-0000-4000-8000-000000000090', 0
   )
 $$, 'MT_LEGACY_BRANCH_READ_ONLY:%', 'legacy branch transfers remain read-only through the deletion-request RPC');
+
+select extensions.is(
+  public.get_money_transfer_receipt_source_details('83000000-0000-4000-8000-000000000093')->'items',
+  '[]'::jsonb,
+  'the source details RPC still reads accessible transfers without source items'
+);
+
+select extensions.throws_like($$
+  select public.receive_branch_money_transfer('83000000-0000-4000-8000-000000000090', 0)
+$$, 'MT_NOT_FOUND:%', 'the receipt RPC rejects legacy rows before changing receipt state');
+
+select extensions.throws_like($$
+  select public.save_money_transfer(jsonb_build_object(
+    'id', '83000000-0000-4000-8000-000000000093',
+    'clientTempId', 'branch-legacy-same-location',
+    'idempotencyKey', 'branch-legacy-same-location',
+    'operation', 'update', 'revisionNo', 0, 'receiptContractVersion', 1,
+    'locationId', '81000000-0000-4000-8000-000000000001',
+    'targetLocationId', '81000000-0000-4000-8000-000000000001',
+    'transferType', 'branch',
+    'slips', jsonb_build_array(jsonb_build_object(
+      'id', '84000000-0000-4000-8000-000000000093', 'amount', 50, 'fee', 0,
+      'transactionDate', '2020-01-01T00:00:00+07', 'inputMethod', 'manual', 'sortOrder', 0
+    )),
+    'items', '[]'::jsonb
+  ))
+$$, 'MT_LEGACY_BRANCH_READ_ONLY:%', 'the save RPC cannot reopen a legacy transfer owned by its receiving branch');
+
+select extensions.throws_like($$
+  select public.delete_money_transfer('83000000-0000-4000-8000-000000000093', 0)
+$$, 'MT_LEGACY_BRANCH_READ_ONLY:%', 'the generic delete RPC cannot remove a legacy transfer owned by its receiving branch');
 
 reset role;
 delete from public.branch_transfer_delete_requests
@@ -92,7 +203,7 @@ select public.save_money_transfer(jsonb_build_object(
     'fee', 0,
     'transactionDate', statement_timestamp() - interval '1 minute',
     'inputMethod', 'manual',
-    'sortOrder', 0
+    'sortOrder', -1
   )),
   'items', '[]'::jsonb
 ));
@@ -194,22 +305,22 @@ reset role;
 select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000004', true);
 select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000004","role":"authenticated"}', true);
 set local role authenticated;
-select extensions.throws_like($$
-  select public.delete_money_transfer('83000000-0000-4000-8000-000000000003', 0)
-$$, 'MT_DELETE_CREATOR_ONLY:%', 'a non-creator cannot bypass creator-only deletion through the generic RPC');
-
-reset role;
-select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000001', true);
-select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
-set local role authenticated;
-select extensions.lives_ok($$
-  select public.request_branch_money_transfer_delete('83000000-0000-4000-8000-000000000003', 0)
-  where exists (
-    select 1 from public.money_transfers
-    where id = '83000000-0000-4000-8000-000000000003'
-      and record_status <> 'deleted'
-  )
-$$, 'the creator can delete a pending transfer before receipt');
+select extensions.is(
+  public.request_branch_money_transfer_delete('83000000-0000-4000-8000-000000000003', 0)->>'status',
+  'deleted',
+  'a system manager can delete another user''s pending transfer from the money-transfer route'
+);
+select extensions.is(
+  public.delete_money_transfer('83000000-0000-4000-8000-000000000003', 0)->>'status',
+  'deleted',
+  'the general delete RPC can replay an authorized deletion'
+);
+select extensions.is(
+  (select record_status::text from public.money_transfers
+    where id = '83000000-0000-4000-8000-000000000003'),
+  'deleted',
+  'manager deletion marks the pending transfer as deleted'
+);
 
 reset role;
 select extensions.is(
@@ -259,6 +370,9 @@ select extensions.throws_like($$
 $$, 'MT_LOCATION_DENIED:%', 'a user outside the target branch cannot confirm');
 reset role;
 
+update public.profiles set name = E'\t' || chr(65279)
+where id = '82000000-0000-4000-8000-000000000002';
+
 select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000002', true);
 select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000002","role":"authenticated"}', true);
 set local role authenticated;
@@ -283,6 +397,11 @@ select extensions.is(
   'confirmation stores the receiver identity'
 );
 select extensions.is(
+  (select branch_received_by_name from public.money_transfers where id = '83000000-0000-4000-8000-000000000001'),
+  'ผู้ใช้งาน',
+  'confirmation uses the fallback when the receiver name contains only whitespace'
+);
+select extensions.is(
   (select accounting_date from public.money_transfers where id = '83000000-0000-4000-8000-000000000001'),
   (statement_timestamp() at time zone 'Asia/Bangkok')::date,
   'confirmation assigns the Bangkok accounting date on the server'
@@ -291,6 +410,12 @@ select extensions.is(
   (public.receive_branch_money_transfer('83000000-0000-4000-8000-000000000001', 0)->>'idempotentReplay')::boolean,
   true,
   'a repeated confirmation is idempotent even with the old revision'
+);
+select extensions.is(
+  (public.receive_branch_money_transfer('83000000-0000-4000-8000-000000000001', 0)
+    #>> '{slips,0,sort_order}')::integer,
+  -1,
+  'a repeated confirmation returns the saved signed slip sort order'
 );
 reset role;
 
@@ -351,6 +476,20 @@ select extensions.is(
 select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000004', true);
 select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000004","role":"authenticated"}', true);
 set local role authenticated;
+select extensions.throws_like($$
+  select public.decide_branch_transfer_delete_request(
+    (select id from public.branch_transfer_delete_requests where request_status = 'pending'),
+    null,
+    null
+  )
+$$, 'คำตัดสินไม่ถูกต้อง', 'the approval RPC rejects a null decision before writing');
+select extensions.throws_like($$
+  select public.decide_branch_transfer_delete_request(
+    (select id from public.branch_transfer_delete_requests where request_status = 'pending'),
+    'rejected',
+    repeat('a', 501)
+  )
+$$, 'เหตุผลยาวเกินไป', 'the approval RPC enforces the route comment limit');
 select public.decide_branch_transfer_delete_request(
   (select id from public.branch_transfer_delete_requests where request_status = 'pending'),
   'approved',
@@ -373,8 +512,20 @@ insert into public.money_transfers (
   '83000000-0000-4000-8000-000000000091',
   'branch-large-delete', 'branch-large-delete',
   '81000000-0000-4000-8000-000000000001',
+  '81000000-0000-4000-8000-000000000002',
+  'Branch Receipt Other', 10000000000.00,
+  'branch', 'paid',
+  '82000000-0000-4000-8000-000000000001',
+  'Branch Transfer Creator', '0898200001', current_date,
+  1, 'received',
+  '82000000-0000-4000-8000-000000000003',
+  'Unrelated Receiver', statement_timestamp()
+), (
+  '83000000-0000-4000-8000-000000000092',
+  'branch-direct-delete', 'branch-direct-delete',
   '81000000-0000-4000-8000-000000000001',
-  'Branch Receipt Target', 10000000000.00,
+  '81000000-0000-4000-8000-000000000001',
+  'Branch Receipt Target', 10,
   'branch', 'paid',
   '82000000-0000-4000-8000-000000000001',
   'Branch Transfer Creator', '0898200001', current_date,
@@ -392,6 +543,93 @@ select extensions.lives_ok($$
 $$, 'a valid numeric(14,2) branch amount can enter the deletion approval flow');
 reset role;
 
+insert into public.report_batches (
+  id, report_no, report_date, sequence_no, location_id, cutoff_at,
+  created_by_user_id, created_by_name, created_by_phone
+) values
+  ('85000000-0000-4000-8000-000000000001', 'RPT-SOURCE', current_date, 1,
+    '81000000-0000-4000-8000-000000000001', statement_timestamp(),
+    '82000000-0000-4000-8000-000000000004', 'System Manager', '0898200004'),
+  ('85000000-0000-4000-8000-000000000002', 'RPT-TARGET', current_date, 1,
+    '81000000-0000-4000-8000-000000000002', statement_timestamp(),
+    '82000000-0000-4000-8000-000000000004', 'System Manager', '0898200004');
+
+insert into public.report_items (report_id, location_id, entity_type, entity_id, eligibility_at, active)
+values
+  ('85000000-0000-4000-8000-000000000001', '81000000-0000-4000-8000-000000000001',
+    'bank_transfer_source', '83000000-0000-4000-8000-000000000091', statement_timestamp(), true),
+  ('85000000-0000-4000-8000-000000000002', '81000000-0000-4000-8000-000000000002',
+    'bank_transfer_target', '83000000-0000-4000-8000-000000000091', statement_timestamp(), false);
+
+select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000004', true);
+select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000004","role":"authenticated"}', true);
+set local role authenticated;
+select extensions.throws_like($$
+  select public.request_branch_money_transfer_delete('83000000-0000-4000-8000-000000000091', 0)
+$$, 'MT_REPORT_LOCKED:RPT-SOURCE', 'the sending branch report blocks direct manager deletion');
+reset role;
+update public.report_items set active = false
+where report_id = '85000000-0000-4000-8000-000000000001';
+update public.report_items set active = true
+where report_id = '85000000-0000-4000-8000-000000000002';
+set local role authenticated;
+select extensions.throws_like($$
+  select public.request_branch_money_transfer_delete('83000000-0000-4000-8000-000000000091', 0)
+$$, 'MT_REPORT_LOCKED:RPT-TARGET', 'the receiving branch report still blocks manager deletion');
+select extensions.is(
+  (select request_status from public.branch_transfer_delete_requests
+    where transfer_id = '83000000-0000-4000-8000-000000000091'),
+  'pending',
+  'a report lock leaves the deletion request pending'
+);
+reset role;
+update public.report_items set active = false
+where report_id = '85000000-0000-4000-8000-000000000002';
+set local role authenticated;
+select extensions.is(
+  public.request_branch_money_transfer_delete('83000000-0000-4000-8000-000000000091', 0)->>'status',
+  'deleted',
+  'a system manager deletes a received transfer from the money-transfer route once both locks are cleared'
+);
+select extensions.is(
+  (select request_status from public.branch_transfer_delete_requests
+    where transfer_id = '83000000-0000-4000-8000-000000000091'),
+  'approved',
+  'direct deletion also closes the existing approval request'
+);
+reset role;
+select extensions.is(
+  (select record_status::text from public.money_transfers
+    where id = '83000000-0000-4000-8000-000000000091'),
+  'deleted',
+  'the received transfer is soft-deleted'
+);
+select extensions.is(
+  (select count(*) from private.report_creation_blockers(
+    '81000000-0000-4000-8000-000000000001', statement_timestamp()
+  ) where blocker_key = 'branch_transfer_delete_pending'),
+  0::bigint,
+  'the completed deletion request no longer blocks report creation'
+);
+
+select
+  set_config('request.jwt.claim.sub', id::text, true),
+  set_config('request.jwt.claims', jsonb_build_object('sub', id, 'role', 'authenticated')::text, true)
+from public.profiles where role = 'super_admin';
+set local role authenticated;
+select extensions.is(
+  public.request_branch_money_transfer_delete('83000000-0000-4000-8000-000000000092', 0)->>'status',
+  'deleted',
+  'a super admin deletes a received transfer with no existing request'
+);
+reset role;
+select extensions.is(
+  (select count(*) from public.branch_transfer_delete_requests
+    where transfer_id = '83000000-0000-4000-8000-000000000092'),
+  0::bigint,
+  'direct deletion does not create a new approval request'
+);
+
 select extensions.throws_like($$
   insert into public.money_transfer_slips (
     id, transfer_id, amount, fee, transaction_date, sort_order, input_method
@@ -401,6 +639,39 @@ select extensions.throws_like($$
     1, 0, statement_timestamp() + interval '1 minute', 1, 'manual'
   )
 $$, 'MT_SLIP_FUTURE_DATE:%', 'every slip write rejects a future timestamp');
+
+update public.money_transfers
+set location_id = '81000000-0000-4000-8000-000000000001'
+where id = '83000000-0000-4000-8000-000000000002';
+
+select set_config('request.jwt.claim.sub', '82000000-0000-4000-8000-000000000003', true);
+select set_config('request.jwt.claims', '{"sub":"82000000-0000-4000-8000-000000000003","role":"authenticated"}', true);
+set local role authenticated;
+select extensions.throws_like($$
+  select public.receive_branch_money_transfer('83000000-0000-4000-8000-000000000002', 1)
+$$, 'MT_BRANCH_TARGET_MISMATCH:%', 'receipt rejects inconsistent branch ownership before saving');
+reset role;
+select extensions.is(
+  (select branch_receipt_status from public.money_transfers where id = '83000000-0000-4000-8000-000000000002'),
+  'pending_receipt',
+  'a rejected ownership mismatch leaves the transfer pending'
+);
+
+update public.money_transfers set location_id = target_location_id
+where id = '83000000-0000-4000-8000-000000000002';
+delete from public.money_transfer_slips
+where transfer_id = '83000000-0000-4000-8000-000000000002';
+
+set local role authenticated;
+select extensions.throws_like($$
+  select public.receive_branch_money_transfer('83000000-0000-4000-8000-000000000002', 1)
+$$, 'MT_SLIP_REQUIRED:%', 'receipt rejects transfers without slips before saving');
+reset role;
+select extensions.is(
+  (select branch_receipt_status from public.money_transfers where id = '83000000-0000-4000-8000-000000000002'),
+  'pending_receipt',
+  'a transfer with missing slips stays pending'
+);
 
 select * from extensions.finish();
 rollback;

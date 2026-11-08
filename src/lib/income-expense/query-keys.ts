@@ -1,4 +1,5 @@
 export const INCOME_EXPENSE_FEED_QUERY_KEY = "incomeExpenseFeed" as const;
+export const INCOME_EXPENSE_APPROVAL_REQUESTS_QUERY_KEY = "incomeExpenseApprovalRequests" as const;
 export const CASH_BRANCH_TRANSFERS_QUERY_KEY = "cashBranchTransfers" as const;
 
 export const cashBranchTransferQueryKeys = {

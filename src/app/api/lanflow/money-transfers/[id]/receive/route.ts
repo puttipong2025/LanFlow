@@ -5,8 +5,9 @@ import {
   isIsoTimestamp,
   isJsonObject,
   isNonNegativePostgresInteger,
-  isUuid,
-} from "@/lib/server/management-route-error";
+  isPostgresInteger,
+  isUuidV1ToV8,
+} from "@/lib/validation/primitives";
 
 function isIsoDate(value: unknown): value is string {
   if (typeof value !== "string" || !/^(?!0000)\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -27,7 +28,7 @@ function isScale2Number(value: unknown): value is number {
 
 function isBranchReceiptSlip(value: unknown) {
   return isJsonObject(value)
-    && isUuid(value.id)
+    && isUuidV1ToV8(value.id)
     && (value.input_method === null || value.input_method === "manual" || value.input_method === "ocr")
     && isScale2Number(value.amount)
     && isNullableString(value.reference_number)
@@ -36,7 +37,7 @@ function isBranchReceiptSlip(value: unknown) {
     && isNullableString(value.receiver_name)
     && (value.transaction_date === null || isIsoTimestamp(value.transaction_date))
     && isNullableString(value.slip_image_url)
-    && isNonNegativePostgresInteger(value.sort_order);
+    && isPostgresInteger(value.sort_order);
 }
 
 function isBranchReceiptResult(value: unknown, expectedId: string) {
@@ -49,9 +50,9 @@ function isBranchReceiptResult(value: unknown, expectedId: string) {
     && value.virtualStatus === "branch_received"
     && typeof value.idempotentReplay === "boolean"
     && isNonNegativePostgresInteger(value.revision_no)
-    && isUuid(value.location_id)
+    && isUuidV1ToV8(value.location_id)
     && value.target_location_id === value.location_id
-    && isUuid(value.branch_received_by_user_id)
+    && isUuidV1ToV8(value.branch_received_by_user_id)
     && typeof value.branch_received_by_name === "string"
     && value.branch_received_by_name.trim().length > 0
     && isIsoTimestamp(value.branch_received_at)
@@ -81,22 +82,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const auth = await requireAuth(request);
   if (!auth.ok) return auth.response;
   const { id } = await params;
-  if (!isUuid(id)) return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
+  if (!isUuidV1ToV8(id)) return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
   const transferId = id.toLowerCase();
 
   const payload: unknown = await request.json().catch(() => null);
-  if (
-    !isJsonObject(payload)
-    || !Number.isSafeInteger(payload.revisionNo)
-    || Number(payload.revisionNo) < 0
-    || Number(payload.revisionNo) > 2_147_483_647
-  ) {
+  if (!isJsonObject(payload) || !isNonNegativePostgresInteger(payload.revisionNo)) {
     return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
   }
 
   const { data, error } = await auth.supabase.rpc("receive_branch_money_transfer", {
     p_transfer_id: transferId,
-    p_expected_revision: Number(payload.revisionNo),
+    p_expected_revision: payload.revisionNo,
   });
   if (error) return errorResponse(error.message);
   if (!isBranchReceiptResult(data, transferId)) {

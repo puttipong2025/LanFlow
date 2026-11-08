@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { QueryClient } from "@tanstack/react-query";
+import { MutationObserver, QueryClient } from "@tanstack/react-query";
 import { readFile } from "node:fs/promises";
 
 import { parsePendingBranchMoneyTransfers } from "../src/hooks/useBranchTransferReceipts";
@@ -75,6 +75,53 @@ test("confirmed saves update cached lists before reconciling every affected loca
   expect(source).toContain("submitted.locationId");
   expect(source).toContain("submitted.targetLocationId");
 });
+
+for (const [code, errorMessage, detailFailed] of [
+  ["a revision conflict", "MT_REVISION_CONFLICT: ข้อมูลถูกแก้ไขแล้ว"],
+  ["a branch report lock", "MT_REPORT_LOCKED:RPT-20260819-040"],
+  ["a general report lock", "REPORT_LOCKED:RPT-20260819-040"],
+  ["a missing detail", "Money transfer not found", true],
+  ["a transfer removed after detail loaded", "MT_NOT_FOUND: ไม่พบรายการโอนเงิน"],
+] as const) {
+  test(`delete blocked by ${code} refreshes the affected list without retrying`, async () => {
+    const queryClient = new QueryClient();
+    const key = ["moneyTransferList", "location-1", "all"];
+    const otherKey = ["moneyTransferList", "location-2", "all"];
+    queryClient.setQueryData(key, []);
+    queryClient.setQueryData(otherKey, []);
+    const submittedRevisions: number[] = [];
+    const { useMoneyTransferMutations } = loadSourceModule<typeof import("../src/hooks/useMoneyTransfers")>(
+      "src/hooks/useMoneyTransfers.ts",
+      {
+        "@tanstack/react-query": {
+          useQueryClient: () => queryClient,
+          useMutation: (options: ConstructorParameters<typeof MutationObserver>[1]) => {
+            const observer = new MutationObserver(queryClient, options);
+            return { mutateAsync: observer.mutate };
+          },
+        },
+        "@/lib/supabase/client": {
+          createSupabaseBrowserClient: () => ({
+            rpc: async (name: string, args: { p_expected_revision: number }) => {
+              if (name === "get_money_transfer_detail") {
+                if (detailFailed) return { error: { message: errorMessage } };
+                return { data: { transfer_type: "branch", revision_no: 2 }, error: null };
+              }
+              submittedRevisions.push(args.p_expected_revision);
+              return { error: { message: errorMessage } };
+            },
+          }),
+        },
+      },
+    );
+
+    const { deleteTransfer } = useMoneyTransferMutations("location-1");
+    await expect(deleteTransfer.mutateAsync({ id: "transfer-1", revisionNo: 1 })).rejects.toThrow(errorMessage);
+    expect(submittedRevisions).toEqual(detailFailed ? [] : [1]);
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false);
+  });
+}
 
 test("idempotent Money Transfer create replay does not inflate cached status counts", () => {
   const queryClient = new QueryClient();
@@ -282,61 +329,63 @@ test("branch receipt route rejects malformed slip rows before reporting a commit
   });
 });
 
-test("branch receipt route accepts PostgreSQL-canonical UUID casing after commit", async () => {
-  const transferId = "8a000000-0000-4000-8000-00000000000a";
-  const locationId = "8b000000-0000-4000-8000-00000000000b";
-  const route = loadSourceModule<typeof import("../src/app/api/lanflow/money-transfers/[id]/receive/route")>(
-    "src/app/api/lanflow/money-transfers/[id]/receive/route.ts",
-    {
-      "@/lib/server/auth": {
-        requireAuth: async () => ({
-          ok: true,
-          supabase: {
-            rpc: async () => ({
-              data: {
-                id: transferId,
-                transfer_type: "branch",
-                record_status: "active",
-                branch_receipt_contract_version: 1,
-                branch_receipt_status: "received",
-                virtualStatus: "branch_received",
-                idempotentReplay: false,
-                revision_no: 1,
-                location_id: locationId,
-                target_location_id: locationId,
-                branch_received_by_user_id: "8c000000-0000-4000-8000-00000000000c",
-                branch_received_by_name: "Receiver",
-                branch_received_at: "2026-10-10T01:00:00.000Z",
-                accounting_date: "2026-10-10",
-                slips: [{
-                  id: "8d000000-0000-4000-8000-00000000000d",
-                  input_method: "manual",
-                  amount: 123.45,
-                  reference_number: null,
-                  fee: 0,
-                  sender_name: null,
-                  receiver_name: null,
-                  transaction_date: "2026-10-10T00:59:00.000Z",
-                  slip_image_url: null,
-                  sort_order: 0,
-                }],
-              },
-              error: null,
-            }),
-          },
-        }),
+for (const [transferVersion, slipVersion, sortOrder] of [[4, 4, 0], [7, 4, 0], [4, 7, 0], [4, 4, -1]]) {
+  test(`branch receipt route accepts UUIDv${transferVersion} transfers with UUIDv${slipVersion} slips at sort order ${sortOrder}`, async () => {
+    const transferId = `8a000000-0000-${transferVersion}000-8000-00000000000a`;
+    const locationId = "8b000000-0000-4000-8000-00000000000b";
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/money-transfers/[id]/receive/route")>(
+      "src/app/api/lanflow/money-transfers/[id]/receive/route.ts",
+      {
+        "@/lib/server/auth": {
+          requireAuth: async () => ({
+            ok: true,
+            supabase: {
+              rpc: async () => ({
+                data: {
+                  id: transferId,
+                  transfer_type: "branch",
+                  record_status: "active",
+                  branch_receipt_contract_version: 1,
+                  branch_receipt_status: "received",
+                  virtualStatus: "branch_received",
+                  idempotentReplay: false,
+                  revision_no: 1,
+                  location_id: locationId,
+                  target_location_id: locationId,
+                  branch_received_by_user_id: "8c000000-0000-4000-8000-00000000000c",
+                  branch_received_by_name: "Receiver",
+                  branch_received_at: "2026-10-10T01:00:00.000Z",
+                  accounting_date: "2026-10-10",
+                  slips: [{
+                    id: `8d000000-0000-${slipVersion}000-8000-00000000000d`,
+                    input_method: "manual",
+                    amount: 123.45,
+                    reference_number: null,
+                    fee: 0,
+                    sender_name: null,
+                    receiver_name: null,
+                    transaction_date: "2026-10-10T00:59:00.000Z",
+                    slip_image_url: null,
+                    sort_order: sortOrder,
+                  }],
+                },
+                error: null,
+              }),
+            },
+          }),
+        },
       },
-    },
-  );
+    );
 
-  const response = await route.POST(new Request("http://local/receive", {
-    method: "POST",
-    body: JSON.stringify({ revisionNo: 0 }),
-  }), { params: Promise.resolve({ id: transferId.toUpperCase() }) });
+    const response = await route.POST(new Request("http://local/receive", {
+      method: "POST",
+      body: JSON.stringify({ revisionNo: 0 }),
+    }), { params: Promise.resolve({ id: transferId.toUpperCase() }) });
 
-  expect(response.status).toBe(200);
-  expect(await response.json()).toMatchObject({ id: transferId, branch_receipt_status: "received" });
-});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ id: transferId, branch_receipt_status: "received" });
+  });
+}
 
 test("branch deletion decision route accepts only the matching request and decision", async () => {
   const requestId = "85000000-0000-4000-8000-000000000001";
@@ -421,6 +470,38 @@ test("branch deletion decision route accepts PostgreSQL-canonical UUID casing af
 
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ status: "approved", requestId });
+});
+
+test("branch deletion decision route validates comments against the database text format", async () => {
+  const requestId = "85000000-0000-4000-8000-000000000001";
+  const comments: string[] = [];
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/money-transfers/delete-requests/[id]/decide/route")>(
+    "src/app/api/lanflow/money-transfers/delete-requests/[id]/decide/route.ts",
+    {
+      "@/lib/server/auth": {
+        requireSystemManager: async () => ({
+          ok: true,
+          supabase: {
+            rpc: async (_name: string, params: { p_comment: string }) => {
+              comments.push(params.p_comment);
+              return { data: { status: "rejected", requestId }, error: null };
+            },
+          },
+        }),
+      },
+    },
+  );
+  const send = (comment: string) => route.POST(new Request("http://local/decide", {
+    method: "POST",
+    body: JSON.stringify({ decision: "rejected", comment }),
+  }), { params: Promise.resolve({ id: requestId }) });
+
+  const atLimit = "🙂".repeat(500);
+  expect((await send(atLimit)).status).toBe(200);
+  expect((await send(atLimit + "🙂")).status).toBe(400);
+  expect.soft((await send("เหตุผล\u0000เพิ่มเติม")).status).toBe(400);
+  expect.soft((await send("เหตุผล\uD800")).status).toBe(400);
+  expect(comments).toEqual([atLimit]);
 });
 
 test("branch deletion decision route reports a changed request as a conflict", async () => {

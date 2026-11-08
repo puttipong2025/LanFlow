@@ -8,6 +8,7 @@ import { authFetchJson, assertApiResponse } from "@/lib/auth-fetch";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isJsonObject, isUuidV1ToV8 } from "@/lib/validation/primitives";
 import type { BranchMoneyTransferSummary } from "@/types";
 
 const branchReceiptKeys = {
@@ -18,17 +19,11 @@ const branchReceiptKeys = {
 };
 
 const PENDING_QUEUE_CONTRACT_ERROR = "รูปแบบคิวโอนเข้าบัญชีรอยืนยันไม่ถูกต้อง";
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function mapSummary(raw: unknown): BranchMoneyTransferSummary {
   if (
-    !isRecord(raw)
-    || typeof raw.id !== "string"
-    || !UUID_PATTERN.test(raw.id)
+    !isJsonObject(raw)
+    || !isUuidV1ToV8(raw.id)
     || typeof raw.net_amount_to_pay !== "number"
     || !Number.isFinite(raw.net_amount_to_pay)
     || raw.net_amount_to_pay < 0
@@ -49,7 +44,7 @@ export function parsePendingBranchMoneyTransfers(value: unknown): {
   total: number;
 } {
   if (
-    !isRecord(value)
+    !isJsonObject(value)
     || !Array.isArray(value.rows)
     || !Number.isSafeInteger(value.total)
     || value.rows.length !== Math.min(Number(value.total), 20)
