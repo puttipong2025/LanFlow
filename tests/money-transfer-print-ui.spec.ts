@@ -9,7 +9,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 
-test("shares a completed transfer PDF and leaves transfer data unchanged", async ({ page }) => {
+test("previews and shares a completed transfer PDF without changing transfer data", async ({ page }) => {
   test.setTimeout(60_000);
   test.skip(!serviceRoleKey, "SUPABASE_SERVICE_ROLE_KEY is required for UI verification");
 
@@ -279,11 +279,11 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
     await paidRow.getByRole("button", { name: "คัดลอกเลขบัญชี 1234567890" }).click();
     await expect(page.getByText("คัดลอกไม่สำเร็จ กรุณาลองใหม่")).toBeVisible();
 
-    const paidShare = paidRow.getByRole("button", { name: `แชร์ PDF รายการโอนเงิน ${paidId.replaceAll("-", "").slice(0, 8).toUpperCase()}` });
-    const pendingShare = pendingRow.getByRole("button", { name: /แชร์ PDF รายการโอนเงิน/ });
-    await expect(paidShare).toBeEnabled();
-    await expect(pendingShare).toBeDisabled();
-    await expect(pendingShare).toHaveAttribute("title", "แชร์ PDF ได้เมื่อจ่ายเสร็จสิ้น");
+    const paidPreview = paidRow.getByRole("button", { name: `ดูใบโอน ${paidId.replaceAll("-", "").slice(0, 8).toUpperCase()}` });
+    const pendingPreview = pendingRow.getByRole("button", { name: /ดูใบโอน/ });
+    await expect(paidPreview).toBeEnabled();
+    await expect(pendingPreview).toBeDisabled();
+    await expect(pendingPreview).toHaveAttribute("title", "แชร์ PDF ได้เมื่อจ่ายเสร็จสิ้น");
 
     const receiptDetailRequests: string[] = [];
     const unexpectedWriteRequests: string[] = [];
@@ -312,7 +312,14 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
         }
       }
     });
-    await paidShare.click();
+    await paidPreview.click();
+    const preview = page.getByRole("dialog", { name: "พรีวิวใบรายการโอนเงิน" });
+    const receiptFrame = preview.frameLocator("iframe");
+    await expect(receiptFrame.getByRole("heading", { name: "ใบรายการโอนเงิน" })).toBeVisible();
+    expect(await receiptFrame.locator("html").evaluate((html) => html.scrollWidth <= html.clientWidth)).toBe(true);
+    expect(await page.evaluate(() => "sharedTransferReceipt" in window)).toBe(false);
+    const shareButton = preview.getByRole("button", { name: "แชร์ PDF", exact: true });
+    await shareButton.click();
     await expect.poll(() => page.evaluate(() =>
       (window as typeof window & {
         sharedTransferReceipt?: { name: string; size: number; type: string };
@@ -328,7 +335,7 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
       type: "application/pdf",
     });
     expect(shared!.size).toBeGreaterThan(1_000);
-    await expect(paidShare).toBeEnabled();
+    await expect(shareButton).toBeEnabled();
 
     await page.evaluate(() => {
       Object.defineProperty(navigator, "canShare", {
@@ -339,12 +346,14 @@ test("shares a completed transfer PDF and leaves transfer data unchanged", async
       });
     });
     const downloadPromise = page.waitForEvent("download");
-    await paidShare.click();
+    await shareButton.click();
     const download = await downloadPromise;
     const outputDir = join(process.cwd(), "output", "pdf");
     await mkdir(outputDir, { recursive: true });
     await download.saveAs(join(outputDir, "money-transfer-receipt-80mm.pdf"));
-    expect(receiptDetailRequests).toHaveLength(2);
+    await preview.getByRole("button", { name: "ปิด" }).click();
+    await expect(paidPreview).toBeFocused();
+    expect(receiptDetailRequests).toHaveLength(1);
     expect(unexpectedWriteRequests).toEqual([]);
 
     const after = await admin.from("money_transfers")

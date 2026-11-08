@@ -251,6 +251,7 @@ export async function shareReceiptPdf(
     }
   }
 
+  throwIfAborted(options.signal);
   downloadReceiptPdfBlob(blob, filename);
   return "downloaded" as const;
 }

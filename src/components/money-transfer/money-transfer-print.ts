@@ -258,7 +258,7 @@ export function renderMoneyTransferReceiptHtml(model: MoneyTransferReceiptModel)
 <style>
 @page { size: 80mm auto; margin: 0; }
 * { box-sizing: border-box; }
-body { margin: 0; width: 80mm; padding: 3mm; color: #000; font: 11px/1.4 Arial, "Noto Sans Thai", sans-serif; overflow-wrap: anywhere; }
+body { margin: 0; width: 80mm; max-width: 100%; padding: 3mm; color: #000; font: 11px/1.4 Arial, "Noto Sans Thai", sans-serif; overflow-wrap: anywhere; }
 h1 { margin: 0; text-align: center; font-size: 18px; }
 .center { text-align: center; }
 .status { display: inline-block; margin: 5px 0; border: 1.5px solid #000; padding: 2px 8px; font-size: 13px; font-weight: 700; }

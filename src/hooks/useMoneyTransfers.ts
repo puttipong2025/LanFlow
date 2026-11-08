@@ -317,18 +317,20 @@ export function isMoneyTransferMissingError(error: Error) {
     || error.message.startsWith("MT_NOT_FOUND:");
 }
 
-export async function loadMoneyTransferDetail(transferId: string) {
+export async function loadMoneyTransferDetail(transferId: string, signal?: AbortSignal) {
   const supabase = createSupabaseBrowserClient();
-  const { data, error } = await supabase.rpc("get_money_transfer_detail", { p_transfer_id: transferId });
+  const request = supabase.rpc("get_money_transfer_detail", { p_transfer_id: transferId });
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw new Error(error.message);
   return mapMoneyTransferRow(data);
 }
 
-export async function getMoneyTransferReceiptSourceDetails(transferId: string) {
+export async function getMoneyTransferReceiptSourceDetails(transferId: string, signal?: AbortSignal) {
   const supabase = createSupabaseBrowserClient();
-  const { data, error } = await supabase.rpc("get_money_transfer_receipt_source_details", {
+  const request = supabase.rpc("get_money_transfer_receipt_source_details", {
     p_transfer_id: transferId,
   });
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw new Error(error.message || "โหลดรายละเอียดต้นทางไม่สำเร็จ");
   const items = (data as any)?.items;
   if (!Array.isArray(items)) throw new Error("รูปแบบรายละเอียดต้นทางไม่ถูกต้อง");

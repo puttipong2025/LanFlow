@@ -9,7 +9,6 @@ import {
   Copy,
   Edit3,
   Eye,
-  Share2,
   Trash2,
 } from "lucide-react";
 import type { Location, MoneyTransfer, Profile } from "@/types";
@@ -29,8 +28,6 @@ import { useCustomers } from "@/hooks/useCustomers";
 import {
   receiptPdfFilename,
 } from "@/lib/rubber-bills/print-receipt";
-import { useSharePdf } from "@/hooks/useSharePdf";
-import { SharePdfWaitingModal } from "@/components/shared/SharePdfWaitingModal";
 import { ModalShell } from "@/components/shared/ModalShell";
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import { cn } from "@/lib/cn";
@@ -44,6 +41,7 @@ import { LegacyBranchTransferDetailsModal } from "./money-transfer/LegacyBranchT
 import { MoneyTransferSourceDetailsModal } from "./money-transfer/MoneyTransferSourceDetailsModal";
 import { BranchTransferReceiptModal } from "./money-transfer/BranchTransferReceiptModal";
 import { PaymentBundleDialog } from "./money-transfer/PaymentBundleDialog";
+import { MoneyTransferReceiptPreview, type ReceiptPreview } from "./money-transfer/MoneyTransferReceiptPreview";
 import { MoneyTransferHeaderActions } from "./money-transfer/MoneyTransferHeaderActions";
 import {
   MONEY_TRANSFER_STATUS_FILTERS,
@@ -116,7 +114,6 @@ export function MoneyTransferModule({
       () => window.setTimeout(() => setToastMsg("บันทึกสำเร็จ แต่รีเฟรชข้อมูลไม่สำเร็จ กรุณาลองใหม่"), 0),
     );
   const { customers } = useCustomers();
-  const pdfShare = useSharePdf();
 
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const [activeFormType, setActiveFormType] = useState<'customer' | 'transport' | 'branch' | 'rubber_export_work' | 'time_payroll' | null>(null);
@@ -125,6 +122,8 @@ export function MoneyTransferModule({
   const [deleteConfirmTransfer, setDeleteConfirmTransfer] = useState<MoneyTransfer | null>(null);
   const [deleteAlertDescription, setDeleteAlertDescription] = useState<string | null>(null);
   const [detailTransfer, setDetailTransfer] = useState<MoneyTransfer | null>(null);
+  const [receiptPreview, setReceiptPreview] = useState<ReceiptPreview | null>(null);
+  const receiptPreviewRequest = useRef<AbortController | null>(null);
   const [bundleDialog, setBundleDialog] = useState<MoneyTransfer | "create" | null>(null);
   const [branchReceiptId, setBranchReceiptId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -160,6 +159,8 @@ export function MoneyTransferModule({
 
   useEffect(() => {
     setPage(1);
+    setReceiptPreview(null);
+    return () => receiptPreviewRequest.current?.abort();
   }, [locationId]);
 
   const copyToClipboard = useCallback(async (value: string, successMessage: string) => {
@@ -276,24 +277,40 @@ export function MoneyTransferModule({
     }
   }, [online, offlineMessage]);
 
-  const handleShare = useCallback(async (transfer: MoneyTransfer) => {
+  const openReceiptPreview = async (transfer: MoneyTransfer) => {
     if (!online) {
       setToastMsg(offlineMessage);
       return;
     }
     const blockReason = getMoneyTransferPrintBlockReason(transfer);
-    if (blockReason || pdfShare.busy) {
-      if (blockReason) setToastMsg(blockReason);
+    if (blockReason) {
+      setToastMsg(blockReason);
       return;
     }
 
+    receiptPreviewRequest.current?.abort();
+    const controller = new AbortController();
+    receiptPreviewRequest.current = controller;
+    const { signal } = controller;
+    const request = { shortId: shortTransferId(transfer.id), locationId };
+    setReceiptPreview(request);
     try {
-      const detailTransfer = await loadMoneyTransferDetail(transfer.id);
-      const sourceDetails = await getMoneyTransferReceiptSourceDetails(transfer.id);
+      const detailTransfer = await loadMoneyTransferDetail(transfer.id, signal);
+      signal.throwIfAborted();
+      if (detailTransfer.locationId !== locationId) {
+        throw new Error("รายการโอนถูกย้ายไปสาขาอื่น กรุณาโหลดรายการล่าสุด");
+      }
+      const detailBlockReason = getMoneyTransferPrintBlockReason(detailTransfer);
+      if (detailBlockReason) throw new Error(detailBlockReason);
+      const items = detailTransfer.items ?? [];
+      const sourceDetails = items.length > 0
+        ? await getMoneyTransferReceiptSourceDetails(transfer.id, signal)
+        : [];
+      signal.throwIfAborted();
       const sourceDetailsById = new Map(sourceDetails.map((item) => [item.id, item]));
       const enrichedTransfer: MoneyTransfer = {
         ...detailTransfer,
-        items: (detailTransfer.items ?? []).map((item) => {
+        items: items.map((item) => {
           const detail = sourceDetailsById.get(item.id);
           if (
             !detail
@@ -305,20 +322,22 @@ export function MoneyTransferModule({
           return { ...item, ...detail, customerName: item.customerName, amount: item.amount };
         }),
       };
-      const delivery = await pdfShare.sharePdf(() => {
-        const model = buildMoneyTransferReceiptModel(enrichedTransfer, locations);
-        return {
-          html: renderMoneyTransferReceiptHtml(model),
-          filename: receiptPdfFilename("LanFlow-money-transfer", model.shortId),
-        };
-      });
-      if (delivery === "shared") setToastMsg("แชร์ PDF ใบรายการโอนเงินแล้ว");
-      if (delivery === "downloaded") setToastMsg("แชร์บนอุปกรณ์นี้ไม่ได้ จึงดาวน์โหลด PDF แทน");
+      const model = buildMoneyTransferReceiptModel(enrichedTransfer, locations);
+      const document = {
+        html: renderMoneyTransferReceiptHtml(model),
+        filename: receiptPdfFilename("LanFlow-money-transfer", model.shortId),
+      };
+      setReceiptPreview((current) => current === request ? { ...request, document } : current);
     } catch (error) {
-      setToastMsg(error instanceof Error ? error.message : "สร้าง PDF ใบรายการโอนเงินไม่สำเร็จ");
+      if (signal.aborted) return;
+      const message = error instanceof Error ? error.message : "โหลดพรีวิวใบรายการโอนเงินไม่สำเร็จ";
+      setReceiptPreview((current) => current === request ? { ...request, error: message } : current);
+    } finally {
+      if (receiptPreviewRequest.current === controller) receiptPreviewRequest.current = null;
     }
-  }, [locations, offlineMessage, online, pdfShare]);
+  };
 
+  const activeReceiptPreview = receiptPreview?.locationId === locationId ? receiptPreview : null;
   const handleOpenDetail = useCallback(async (transferId: string) => {
     try {
       setDetailTransfer(await loadMoneyTransferDetail(transferId));
@@ -549,14 +568,14 @@ export function MoneyTransferModule({
                       <div className="flex items-center gap-1 whitespace-nowrap">
                         <button
                           type="button"
-                          onClick={() => void handleShare(t)}
-                          disabled={!online || t.isPaymentBundle || Boolean(getMoneyTransferPrintBlockReason(t)) || pdfShare.busy}
-                          aria-label={`แชร์ PDF รายการโอนเงิน ${shortTransferId(t.id)}`}
+                          onClick={() => void openReceiptPreview(t)}
+                          disabled={!online || t.isPaymentBundle || Boolean(getMoneyTransferPrintBlockReason(t))}
+                          aria-label={`ดูใบโอน ${shortTransferId(t.id)}`}
                           className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md bg-actionSecondary px-3 text-xs font-semibold text-white hover:bg-actionSecondary/90 disabled:cursor-not-allowed disabled:opacity-40"
-                          title={!online ? offlineMessage : getMoneyTransferPrintBlockReason(t) ?? (pdfShare.busy ? "กำลังสร้าง PDF" : "แชร์ PDF ใบรายการโอนเงิน 80 มม.")}
+                          title={!online ? offlineMessage : getMoneyTransferPrintBlockReason(t) ?? "ดูใบโอน 80 มม."}
                         >
-                          <Share2 size={14} />
-                          แชร์ PDF
+                          <Eye size={14} />
+                          ดูใบโอน
                         </button>
                         {!isLegacyBranchTransfer && !isReceivedBranchTransfer && (
                           <button
@@ -807,7 +826,17 @@ export function MoneyTransferModule({
         onCancel={() => setDeleteAlertDescription(null)}
         onConfirm={() => setDeleteAlertDescription(null)}
       />
-      <SharePdfWaitingModal open={pdfShare.waiting} onCancel={pdfShare.cancel} />
+      {activeReceiptPreview && (
+        <MoneyTransferReceiptPreview
+          preview={activeReceiptPreview}
+          online={online}
+          offlineMessage={offlineMessage}
+          onClose={() => {
+            receiptPreviewRequest.current?.abort();
+            setReceiptPreview(null);
+          }}
+        />
+      )}
     </div>
   );
 }
