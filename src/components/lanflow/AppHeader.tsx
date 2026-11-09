@@ -456,7 +456,7 @@ export function AppHeader({
             <div className="flex items-center gap-3">
               <OperatorMoneyHistoryButton profile={profile} online={online} />
               {alertCheck && <button type="button" disabled={!online} aria-disabled={!online || alertCheck.checking} onClick={() => { if (!alertCheck.checking) void alertCheck.checkNow(); }} aria-busy={alertCheck.checking}
-                className="focus-ring min-h-11 shrink-0 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "แจ้งเตือน"}</button>}
+                className="focus-ring min-h-11 shrink-0 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "ตรวจสถานะสาขา"}</button>}
             </div>
             {alertCheck && !online && <p className="text-pretty text-xs text-ink/65">เชื่อมต่ออินเทอร์เน็ตเพื่อตรวจแจ้งเตือน</p>}
             {alertCheck?.error && <p role="alert" className="max-w-xs text-pretty text-sm text-rose-700">{alertCheck.error}</p>}

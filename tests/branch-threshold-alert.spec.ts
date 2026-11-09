@@ -24,13 +24,13 @@ test("manual check defaults to cash, restores focus, reopens and preserves timer
   await suppressAutomatic(page);
   await page.goto("/");
   await expect(page.locator(".landscape-compact-actions")).toBeVisible();
-  await expect(page.getByRole("button", { name: "แจ้งเตือน", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true })).toBeVisible();
   let checks = 0;
   let payload = { ...blank, candidates: [item("cash"), item("weight")], configuredCount: 2, checkedCount: 2 };
   await page.route("**/api/lanflow/threshold-alert", async route => { checks++; await route.fulfill({ json: payload }); });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  const button = page.getByRole("button", { name: "แจ้งเตือน", exact: true });
+  const button = page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true });
   const timestamp = () => page.evaluate(() => localStorage.getItem("lanflow:rubber-weight-alert:last-checked:v1:00000000-0000-4000-8000-000000000001"));
   await expect(button).toBeVisible(); const before = await timestamp();
   await button.click();
@@ -60,7 +60,7 @@ test("manual check distinguishes unconfigured, unavailable, empty, errors and of
   await suppressAutomatic(page);
   let payload: unknown = blank; let fail = false;
   await page.route("**/api/lanflow/threshold-alert", route => route.fulfill(fail ? { status: 500, json: {} } : { json: payload }));
-  await page.goto("/"); const button = page.getByRole("button", { name: "แจ้งเตือน", exact: true });
+  await page.goto("/"); const button = page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true });
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   await button.click(); await expect(dialog.getByText("ยังไม่มีสาขาที่ตั้งค่ากลุ่มแจ้งเตือน", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -110,7 +110,7 @@ test("cash group UI to real RPC and snapshot; API authorization and equality", a
     expect(response.headers()["cache-control"]).toContain("no-store");
     expect((await response.json()).candidates).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "cash", locationId: id, value: 9999.99, threshold: 10000 })]));
     expect((await (await admin.request.get("/api/lanflow/threshold-alert")).json()).candidates.some((c: { locationId: string }) => c.locationId === id)).toBe(false);
-    await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+    await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
     const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
     await expect(dialog.getByText(name, { exact: true })).toBeVisible();
     await expect(dialog.locator("section").filter({ hasText: name }).getByText("10,000 บาท", { exact: true })).toBeVisible();
@@ -144,7 +144,7 @@ test("manual and scheduled checks share in-flight work without moving the next a
     checks++; if (checks === 1) await held;
     await route.fulfill({ json: { ...blank, config: { ...config, intervalMinutes: 1 }, configuredCount: 1, checkedCount: 1, candidates: [item("cash")] } });
   });
-  await page.goto("/"); const button = page.getByRole("button", { name: "แจ้งเตือน", exact: true });
+  await page.goto("/"); const button = page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true });
   await expect(button).toBeVisible();
   await page.clock.fastForward(59_000);
   await button.click(); await expect.poll(() => checks).toBe(1);
@@ -167,7 +167,7 @@ test("cash renders shared group frames and one threshold per group like weight",
   }));
   await page.route("**/api/lanflow/threshold-alert", route => route.fulfill({ json: { ...blank, candidates, configuredCount: 13, checkedCount: 13 } }));
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto("/");
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   await expect(dialog.getByText("พบ 13 สาขา จาก 2 กลุ่มที่ต้องตรวจสอบ", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("region")).toHaveCount(2);
@@ -195,7 +195,7 @@ test("changing interval during a pending manual check releases the loading state
   await page.route("**/api/lanflow/rubber-weight-alert/groups", route => route.fulfill({ json: { groups: [], availableLocationIds: [] } }));
   await page.route("**/api/lanflow/admin/rubber-weight-alert", route => route.fulfill({ json: { ...config, intervalMinutes: 30 } }));
   try {
-    await page.goto("/"); const check = page.getByRole("button", { name: "แจ้งเตือน", exact: true });
+    await page.goto("/"); const check = page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true });
     await check.click();
     const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true }); await expect(dialog).toBeVisible();
     await page.keyboard.press("Escape"); await expect(check).toHaveAttribute("aria-disabled", "false");

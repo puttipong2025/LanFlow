@@ -18,10 +18,10 @@ test("one row preserves both alerts and unlock action; threshold remains in grou
   const bootstrap = await page.request.get("/api/lanflow");
   const other = (await bootstrap.json()).locations.find((location: { id: string }) => location.id !== state.location.id);
   const gate = page.getByRole("alertdialog", { name: "สาขาถูกล็อก", exact: true });
-  await expect(page.getByRole("button", { name: "แจ้งเตือน", exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true })).toBeVisible({ timeout: 30_000 });
   if (await gate.isVisible()) await gate.getByRole("combobox").selectOption(other.id);
   await expect(gate).toBeHidden();
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   const row = dialog.getByTestId("count-alert-row");
   await expect(row).toHaveCount(1);
@@ -36,7 +36,7 @@ test("one row preserves both alerts and unlock action; threshold remains in grou
 });
 test("mutation refreshes an open alert but never reopens an acknowledged one", async ({ page }) => {
   const state = await fixture(page); await page.goto("/");
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   await expect(dialog.getByText("ขาด 500 บาท", { exact: true })).toBeVisible();
   state.change(200);
@@ -47,7 +47,7 @@ test("mutation refreshes an open alert but never reopens an acknowledged one", a
   await page.evaluate(() => window.dispatchEvent(new Event("lanflow:cash-count-lock-changed")));
   await expect.poll(state.reads).toBeGreaterThan(before);
   await expect(dialog).toBeHidden();
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   await expect(dialog.getByText("ขาด 300 บาท", { exact: true })).toBeVisible();
 });
 test("form writes zero and explicitly clears threshold without changing hour settings", async ({ page }) => {
@@ -78,7 +78,7 @@ test("form writes zero and explicitly clears threshold without changing hour set
 });
 test("a mutation during an in-flight read discards the stale response and reads the new count", async ({ page }) => {
   const state = await fixture(page); await page.goto("/");
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   await expect(dialog.getByText("ขาด 500 บาท", { exact: true })).toBeVisible();
   state.hold(); state.change(-200);
@@ -92,7 +92,7 @@ test("a mutation during an in-flight read discards the stale response and reads 
 });
 test("cross-tab invalidation refreshes visible results", async ({ page }) => {
   const state = await fixture(page); await page.goto("/");
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   await expect(dialog.getByText("ขาด 500 บาท", { exact: true })).toBeVisible(); state.change(600);
   await page.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "lanflow:cash-count-lock-changed", newValue: String(Date.now()) })));
@@ -103,7 +103,7 @@ test("changing selected branch never restores a dismissed global alert after a h
   const bootstrap = await page.request.get("/api/lanflow");
   const other = (await bootstrap.json()).locations.find((l: { id: string }) => l.id !== state.location.id);
   expect(other).toBeTruthy(); await page.goto("/");
-  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "ตรวจสถานะสาขา", exact: true }).click();
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
   await expect(dialog.getByText("ขาด 500 บาท", { exact: true })).toBeVisible(); state.hold();
   await page.evaluate(() => window.dispatchEvent(new Event("lanflow:cash-count-lock-changed")));

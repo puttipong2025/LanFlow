@@ -83,7 +83,7 @@ test.describe("Operator money history @operator-history", () => {
 
   test("dialog filters with full counts, resets pagination and restores keyboard focus", async ({ page }) => {
     await page.goto("/");
-    const open = page.getByRole("button", { name: "ประวัติผู้สร้าง", exact: true });
+    const open = page.getByRole("button", { name: "ตรวจประวัติผู้สร้าง", exact: true });
     await open.click();
     const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
     const actorSelect = dialog.getByLabel("บัญชีผู้สร้างรายการ");
@@ -116,7 +116,7 @@ test.describe("Operator money history @operator-history", () => {
   test("mobile layout stays within viewport and dialog traps focus", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 800 });
     await page.goto("/");
-    await page.getByRole("button", { name: "ประวัติผู้สร้าง", exact: true }).click();
+    await page.getByRole("button", { name: "ตรวจประวัติผู้สร้าง", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
     await expect(dialog.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
     await dialog.getByLabel("บัญชีผู้สร้างรายการ").selectOption(actor);
@@ -147,7 +147,7 @@ test.describe("Operator money history @operator-history", () => {
     });
     try {
       await page.goto("/");
-      const open = page.getByRole("button", { name: "ประวัติผู้สร้าง", exact: true });
+      const open = page.getByRole("button", { name: "ตรวจประวัติผู้สร้าง", exact: true });
       await open.click();
       await expect(page.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
       await page.getByLabel("บัญชีผู้สร้างรายการ").selectOption(actor);
@@ -168,7 +168,7 @@ test.describe("Operator money history @operator-history", () => {
 
   test("revoked branch access hides old rows and counts after real API denial", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: "ประวัติผู้สร้าง", exact: true }).click();
+    await page.getByRole("button", { name: "ตรวจประวัติผู้สร้าง", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "ตรวจประวัติผู้สร้างรายการ" });
     await expect(dialog.getByLabel("บัญชีผู้สร้างรายการ")).toBeEnabled();
     await dialog.getByLabel("บัญชีผู้สร้างรายการ").selectOption(actor);
