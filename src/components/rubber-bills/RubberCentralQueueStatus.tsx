@@ -101,10 +101,10 @@ export function RubberCentralQueueStatus({ ownerUserId, locationId, locationName
   }
 
   return <>
-    <button type="button" className={cn(button, "tabular-nums")} onClick={() => setOpen(true)}>
+    <button type="button" className={cn(button, "shrink-0 whitespace-nowrap tabular-nums")} onClick={() => setOpen(true)}>
       คิวซิงก์ {query.data?.counts.pending ?? ""}{localOnly.length > 0 ? ` · ในเครื่อง ${localOnly.length}` : ""}
     </button>
-    {online && notices.map(row => <div key={rubberQueueNoticeKey(row)} role="status" className="flex items-center gap-2 rounded-md bg-amber-50 p-2 text-pretty text-sm text-amber-900">
+    {online && notices.map(row => <div key={rubberQueueNoticeKey(row)} role="status" className="flex w-full items-center gap-2 rounded-md bg-amber-50 p-2 text-pretty text-sm text-amber-900">
       <span>{row.reference || "บิลยาง"}: {rubberQueueMessage(row)}</span>
       <button type="button" className={button} onClick={() => setNoticeAcks(keys => acknowledgeRubberQueueNotice(ownerUserId, locationId, keys, rubberQueueNoticeKey(row)))}>รับทราบ</button>
     </div>)}
