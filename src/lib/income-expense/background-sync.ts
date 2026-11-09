@@ -7,7 +7,7 @@ import { confirmedIncomeExpenseBackgroundOutcome, isIncomeExpenseBackgroundComma
 import { completeIncomeExpenseBackground, incomeExpenseOwnerWork } from "./background-idb";
 import { isRetryableSyncResponse } from "@/lib/sync-response";
 import { createScopedSingleFlight } from "@/lib/scoped-single-flight";
-import { incomeExpenseOperationalQueryKeys } from "./query-keys";
+import { INCOME_EXPENSE_APPROVAL_REQUESTS_QUERY_KEY, incomeExpenseOperationalQueryKeys } from "./query-keys";
 import { moneyFlowQueryKeys } from "@/lib/money-flow/query-keys";
 import { cacheConfirmedIncomeExpense, type IncomeExpenseSyncReceipt } from "./feed-cache";
 import { isIncomeExpenseSyncResult } from "./contracts";
@@ -123,6 +123,7 @@ export async function runIncomeExpenseBackground(queryClient: QueryClient, owner
     }
     if (completedBranches.size) await Promise.all([
       queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.actionableBadges() }),
+      queryClient.invalidateQueries({ queryKey: [INCOME_EXPENSE_APPROVAL_REQUESTS_QUERY_KEY] }),
       queryClient.invalidateQueries({ queryKey: moneyFlowQueryKeys.dashboardBranchSummaries() }),
     ]);
   });

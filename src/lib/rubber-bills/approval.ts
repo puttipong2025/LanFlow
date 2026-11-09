@@ -1,5 +1,14 @@
 import type { EffectiveRubberApprovalSettings } from "@/types";
 import { bangkokDateString } from "@/lib/bangkok-date";
+import { isUuid } from "@/lib/validation/primitives";
+
+export function isPendingRubberApprovalIdentity(row: Record<string, unknown>): boolean {
+  if (row.approval_pending !== true || !isUuid(row.approval_request_id)) return false;
+  if (row.row_kind === "approval_create") {
+    return row.approval_request_id === row.id && row.approval_operation === "create" && row.revision_no === 0;
+  }
+  return row.row_kind === "bill" && (row.approval_operation === "update" || row.approval_operation === "delete");
+}
 
 const CACHE_PREFIX = "lanflow:rubber-bill-approval-settings:v4:";
 

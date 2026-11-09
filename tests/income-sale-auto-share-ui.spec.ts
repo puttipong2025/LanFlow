@@ -90,7 +90,7 @@ async function loginAndOpenIncomeExpense(page: Page) {
   await page.locator("#phone").fill(phone);
   await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
-  await expect(page.getByRole("button", { name: "ออกจากระบบ", exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "เมนูบัญชี", exact: true })).toBeVisible({ timeout: 30_000 });
 
   const response = await page.request.get("/api/auth/me");
   expect(response.ok()).toBeTruthy();

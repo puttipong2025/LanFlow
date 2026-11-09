@@ -29,6 +29,7 @@ export interface SyncEvent<T = any> {
   serverId?: string;
   serverBillNo?: string;
   serverSubmissionAttempted?: boolean;
+  centralAccepted?: boolean;
   payload: T;
   timestamp: number;
   status: "pending" | "failed" | "conflict";

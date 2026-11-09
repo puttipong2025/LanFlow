@@ -386,7 +386,7 @@ export function useRubberBillMutations(
 
       if (pendingCreates.length > 0) {
         if (bill.syncStatus !== "pending" || bill.serverBillNo || bill.id !== bill.clientTempId || clientEvents.some(event => event.serverId || event.serverBillNo
-          || event.serverSubmissionAttempted !== false || (event as SyncEvent & { centralAccepted?: boolean }).centralAccepted === true)) {
+          || event.serverSubmissionAttempted !== false || event.centralAccepted === true)) {
           throw new Error(PENDING_SERVER_ACTION_MESSAGE);
         }
         // Coalesce: remove the entire local-only history atomically, and don't

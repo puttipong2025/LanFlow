@@ -10,7 +10,7 @@ import {
 import { ACTIONABLE_BADGES_QUERY_KEY } from "@/hooks/useActionableBadges";
 import { authFetch } from "@/lib/auth-fetch";
 import { bangkokDateString } from "@/lib/bangkok-date";
-import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { readAllSupabaseRowsByCreatedAt } from "@/lib/supabase-pages";
 import { getConnectivitySnapshot } from "@/lib/connectivity";
 import { readApprovalDecisionResponse } from "@/lib/income-expense/approval-decision-response";
 import { isApprovalRequestResult } from "@/lib/income-expense/contracts";
@@ -78,18 +78,24 @@ export function getIncomeExpenseApprovalReasons(
   return reasons;
 }
 
+export function useIncomeExpensePendingApprovalCount(enabled: boolean, locationId?: string) {
+  const supabase = createSupabaseBrowserClient();
+  return useQuery({
+    queryKey: [REQUESTS_KEY, "pendingCount", locationId ?? "all"],
+    enabled,
+    queryFn: () => loadPendingApprovalCount(supabase, locationId),
+    refetchInterval: locationId ? false : 60_000,
+  });
+}
+
 export function useIncomeExpenseApprovals(options: {
   includeRequests?: boolean;
-  includePendingCount?: boolean;
   requestsLocationId?: string;
-  pendingLocationId?: string;
 } = {}) {
   const supabase = createSupabaseBrowserClient();
   const queryClient = useQueryClient();
   const includeRequests = options.includeRequests ?? false;
-  const includePendingCount = options.includePendingCount ?? includeRequests;
   const requestsLocationId = options.requestsLocationId;
-  const pendingLocationId = options.pendingLocationId;
 
   const keywordsQuery = useQuery({
     networkMode: "always",
@@ -130,16 +136,17 @@ export function useIncomeExpenseApprovals(options: {
     queryKey: [REQUESTS_KEY, "requests", requestsLocationId ?? "all"],
     enabled: includeRequests,
     queryFn: async () => {
-      const pendingRows = await readAllSupabaseRows((from, to) => {
+      const pendingRows = await readAllSupabaseRowsByCreatedAt((limit, before) => {
         let query = supabase
           .from("income_expense_approval_requests")
           .select("id, request_status, requested_operation, matched_keyword, matched_reasons, location_id, tx_type, title, cost, requested_payload, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at, approvedBill:income_expense!approved_income_expense_id(server_bill_no)")
           .eq("request_status", "pending");
         if (requestsLocationId) query = query.eq("location_id", requestsLocationId);
+        if (before) query = query.or(before);
         return query
           .order("created_at", { ascending: false })
           .order("id", { ascending: false })
-          .range(from, to);
+          .limit(limit);
       });
       let historyQuery = supabase
         .from("income_expense_approval_requests")
@@ -192,16 +199,17 @@ export function useIncomeExpenseApprovals(options: {
     ],
     enabled: includeRequests,
     queryFn: async () => {
-      const pendingRows = await readAllSupabaseRows((from, to) => {
+      const pendingRows = await readAllSupabaseRowsByCreatedAt((limit, before) => {
         let query = supabase
           .from("cash_transfer_delete_requests")
           .select("id, source_location_id, source_location_name, target_location_name, transfer_display_no, sent_total, received_total, difference_total, request_status, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at")
           .eq("request_status", "pending");
         if (requestsLocationId) query = query.eq("source_location_id", requestsLocationId);
+        if (before) query = query.or(before);
         return query
           .order("created_at", { ascending: false })
           .order("id", { ascending: false })
-          .range(from, to);
+          .limit(limit);
       });
       let historyQuery = supabase
         .from("cash_transfer_delete_requests")
@@ -244,11 +252,7 @@ export function useIncomeExpenseApprovals(options: {
     queryFn: () => loadBranchTransferDeleteRequests(supabase, requestsLocationId),
   });
 
-  const pendingCountQuery = useQuery({
-    queryKey: [REQUESTS_KEY, "pendingCount", pendingLocationId ?? "all"],
-    enabled: includePendingCount,
-    queryFn: () => loadPendingApprovalCount(supabase, pendingLocationId),
-  });
+  const pendingCountQuery = useIncomeExpensePendingApprovalCount(includeRequests, requestsLocationId);
 
   // Refetch while online; invalidate without a paused read after an offline write failure.
   async function refreshConfiguration(key: string) {
@@ -284,6 +288,8 @@ export function useIncomeExpenseApprovals(options: {
     },
   });
 
+  const refreshApprovalRequests = () => queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] });
+
   const decideRequestMutation = useMutation({
     mutationFn: async ({ id, decision, comment }: { id: string; decision: "approved" | "rejected"; comment?: string }) => {
       const response = await authFetch(`/api/lanflow/income-expense/approval-requests/${id}/decide`, {
@@ -294,6 +300,7 @@ export function useIncomeExpenseApprovals(options: {
 
       return readApprovalDecisionResponse(response, id, decision, true);
     },
+    onError: refreshApprovalRequests,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
@@ -314,6 +321,7 @@ export function useIncomeExpenseApprovals(options: {
 
       return readApprovalDecisionResponse(response, id, decision);
     },
+    onError: refreshApprovalRequests,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
@@ -326,6 +334,7 @@ export function useIncomeExpenseApprovals(options: {
 
   const decideBranchDeleteRequestMutation = useMutation({
     mutationFn: decideBranchTransferDeleteRequest,
+    onError: refreshApprovalRequests,
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [REQUESTS_KEY] }),
@@ -402,13 +411,13 @@ export function useIncomeExpenseApprovals(options: {
     if (includeRequests) {
       retries.push(requestsQuery.refetch(), cashDeleteRequestsQuery.refetch(), branchDeleteRequestsQuery.refetch());
     }
-    if (includePendingCount) retries.push(pendingCountQuery.refetch());
+    if (includeRequests) retries.push(pendingCountQuery.refetch());
     await Promise.all(retries);
   }
 
   const hasRequestLoadError =
     (includeRequests && (requestsQuery.isError || cashDeleteRequestsQuery.isError || branchDeleteRequestsQuery.isError))
-    || (includePendingCount && pendingCountQuery.isError);
+    || (includeRequests && pendingCountQuery.isError);
 
   return {
     keywords: keywordsQuery.data || [],
@@ -416,25 +425,25 @@ export function useIncomeExpenseApprovals(options: {
     requests: requestsQuery.data || [],
     cashDeleteRequests: cashDeleteRequestsQuery.data || [],
     branchDeleteRequests: branchDeleteRequestsQuery.data || [],
-    pendingCount: pendingCountQuery.data ?? 0,
+    pendingCount: pendingCountQuery.isError ? undefined : pendingCountQuery.data,
     hasRequestLoadError,
     isRefetchingRequests:
       (includeRequests && (requestsQuery.isFetching || cashDeleteRequestsQuery.isFetching || branchDeleteRequestsQuery.isFetching))
-      || (includePendingCount && pendingCountQuery.isFetching),
+      || (includeRequests && pendingCountQuery.isFetching),
     settingsLoading: settingsQuery.isLoading,
     keywordsLoading: keywordsQuery.isLoading,
     settingsError: settingsQuery.isError,
     keywordsError: keywordsQuery.isError,
     retrySettings: async () => await refreshConfiguration(SETTINGS_KEY) ? queryClient.getQueryData<IncomeExpenseApprovalSettings>([SETTINGS_KEY]) : undefined,
     retryKeywords: async () => await refreshConfiguration(KEYWORDS_KEY) ? queryClient.getQueryData<IncomeExpenseApprovalKeyword[]>([KEYWORDS_KEY]) : undefined,
-    requestsLoading: Boolean((includeRequests && (requestsQuery.isLoading || cashDeleteRequestsQuery.isLoading || branchDeleteRequestsQuery.isLoading)) || (includePendingCount && pendingCountQuery.isLoading)),
+    requestsLoading: includeRequests && (requestsQuery.isLoading || cashDeleteRequestsQuery.isLoading || branchDeleteRequestsQuery.isLoading || pendingCountQuery.isLoading),
     isLoading:
       keywordsQuery.isLoading ||
       settingsQuery.isLoading ||
       (includeRequests && requestsQuery.isLoading) ||
       (includeRequests && cashDeleteRequestsQuery.isLoading) ||
       (includeRequests && branchDeleteRequestsQuery.isLoading) ||
-      (includePendingCount && pendingCountQuery.isLoading),
+      (includeRequests && pendingCountQuery.isLoading),
     addKeyword: addKeywordMutation.mutateAsync,
     disableKeyword: disableKeywordMutation.mutateAsync,
     saveSettings: saveSettingsMutation.mutateAsync,

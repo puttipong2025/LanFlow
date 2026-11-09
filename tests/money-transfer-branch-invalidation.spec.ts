@@ -4,14 +4,23 @@ import { readFile } from "node:fs/promises";
 
 import { parsePendingBranchMoneyTransfers } from "../src/hooks/useBranchTransferReceipts";
 import { applySavedMoneyTransferToLists } from "../src/hooks/useMoneyTransfers";
-import { loadBranchTransferDeleteRequests } from "../src/lib/income-expense/branch-transfer-delete-approvals";
+import { loadBranchTransferDeleteRequests, loadPendingApprovalCount } from "../src/lib/income-expense/branch-transfer-delete-approvals";
 import { loadSourceModule } from "./helpers/load-source-module";
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
-test("branch deletion approvals load every pending page beyond the Supabase row cap", async () => {
+test("the combined approval count requires an exact count for every queue", async () => {
+  const supabase = (middle: number | null) => {
+    const counts = [2, middle, 0];
+    return { from: () => ({ select: () => ({ eq: () => Promise.resolve({ count: counts.shift(), error: null }) }) }) };
+  };
+  await expect(loadPendingApprovalCount(supabase(0))).resolves.toBe(2);
+  await expect(loadPendingApprovalCount(supabase(null))).rejects.toThrow();
+});
+
+for (const decideBetweenPages of [false, true]) test(`branch deletion approvals load all pages (decision between pages: ${decideBetweenPages})`, async () => {
   const rows: Array<Record<string, string | number | null>> = [...Array.from({ length: 1_001 }, (_, index) => ({
-    id: `pending-${index}`,
+    id: `81000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
     location_id: "location-1",
     location_name: "Branch 1",
     transfer_display_no: `TR-${index}`,
@@ -21,7 +30,7 @@ test("branch deletion approvals load every pending page beyond the Supabase row 
     requested_by_phone: "0800000000",
     decided_by_name: null,
     decided_by_phone: null,
-    created_at: new Date(index).toISOString(),
+    created_at: new Date(Math.floor(index / 2)).toISOString(),
   })), {
     id: "approved-1",
     location_id: "location-1",
@@ -35,12 +44,22 @@ test("branch deletion approvals load every pending page beyond the Supabase row 
     decided_by_phone: "0800000001",
     created_at: new Date(2_000).toISOString(),
   }];
+  let pendingPages = 0;
   const supabase = {
     from: () => {
       let pending = true;
-      const matchingRows = () => rows.filter((row) => pending
+      let cursor: { createdAt: string; id: string } | undefined;
+      const matchingRows = () => rows.filter((row) => (pending
         ? row.request_status === "pending"
-        : row.request_status !== "pending");
+        : row.request_status !== "pending")
+        && (!cursor || String(row.created_at) < cursor.createdAt
+          || (row.created_at === cursor.createdAt && String(row.id) < cursor.id)))
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.id).localeCompare(String(a.id)));
+      const read = (from: number, to: number) => {
+        const data = matchingRows().slice(from, to).map((row) => ({ ...row }));
+        if (pending && ++pendingPages === 1 && decideBetweenPages) rows[1_000].request_status = "approved";
+        return Promise.resolve({ data, error: null });
+      };
       const query = {
         select: () => query,
         eq: (column: string, value: string) => {
@@ -52,8 +71,13 @@ test("branch deletion approvals load every pending page beyond the Supabase row 
           return query;
         },
         order: () => query,
-        limit: (count: number) => Promise.resolve({ data: matchingRows().slice(0, count), error: null }),
-        range: (from: number, to: number) => Promise.resolve({ data: matchingRows().slice(from, to + 1), error: null }),
+        or: (filter: string) => {
+          const match = /^created_at\.lt\.([^,]+),and\(created_at\.eq\.\1,id\.lt\.([^)]+)\)$/.exec(filter);
+          if (!match) throw new Error("Invalid approval cursor filter");
+          cursor = { createdAt: match[1], id: match[2] };
+          return query;
+        },
+        limit: (count: number) => read(0, count),
       };
       return query;
     },
@@ -61,7 +85,7 @@ test("branch deletion approvals load every pending page beyond the Supabase row 
 
   const result = await loadBranchTransferDeleteRequests(supabase);
   expect(result).toHaveLength(1_002);
-  expect(result.filter((row) => row.requestStatus === "pending")).toHaveLength(1_001);
+  expect(result.filter((row) => row.requestStatus === "pending")).toHaveLength(decideBetweenPages ? 1_000 : 1_001);
 });
 
 test("confirmed saves update cached lists before reconciling every affected location", async () => {

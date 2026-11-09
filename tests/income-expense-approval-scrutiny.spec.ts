@@ -22,9 +22,21 @@ function route(kind: keyof typeof paths, result: unknown, failure?: "auth" | "rp
       } } };
     } },
   });
-  return { calls, post: (decision = "approved", id = requestId) => module.POST(new Request("http://local/decide", {
-    method: "POST", body: JSON.stringify({ decision }),
+  return { calls, post: (decision = "approved", id = requestId, comment?: string) => module.POST(new Request("http://local/decide", {
+    method: "POST", body: JSON.stringify({ decision, comment }),
   }), { params: Promise.resolve({ id }) }) };
+}
+
+for (const kind of ["income", "cash"] as const) {
+  test(`${kind} rejects malformed database text before invoking the approval RPC`, async () => {
+    const fixture = route(kind, { requestId, status: "rejected" });
+    const valid = "เหตุผล\n📋";
+    expect((await fixture.post("rejected", requestId, valid)).status).toBe(200);
+    for (const invalid of ["\u0000", "\uD800", "\uDC00"]) {
+      expect((await fixture.post("rejected", requestId, invalid)).status).toBe(400);
+    }
+    expect(fixture.calls).toEqual([expect.objectContaining({ p_comment: valid })]);
+  });
 }
 
 for (const decision of ["approved", "rejected"] as const) {
@@ -50,18 +62,44 @@ for (const kind of ["income", "cash", "branch"] as const) {
   test(`${kind} route control preserves matching success`, async () => {
     expect((await route(kind, { requestId, incomeExpenseId, status: "approved" }).post()).status).toBe(200);
   });
+  test(`${kind} route returns only public approval fields`, async () => {
+    const response = await route(kind, {
+      requestId, incomeExpenseId, status: "approved", privateDiagnostic: "internal detail",
+    }).post();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(kind === "income"
+      ? { requestId, incomeExpenseId, status: "approved" }
+      : { requestId, status: "approved" });
+  });
+}
+
+for (const [status, httpStatus] of [["conflict", 409], ["failed", 400]] as const) {
+  test(`income route returns only public ${status} fields`, async () => {
+    const response = await route("income", {
+      status, errorMessage: "private database error", privateDiagnostic: "internal detail",
+    }).post();
+    expect(response.status).toBe(httpStatus);
+    expect(await response.json()).toEqual({ requestId, status, errorMessage: "ดำเนินการคำขอไม่สำเร็จ" });
+  });
 }
 
 function client(response: Response) {
-  let invalidations = 0;
+  const invalidatedKeys: unknown[] = [];
   const module = loadSourceModule<typeof import("../src/hooks/useIncomeExpenseApprovals")>("src/hooks/useIncomeExpenseApprovals.ts", {
     react: { useEffect: () => {} },
     "@tanstack/react-query": {
       useQuery: () => ({}),
-      useMutation: (options: { mutationFn: (input: unknown) => Promise<unknown>; onSuccess: () => Promise<unknown> }) => ({
-        mutateAsync: async (input: unknown) => { const result = await options.mutationFn(input); await options.onSuccess(); return result; },
+      useMutation: (options: { mutationFn: (input: unknown) => Promise<unknown>; onSuccess: () => Promise<unknown>; onError?: () => Promise<unknown> }) => ({
+        mutateAsync: async (input: unknown) => {
+          const result = await options.mutationFn(input).catch(async (error: unknown) => {
+            await options.onError?.();
+            throw error;
+          });
+          await options.onSuccess();
+          return result;
+        },
       }),
-      useQueryClient: () => ({ invalidateQueries: async () => { invalidations++; } }),
+      useQueryClient: () => ({ invalidateQueries: async ({ queryKey }: { queryKey: unknown }) => { invalidatedKeys.push(queryKey); } }),
     },
     "@/lib/supabase/client": { createSupabaseBrowserClient: () => ({}) },
     "@/hooks/useActionableBadges": { ACTIONABLE_BADGES_QUERY_KEY: "actionableBadges" },
@@ -69,28 +107,37 @@ function client(response: Response) {
     "@/lib/connectivity": { getConnectivitySnapshot: () => true },
     "@/lib/income-expense/build-income-expense-payload": { buildIncomeExpensePayload: () => ({}) },
   });
-  return { hook: module.useIncomeExpenseApprovals(), invalidations: () => invalidations };
+  return { hook: module.useIncomeExpenseApprovals(), invalidatedKeys };
 }
 
 for (const kind of ["decideRequest", "decideCashDeleteRequest", "decideBranchDeleteRequest"] as const) {
+  test(`${kind} refreshes the queue when another manager already decided the request`, async () => {
+    const income = kind === "decideRequest";
+    const message = income ? "คำขอนี้ถูกดำเนินการไปแล้ว" : "คำขอนี้ถูกดำเนินการแล้ว";
+    const f = client(income
+      ? Response.json({ status: "failed", requestId, errorMessage: message }, { status: 400 })
+      : Response.json({ error: message }, { status: 409 }));
+    await expect(f.hook[kind]({ id: requestId, decision: "approved" })).rejects.toThrow(message);
+    expect(f.invalidatedKeys).toEqual([["incomeExpenseApprovalRequests"]]);
+  });
   for (const result of [{}, { requestId, status: "rejected" }, { requestId: incomeExpenseId, status: "approved" }]) {
     test(`${kind} does not accept a malformed 200 acknowledgement ${JSON.stringify(result)}`, async () => {
       const f = client(Response.json(result));
       const error = await f.hook[kind]({ id: requestId, decision: "approved" }).then(() => null, error => error);
       expect(error).not.toBeNull();
-      expect(f.invalidations()).toBe(0);
+      expect(f.invalidatedKeys).toEqual([["incomeExpenseApprovalRequests"]]);
     });
   }
   test(`${kind} control accepts its matching acknowledgement`, async () => {
     const f = client(Response.json({ requestId, incomeExpenseId, status: "approved" }));
     await f.hook[kind]({ id: requestId, decision: "approved" });
-    expect(f.invalidations()).toBeGreaterThan(0);
+    expect(f.invalidatedKeys.length).toBeGreaterThan(1);
   });
-  test(`${kind} rejects an invalid JSON success without invalidation`, async () => {
+  test(`${kind} rejects an invalid JSON success and refreshes only the queue`, async () => {
     const f = client(new Response("<html>upstream</html>", { status: 200 }));
     const error = await f.hook[kind]({ id: requestId, decision: "approved" }).then(() => null, error => error);
     expect(error?.message).toContain("ยังยืนยันผล");
-    expect(f.invalidations()).toBe(0);
+    expect(f.invalidatedKeys).toEqual([["incomeExpenseApprovalRequests"]]);
   });
 }
 
@@ -98,7 +145,7 @@ test("income client requires the approved transaction ID as well as the request 
   const f = client(Response.json({ requestId, status: "approved" }));
   const error = await f.hook.decideRequest({ id: requestId, decision: "approved" }).then(() => null, error => error);
   expect(error?.message).toContain("ยังยืนยันผล");
-  expect(f.invalidations()).toBe(0);
+  expect(f.invalidatedKeys).toEqual([["incomeExpenseApprovalRequests"]]);
 });
 
 test("submission cannot fall through to direct saving after a malformed 200 acknowledgement", async () => {

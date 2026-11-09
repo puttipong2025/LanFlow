@@ -44,9 +44,6 @@ export function IncomeExpenseApprovalModal({
     requestsLocationId: requestLocationFilter === "all"
       ? undefined
       : requestLocationFilter,
-    pendingLocationId: requestLocationFilter === "all"
-      ? undefined
-      : requestLocationFilter,
   });
   const { locations } = useLocations();
 
@@ -160,7 +157,8 @@ export function IncomeExpenseApprovalModal({
   }
 
   return (
-    <ModalShell title="ตั้งค่าและอนุมัติรับ-จ่าย" subtitle={`คำขอรออนุมัติ ${pendingCount} รายการ`}
+    <ModalShell title="ตั้งค่าและอนุมัติรับ-จ่าย" subtitle={pendingCount === undefined
+      ? "ยังไม่มีผลนับคำขอรออนุมัติ" : `คำขอรออนุมัติ ${pendingCount} รายการ`}
       onClose={onClose} closeDisabled={configBusy || decidingIds.size > 0} size="wide" mobileFullScreen nativeModal>
       <div className="grid min-w-0 gap-5">
         <section aria-label="คำขออนุมัติรับ-จ่าย" className="min-w-0 rounded-xl border border-black/10 bg-field/20 p-2 sm:p-5">

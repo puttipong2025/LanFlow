@@ -75,6 +75,9 @@ insert into public.user_locations(user_id,location_id,is_primary) values('ae0000
 select set_config('request.jwt.claim.sub',(select id::text from public.profiles where role='super_admin' and is_active limit 1),true);
 select public.reset_all_bill_devices(gen_random_uuid(),public.preview_bill_device_reset()->>'snapshot','รีเซ็ตทั้งหมด','clear_registry_v1');
 select set_config('request.jwt.claim.sub','ae000000-0000-4000-8000-000000000033',true);
+select extensions.is((select public.decide_income_expense_approval_request((r->>'requestId')::uuid,null)->>'status' from inputs where id='approved'),'failed','a null decision cannot approve a pending request');
+select extensions.is((select request_status from public.income_expense_approval_requests where id=(select (r->>'requestId')::uuid from inputs where id='approved')),'pending','invalid decision leaves the request pending');
+select extensions.is((select count(*) from public.income_expense where client_temp_id='ie-number-approved'),0::bigint,'invalid decision creates no transaction');
 select extensions.is((select public.decide_income_expense_approval_request((r->>'requestId')::uuid,'approved')->>'status' from inputs where id='approved'),'approved','pending create survives bulk device reset and uses same allocator');
 select set_config('request.jwt.claim.sub','ae000000-0000-4000-8000-000000000002',true);
 select set_config('app.bypass_income_expense_approval','false',true);

@@ -10,6 +10,7 @@ for (const role of ["user", "admin", "super_admin"] as const) {
     const { context, page } = await rolePage(browser, role);
     try {
       await page.goto("/");
+      await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
       const action = page.getByRole("button", { name: "เปลี่ยนรหัสผ่าน", exact: true }).first();
       await expect(action).toBeVisible();
       await action.click();
@@ -33,6 +34,7 @@ test("self password form reports validation and success beside the action", asyn
     });
 
     await page.goto("/");
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await page.getByRole("button", { name: "เปลี่ยนรหัสผ่าน", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "เปลี่ยนรหัสผ่านของฉัน" });
     await dialog.getByLabel("รหัสผ่านปัจจุบัน", { exact: true }).fill("current-password");

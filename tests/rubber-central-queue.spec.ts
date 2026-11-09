@@ -188,17 +188,85 @@ function row(event: queue.SyncEvent, done = false): RubberQueueRow {
     result: done ? { status: "synced", commandId: event.payload.commandId, id: server,
       serverBillNo: "S-CENTRAL", revisionNo: 1, serverReceivedAt: "2026-10-28T00:00:01Z" } : null };
 }
-function runner(fetch: (url: string, init?: RequestInit) => Promise<Response>, session = async () => true) {
+function runner(fetch: (url: string, init?: RequestInit) => Promise<Response>, session = async () => true,
+  acknowledge = completion.acknowledgeRubberCommand) {
   return loadSourceModule<typeof import("../src/lib/rubber-bills/central-sync")>("src/lib/rubber-bills/central-sync.ts", {
     "@/lib/idb-core": idb, "@/lib/idb-queue": queue,
     "@/lib/auth-fetch": { authFetch: fetch, canSyncCurrentSession: session },
-    "./complete-command": completion,
+    "./complete-command": { ...completion, acknowledgeRubberCommand: acknowledge },
     "@/lib/rubber-bills/complete-command": completion,
     "@/lib/money-flow/invalidation": { invalidateMoneyFlowLocation: async () => {} },
     "@/lib/rubber-bills/background-notifications": { notifyRubberBackgroundFailure: async () => {}, notifyRubberManagerOutcome: () => {} },
   }, { navigator: { onLine: true } });
 }
 const client = { invalidateQueries: async () => {} } as never;
+
+test("a stale admission failure cannot erase another window's confirmed admission", async () => {
+  const event = await fixture();
+  await queue.updateSyncEvent({ ...event, serverSubmissionAttempted: true });
+  const sync = runner(async () => {
+    const [current] = await queue.getPendingEvents(event);
+    await queue.updateSyncEvent({ ...current, centralAccepted: true } as queue.SyncEvent);
+    return Response.json({}, { status: 503 });
+  });
+  await sync.runRubberCentralQueue(client, owner);
+  expect((await sync.rubberOwnerWork(owner))[0]).toMatchObject({
+    centralAccepted: true, serverSubmissionAttempted: true, payload: event.payload,
+  });
+});
+
+for (const failure of ["throw", "false"] as const) test(`a confirmed receipt survives a failed local acknowledgement (${failure})`, async () => {
+  const event = await fixture();
+  const methods: string[] = [];
+  let attempts = 0;
+  const sync = runner(async (_url, init) => {
+    methods.push(init?.method ?? "GET");
+    return Response.json(row(event, true));
+  }, async () => true, async (current, result) => {
+    if (++attempts !== 1) return completion.acknowledgeRubberCommand(current, result);
+    if (failure === "throw") throw new Error("local acknowledgement failed");
+    return false;
+  });
+  const started = Date.now();
+  await sync.runRubberCentralQueue(client, owner);
+  const retained = (await sync.rubberOwnerWork(owner))[0];
+  expect(retained).toMatchObject({ centralAccepted: true, status: "pending", payload: event.payload });
+  expect(retained.nextAttemptAt).toBeGreaterThanOrEqual(started + 15_000);
+  await sync.runRubberCentralQueue(client, owner);
+  expect(methods).toEqual(["POST"]);
+  await sync.runRubberCentralQueue(client, owner, true);
+  expect(methods).toEqual(["POST", "GET"]);
+  expect(await sync.rubberOwnerWork(owner)).toHaveLength(0);
+});
+
+for (const failure of ["throw", "false"] as const) test(`local acknowledgement recovery preserves a concurrent replacement (${failure})`, async () => {
+  const event = await fixture();
+  const replacementId = crypto.randomUUID();
+  const sync = runner(async () => Response.json(row(event, true)), async () => true, async (current) => {
+    await queue.updateSyncEvent({ ...current, centralAccepted: false, serverSubmissionAttempted: false,
+      payload: { ...current.payload, commandId: replacementId, idempotencyKey: replacementId } } as queue.SyncEvent);
+    if (failure === "throw") throw new Error("acknowledgement lost its snapshot");
+    return false;
+  });
+  await sync.runRubberCentralQueue(client, owner);
+  const [retained] = await sync.rubberOwnerWork(owner);
+  expect(retained.payload.commandId).toBe(replacementId);
+  expect(retained.centralAccepted).toBe(false);
+  expect(retained.serverSubmissionAttempted).toBe(false);
+});
+
+for (const bound of [true, false]) test(`manager admission rejection removes only its matching local command (${bound})`, async () => {
+  const run = runner(async (_url, init) => {
+    const sent = JSON.parse(String(init?.body));
+    return Response.json({
+      errorCode: "REQUEST_CHANGED", commandId: bound ? sent.commandId : crypto.randomUUID(),
+      clientTempId: sent.clientTempId, queueAction: sent.queueAction, targetRequestId: sent.targetRequestId,
+    }, { status: 409 });
+  });
+  await run.acceptRubberManagerCommand(owner, branch, server, "approve");
+  await run.runRubberCentralQueue(client, owner);
+  expect(await run.rubberOwnerWork(owner)).toHaveLength(bound ? 0 : 1);
+});
 
 for (const nullMetadata of [false, true]) test(`a bound numbering rejection stays visible and does not retry automatically (null=${nullMetadata})`, async () => {
   const event = await fixture();
@@ -230,14 +298,14 @@ test("an unbound numbering error cannot declare another command failed", async (
   expect(saved.failureCode).toBeUndefined();
 });
 
-for (const disposeDuringRead of [true, false]) {
-test(disposeDuringRead ? "active polling does not start a stale scope after its IndexedDB read completes"
-  : "active polling stops scheduling when the owner has no pending work", async () => {
+for (const scenario of ["disposed", "empty", "blocked"] as const) {
+test(`active polling schedules only eligible work (${scenario})`, async () => {
   let cleanup!: () => void;
   let poll!: () => Promise<void>;
+  let onActivity!: () => void;
   let release!: (events: queue.SyncEvent[]) => void;
   let calls = 0;
-  let activeTimers = 0;
+  const delays: number[] = [];
   const hook = loadSourceModule<typeof import("../src/hooks/useLanFlowOfflineSyncCoordinator")>("src/hooks/useLanFlowOfflineSyncCoordinator.ts", {
     "@/hooks/useBusinessCacheStatus": { useBusinessCacheStatus: () => undefined },
     react: { useEffect: (effect: () => () => void) => { cleanup = effect(); } },
@@ -249,22 +317,36 @@ test(disposeDuringRead ? "active polling does not start a stale scope after its 
     "@/hooks/useRubberBills": { syncPendingRubberBills: async () => {} },
     "@/lib/income-expense/background-sync": { runIncomeExpenseBackground: async () => {} },
     "@/lib/rubber-bills/central-sync": { runRubberCentralQueue: async () => { calls++; },
-      subscribeRubberQueueActivity: (_owner: string, callback: () => void) => { callback(); return () => {}; },
+      planRubberQueueWork: runner(async () => Response.json({})).planRubberQueueWork,
+      subscribeRubberQueueActivity: (_owner: string, callback: () => void) => {
+        onActivity = callback;
+        callback();
+        return () => {};
+      },
       rubberOwnerWork: () => new Promise(resolve => { release = resolve; }) },
   }, { window: { addEventListener: () => {}, removeEventListener: () => {} },
     setInterval: () => 1,
     clearInterval: () => {}, setTimeout: (callback: () => Promise<void>, delay: number) => {
-      if (delay === 2_000) { poll = callback; activeTimers++; } return 1;
+      if (delay === 2_000 || delay === 30_000) { poll = callback; delays.push(delay); } return 1;
     }, clearTimeout: () => {} });
   hook.useLanFlowOfflineSyncCoordinator({ ownerUserId: owner, locationId: branch });
   const initialCalls = calls;
   const pending = poll();
-  if (disposeDuringRead) cleanup();
-  release(disposeDuringRead ? [await fixture()] : []);
+  if (scenario === "disposed") cleanup();
+  const events = scenario === "empty" ? [] : [await fixture()];
+  if (scenario === "blocked") {
+    events[0] = { ...events[0], serverSubmissionAttempted: true, nextAttemptAt: Date.now() + 60_000 } as queue.SyncEvent;
+    events.push(await fixture());
+  }
+  release(events);
   await pending;
   expect(calls).toBe(initialCalls);
-  expect(activeTimers).toBe(1);
-  if (!disposeDuringRead) cleanup();
+  expect(delays).toEqual(scenario === "blocked" ? [2_000, 30_000] : [2_000]);
+  if (scenario === "blocked") {
+    onActivity();
+    expect(delays).toEqual([2_000, 30_000, 2_000]);
+  }
+  if (scenario !== "disposed") cleanup();
 });
 }
 
@@ -472,6 +554,74 @@ test("owner round drains another branch while a first branch has a transient fai
   expect(sent).toEqual([branch, otherBranch]);
   expect(await queue.getPendingEvents(first)).toHaveLength(1);
   expect(await queue.getPendingEvents(second)).toHaveLength(0);
+});
+
+for (const failure of ["response", "network"] as const) {
+  test(`a failed receipt read leaves unrelated same-branch admissions runnable (${failure})`, async () => {
+    const admitted = await fixture();
+    const fresh = await fixture();
+    await queue.updateSyncEvent({ ...admitted, centralAccepted: true, nextAttemptAt: 1 } as queue.SyncEvent);
+    await queue.updateSyncEvent({ ...fresh, nextAttemptAt: 2 } as queue.SyncEvent);
+    const methods: string[] = [];
+    const sync = runner(async (_url, init) => {
+      methods.push(init?.method ?? "GET");
+      if (init?.method === "POST") return Response.json(row(fresh, true));
+      if (failure === "network") throw new Error("receipt read failed");
+      return Response.json({}, { status: 503 });
+    });
+    await sync.runRubberCentralQueue(client, owner);
+    expect(methods).toEqual(["GET", "POST"]);
+    expect((await sync.rubberOwnerWork(owner)).map(({ id }) => id)).toEqual([admitted.id]);
+  });
+}
+
+test("an unconfirmed admission still defers later commands in the same branch", async () => {
+  await fixture();
+  await fixture();
+  let calls = 0;
+  const sync = runner(async () => { calls++; return Response.json({}, { status: 503 }); });
+  await sync.runRubberCentralQueue(client, owner);
+  expect(calls).toBe(1);
+  expect(await sync.rubberOwnerWork(owner)).toHaveLength(2);
+});
+
+test("an unconfirmed admission does not block receipt reads for admitted commands", async () => {
+  const first = await fixture();
+  const admitted = await fixture();
+  const later = await fixture();
+  await queue.updateSyncEvent({ ...first, nextAttemptAt: 1 } as queue.SyncEvent);
+  await queue.updateSyncEvent({ ...admitted, centralAccepted: true, nextAttemptAt: 2 } as queue.SyncEvent);
+  await queue.updateSyncEvent({ ...later, nextAttemptAt: 3 } as queue.SyncEvent);
+  const methods: string[] = [];
+  const sync = runner(async (_url, init) => {
+    methods.push(init?.method ?? "GET");
+    return init?.method === "POST"
+      ? Response.json({}, { status: 503 })
+      : Response.json(row(admitted, true));
+  });
+  await sync.runRubberCentralQueue(client, owner);
+  expect(methods).toEqual(["POST", "GET"]);
+  expect((await sync.rubberOwnerWork(owner)).map(({ id }) => id)).toEqual([first.id, later.id]);
+});
+
+for (const done of [true, false]) test(`later admissions resume in the same flight after confirmation (done: ${done})`, async () => {
+  const first = await fixture();
+  const later = await fixture();
+  const unrelated = await fixture(otherBranch);
+  await queue.updateSyncEvent({ ...first, serverSubmissionAttempted: true, nextAttemptAt: Date.now() + 30_000 } as queue.SyncEvent);
+  const sent: string[] = [];
+  const sync = runner(async (_url, init) => {
+    const id = JSON.parse(String(init?.body)).clientTempId;
+    sent.push(id);
+    const event = [first, later, unrelated].find((candidate) => candidate.id === id)!;
+    return Response.json(row(event, event.id !== first.id || done));
+  });
+  await sync.runRubberCentralQueue(client, owner);
+  expect(sent).toEqual([unrelated.id]);
+  const unresolved = (await sync.rubberOwnerWork(owner)).find(({ id }) => id === first.id)!;
+  await queue.updateSyncEvent({ ...unresolved, nextAttemptAt: 1 } as queue.SyncEvent);
+  await sync.runRubberCentralQueue(client, owner);
+  expect(sent).toEqual([unrelated.id, first.id, later.id]);
 });
 
 test("account changes during upload do not reconcile the previous owner's work", async () => {

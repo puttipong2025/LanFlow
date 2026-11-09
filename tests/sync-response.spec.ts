@@ -173,6 +173,20 @@ test("rubber bill sync route rejects a declared oversized request before the RPC
   expect(rpcCalls).toBe(0);
 });
 
+test("rubber bill sync rejects malformed UTF-8 before the RPC", async () => {
+  const dependencies = rubberRouteDependencies(null);
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(
+    "src/app/api/lanflow/rubber-bills/route.ts", dependencies,
+  );
+  const bytes = Buffer.from(JSON.stringify(validRubberSubmission({ note: "marker" })));
+  bytes[bytes.indexOf("marker")] = 0xff;
+  const response = await route.POST(new Request("https://example.test", {
+    method: "POST", body: Uint8Array.from(bytes),
+  }));
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ errorMessage: "รูปแบบข้อมูลบิลยางไม่ถูกต้อง" });
+});
+
 test("rubber bill sync route rejects an actual oversized request before the RPC", async () => {
   let rpcCalls = 0;
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/route")>(

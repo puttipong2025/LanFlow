@@ -10,7 +10,7 @@ import { syncPendingRubberBills } from "@/hooks/useRubberBills";
 import { getPendingEvents } from "@/lib/idb-queue";
 import { runIncomeExpenseBackground } from "@/lib/income-expense/background-sync";
 import { isIncomeExpenseBackgroundCommand } from "@/lib/income-expense/background-command";
-import { rubberOwnerWork, runRubberCentralQueue, subscribeRubberQueueActivity } from "@/lib/rubber-bills/central-sync";
+import { planRubberQueueWork, rubberOwnerWork, runRubberCentralQueue, subscribeRubberQueueActivity } from "@/lib/rubber-bills/central-sync";
 
 const PENDING_SYNC_RETRY_INTERVAL_MS = 30_000;
 
@@ -97,10 +97,16 @@ export function useLanFlowOfflineSyncCoordinator({
     let checkRequested = false;
     let disposed = false;
     let activeTimer: ReturnType<typeof setTimeout> | undefined;
+    let activeTimerAt = 0;
     const scheduleActiveCheck = (delay = 2_000) => {
       if (disposed) return;
       if (checking) { checkRequested = true; return; }
-      if (activeTimer !== undefined) return;
+      const nextTimerAt = Date.now() + delay;
+      if (activeTimer !== undefined) {
+        if (activeTimerAt <= nextTimerAt) return;
+        clearTimeout(activeTimer);
+      }
+      activeTimerAt = nextTimerAt;
       activeTimer = setTimeout(checkActiveWork, delay);
     };
     const checkActiveWork = async () => {
@@ -111,16 +117,19 @@ export function useLanFlowOfflineSyncCoordinator({
       let delay: number | undefined;
       try {
         const events = await rubberOwnerWork(ownerUserId);
-        const pending = events.filter(event => event.status === "pending");
-        if (pending.length) delay = Math.max(2_000, Math.min(30_000,
-          Math.min(...pending.map(event => event.nextAttemptAt ?? 0)) - Date.now()));
-        if (!disposed && pending.some(event => (event.nextAttemptAt ?? 0) <= Date.now())) {
+        if (disposed) return;
+        const now = Date.now();
+        const { nextPendingAttemptAt } = planRubberQueueWork(events, now);
+        if (nextPendingAttemptAt !== undefined) {
+          delay = Math.max(2_000, Math.min(30_000, nextPendingAttemptAt - now));
+        }
+        if (nextPendingAttemptAt !== undefined && nextPendingAttemptAt <= now) {
           await runRubberCentralQueue(queryClient, ownerUserId);
         }
       } catch { /* The recovery interval retries local queue read failures. */ }
       finally {
         checking = false;
-        if (delay !== undefined || checkRequested) scheduleActiveCheck(delay);
+        if (delay !== undefined || checkRequested) scheduleActiveCheck(checkRequested ? 2_000 : delay);
       }
     };
     const stopActivity = subscribeRubberQueueActivity(ownerUserId, scheduleActiveCheck);

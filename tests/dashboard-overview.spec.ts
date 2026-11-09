@@ -60,6 +60,7 @@ test.describe("Dashboard overview @dashboard", () => {
     await expect(page.getByRole("navigation", { name: "แบ่งหน้าประวัติ" })).toBeVisible();
     await expect(page.getByRole("heading", { name: /บิลยาง ·/ })).toHaveCount(0);
 
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await expect(page.getByRole("heading", { name: "ยืนยันออกจากระบบ?" })).toBeVisible();
     await expect(page.getByText("คุณต้องการออกจากบัญชีนี้หรือไม่", { exact: true })).toBeVisible();
@@ -72,6 +73,7 @@ test.describe("Dashboard overview @dashboard", () => {
     await page.getByRole("button", { name: "ภาพรวม", exact: true }).click();
     await expect(page.getByRole("heading", { name: /ภาพรวม ·/ })).toBeVisible();
 
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await page.context().setOffline(true);
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
@@ -84,6 +86,7 @@ test.describe("Dashboard overview @dashboard", () => {
     for (const label of ["ภาพรวม", "สต็อกสินค้า", "ลูกค้า", "ขนส่งและพนักงาน"]) {
       await expect(page.getByRole("button", { name: label, exact: true })).toBeDisabled();
     }
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await expect(
       page.getByRole("button", { name: "ออกจากระบบได้เมื่อออนไลน์เท่านั้น" }),
     ).toBeDisabled();
@@ -122,6 +125,7 @@ test.describe("Dashboard overview @dashboard", () => {
       timeout: 15_000,
     });
 
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await expect(page.getByRole("heading", { name: "ยืนยันออกจากระบบ?" })).toBeVisible();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
@@ -148,6 +152,7 @@ test.describe("Dashboard overview @dashboard", () => {
       })
     );
 
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
 

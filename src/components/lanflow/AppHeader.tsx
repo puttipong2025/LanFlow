@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BellRing, Building2, Check, ChevronDown, Clock3, Search, Wifi, WifiOff } from "lucide-react";
+import { Building2, Check, ChevronDown, Clock3, Search, Wifi, WifiOff } from "lucide-react";
 import type { Location, Profile } from "@/types";
 import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
+import { HeaderApprovalActions } from "@/components/lanflow/HeaderApprovalActions";
 import { AccountActions } from "@/components/lanflow/AccountActions";
 import { OfflineReadinessStatus } from "@/components/lanflow/OfflineReadinessStatus";
 import { OperatorMoneyHistoryButton } from "@/components/dashboard/OperatorMoneyHistoryButton";
@@ -174,32 +175,40 @@ export function AppHeader({
 
   return (
     <>
-      <div className="landscape-compact-header mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 py-4 sm:px-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="landscape-compact-identity min-w-0">
-          <div className="flex items-center gap-3">
+      <div className="landscape-compact-header relative mx-auto flex w-full max-w-7xl flex-col gap-4 px-3 py-4 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:pr-16">
+        <div className="landscape-compact-identity min-w-0 pr-14 lg:pr-0">
+          <div className="flex flex-wrap items-center gap-3">
             <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-leaf text-lg font-bold text-white shadow-sm">
               LF
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <h1 className="text-balance text-2xl font-bold text-ink">LanFlow</h1>
               <p className="truncate text-sm text-ink/60">{profile.name} · {profile.phone}</p>
             </div>
+            <span
+              role="status"
+              aria-live="polite"
+              className={`inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-bold ${
+                online
+                  ? "bg-leaf/10 text-leaf"
+                  : "bg-amber/15 text-amber-800"
+              }`}
+            >
+              {online ? <Wifi size={16} /> : <WifiOff size={16} />}
+              {online ? "ออนไลน์" : "ไม่มีอินเทอร์เน็ต"}
+            </span>
           </div>
         </div>
 
+        <AccountActions
+          compact
+          online={online}
+          onLogout={onLogout}
+          onOpenTelegram={canManageSystemFeatures(profile) ? () => setTelegramConfigOpen(true) : undefined}
+          className="landscape-account-menu absolute right-3 top-4 sm:right-4"
+        />
+
         <div className="landscape-compact-actions flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          <span
-            role="status"
-            aria-live="polite"
-            className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-bold ${
-              online
-                ? "bg-leaf/10 text-leaf"
-                : "bg-amber/15 text-amber-800"
-            }`}
-          >
-            {online ? <Wifi size={16} /> : <WifiOff size={16} />}
-            {online ? "ออนไลน์" : "ไม่มีอินเทอร์เน็ต"}
-          </span>
           <OfflineReadinessStatus key={`${profile.id}:${selectedLocationId}`} userId={profile.id} locationId={selectedLocationId} online={online} businessCacheStatus={businessCacheStatus} canEditCacheSettings={profile.role === "super_admin"} />
           <div ref={locationMenuRef} className="landscape-branch-selector relative min-w-0 sm:min-w-64">
             <button
@@ -441,31 +450,15 @@ export function AppHeader({
           </div>
 
           {canManageSystemFeatures(profile) && (
-            <button
-              type="button"
-              onClick={() => setTelegramConfigOpen(true)}
-              className="focus-ring flex items-center justify-center gap-1.5 rounded-lg bg-telegram px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-telegram/90"
-              title="ตั้งค่าการแจ้งเตือน Telegram"
-              aria-label="ตั้งค่าการแจ้งเตือน Telegram"
-            >
-              <BellRing size={16} />
-              <span>Telegram</span>
-            </button>
+            <HeaderApprovalActions profile={profile} locations={accessibleLocations} locationId={selectedLocationId} online={online} />
           )}
-
           <OperatorMoneyHistoryButton profile={profile} online={online} />
           {alertCheck && <div className="space-y-1">
             <button type="button" disabled={!online} aria-disabled={!online || alertCheck.checking} onClick={() => { if (!alertCheck.checking) void alertCheck.checkNow(); }} aria-busy={alertCheck.checking}
-              className="focus-ring min-h-11 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "ตรวจแจ้งเตือน"}</button>
+              className="focus-ring min-h-11 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50 aria-disabled:opacity-50">{alertCheck.checking ? "กำลังตรวจ..." : "แจ้งเตือน"}</button>
             {!online && <p className="text-pretty text-xs text-ink/65">เชื่อมต่ออินเทอร์เน็ตเพื่อตรวจแจ้งเตือน</p>}
             {alertCheck.error && <p role="alert" className="max-w-xs text-pretty text-sm text-rose-700">{alertCheck.error}</p>}
           </div>}
-
-          <AccountActions
-            online={online}
-            onLogout={onLogout}
-            className="landscape-account-actions"
-          />
         </div>
       </div>
       {online && serviceUnavailable && (

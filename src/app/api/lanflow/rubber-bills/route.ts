@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isNumberedRubberFinal, isRubberBillNumbering } from "@/lib/rubber-bills/numbering-contract";
 import { isValidRubberPriceAdjustmentTarget } from "@/lib/rubber-bills/calculations";
 import { requireAuth } from "@/lib/server/auth";
+import { readBoundedUtf8Body } from "@/lib/server/bounded-utf8-body";
 import { cashCountLockResponse } from "@/lib/server/cash-count-lock-response";
 import {
   isIsoTimestamp,
@@ -19,42 +20,6 @@ const rejectNumbering = (payload: Record<string, unknown>, status = 400) => Next
 }, { status, headers: { "Cache-Control": "private, no-store, max-age=0" } });
 const MAX_SYNC_REQUEST_BYTES = 1024 * 1024;
 const DATABASE_ERROR_DETAIL_PATTERN = /(?:\b(?:relation|column|constraint|schema|table|function|operator|sequence|trigger)\b.*\b(?:does not exist|violates|already exists|not found)\b)|(?:duplicate key value|invalid input syntax|permission denied|sqlstate|syntax error at or near|division by zero|numeric field overflow|value too long|deadlock detected|could not serialize|current transaction is aborted)|(?:\b(?:private|public|auth|storage)\.[a-z_][a-z0-9_]*)|(?:\b[a-z][a-z0-9_]*(?:_pkey|_key|_fkey|_check)\b)/i;
-
-type BoundedRequestText =
-  | { ok: true; text: string }
-  | { ok: false };
-
-async function readBoundedRequestText(request: Request): Promise<BoundedRequestText> {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength && /^\d+$/.test(contentLength)) {
-    const declaredBytes = Number(contentLength);
-    if (!Number.isSafeInteger(declaredBytes) || declaredBytes > MAX_SYNC_REQUEST_BYTES) {
-      return { ok: false };
-    }
-  }
-
-  if (!request.body) return { ok: true, text: "" };
-
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let receivedBytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      receivedBytes += value.byteLength;
-      if (receivedBytes > MAX_SYNC_REQUEST_BYTES) {
-        void reader.cancel().catch(() => {});
-        return { ok: false };
-      }
-      chunks.push(value);
-    }
-    const text = Buffer.concat(chunks, receivedBytes).toString("utf8");
-    return { ok: true, text: text.charCodeAt(0) === 0xfeff ? text.slice(1) : text };
-  } finally {
-    reader.releaseLock();
-  }
-}
 
 function publicSyncErrorMessage(value: unknown) {
   if (typeof value !== "string"
@@ -143,12 +108,15 @@ export async function POST(request: Request) {
       return authResult.response;
     }
 
-    const requestText = await readBoundedRequestText(request);
-    if (!requestText.ok) {
+    const requestText = await readBoundedUtf8Body(request, MAX_SYNC_REQUEST_BYTES);
+    if (requestText.status === "too_large") {
       return NextResponse.json(
         { status: "failed", errorMessage: "ข้อมูลบิลยางมีขนาดใหญ่เกินกำหนด" },
         { status: 413, headers: { "Cache-Control": "private, no-store, max-age=0" } },
       );
+    }
+    if (requestText.status === "invalid_utf8") {
+      return NextResponse.json({ status: "failed", errorMessage: "รูปแบบข้อมูลบิลยางไม่ถูกต้อง" }, { status: 400 });
     }
     const raw = requestText.text;
     if (!raw) {

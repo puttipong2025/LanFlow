@@ -3,7 +3,7 @@ import type { SyncEvent } from "@/lib/idb-queue";
 import type { RubberBill } from "@/types";
 import { isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
 
-function pendingRubberMessage(event: SyncEvent & { centralAccepted?: boolean }) {
+function pendingRubberMessage(event: SyncEvent) {
   if (event.errorMessage) return event.errorMessage;
   if (event.payload.centralQueue) return event.centralAccepted ? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล"
     : event.serverSubmissionAttempted !== false ? "รอยืนยันการรับงานจากเซิร์ฟเวอร์" : "รอส่งจากเครื่อง";
@@ -53,7 +53,7 @@ function hasAuthoritativeActionLock(bill: RubberBill | undefined) {
   );
 }
 
-export function rubberBillFromSyncEvent(event: SyncEvent & { centralAccepted?: boolean }, ownerUserId: string): RubberBill | null {
+export function rubberBillFromSyncEvent(event: SyncEvent, ownerUserId: string): RubberBill | null {
   if (event.payload.queueAction) return null;
   if (event.operation === "delete" && event.status === "pending" && !event.payload.background) return null;
   const payload = event.payload;

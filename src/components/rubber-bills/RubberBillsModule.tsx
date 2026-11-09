@@ -1,4 +1,4 @@
-import { Clock3, FileScan, Hash, PackagePlus, Plus, Settings, Ticket } from "lucide-react";
+import { Clock3, FileScan, Hash, PackagePlus, Plus, Ticket } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -30,7 +30,6 @@ import { RubberBillsTable } from "./RubberBillsTable";
 import { TablePageSizeSelect } from "@/components/shared/TablePagination";
 import { RubberBillModal, type RubberBillCustomerOption } from "./RubberBillModal";
 import type { useRubberBillOcrQueue, RubberBillOcrInitialDraft, RubberBillOcrQueueItem } from "@/hooks/useRubberBillOcrQueue";
-import { RubberBillApprovalModal } from "./RubberBillApprovalModal";
 import { WeighingAppointmentModal } from "./WeighingAppointmentModal";
 import { WeighingQueueModal } from "./WeighingQueueModal";
 import { CustomWeighingQueueModal } from "./CustomWeighingQueueModal";
@@ -109,9 +108,7 @@ export function RubberBillsModule({
   });
   const workCounts = useRubberBillWorkCounts(profile.id, selectedLocation.id);
   const pendingApprovalCount = workCounts.data?.pendingApproval ?? 0;
-  const approvalButtonLabel = isOnline && pendingApprovalCount > 0
-    ? `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${pendingApprovalCount} รายการ`
-    : "ตั้งค่าและอนุมัติบิลยาง";
+
   const { retrySyncEvent, isRetrying } = usePerRecordSyncRetry(selectedLocation.id, profile.id);
   const [deviceId] = useState(tryGetDeviceId);
   const [cachedCustomers, setCachedCustomers] = useState<WeighingQueueCustomer[]>(() => (
@@ -124,7 +121,6 @@ export function RubberBillsModule({
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [customQueueModalOpen, setCustomQueueModalOpen] = useState(false);
   const [appointmentModalOpen, setAppointmentModalOpen] = useState(false);
-  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
   const [branchReceiptModalOpen, setBranchReceiptModalOpen] = useState(false);
   const [viewingBranchReceipt, setViewingBranchReceipt] = useState<RubberBill | null>(null);
   const [editingBill, setEditingBill] = useState<RubberBill | null>(null);
@@ -529,33 +525,6 @@ export function RubberBillsModule({
           </button>
           <RubberCentralQueueStatus key={`${profile.id}:${selectedLocation.id}`} ownerUserId={profile.id} locationId={selectedLocation.id} locationName={selectedLocation.name}
             onCorrect={(bill) => { setEditingBill(bill); setModalOpen(true); void refreshPolicy(); }} />
-          {canManageApprovals && (
-            <button
-              type="button"
-              onClick={() => {
-                if (!isOnline) {
-                  toast.error("ตั้งค่าและอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น");
-                  return;
-                }
-                setApprovalModalOpen(true);
-              }}
-              disabled={!isOnline}
-              aria-label={approvalButtonLabel}
-              title={isOnline ? approvalButtonLabel : "ตั้งค่าและอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น"}
-              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              <Settings size={18} />
-              ตั้งค่าและอนุมัติบิลยาง
-              {isOnline && pendingApprovalCount > 0 && (
-                <span
-                  aria-hidden="true"
-                  className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
-                >
-                  {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
-                </span>
-              )}
-            </button>
-          )}
           <button
             type="button"
             onClick={() => void openBranchReceipt()}
@@ -766,13 +735,6 @@ export function RubberBillsModule({
         />
       )}
 
-      {approvalModalOpen && (
-        <RubberBillApprovalModal
-          locationId={selectedLocation.id}
-          profile={profile}
-          onClose={() => setApprovalModalOpen(false)}
-        />
-      )}
       {branchReceiptModalOpen && (
         <BranchRubberReceiptModal
           destinationLocationId={selectedLocation.id}

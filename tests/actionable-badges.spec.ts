@@ -348,7 +348,7 @@ test("branch selector stays usable inside a mobile viewport", async ({ browser }
   }
 });
 
-test("approval buttons and modal counts follow the selected branch", async ({ browser }) => {
+test("approval buttons show all-branch totals and dialogs support branch filters", async ({ browser }) => {
   test.setTimeout(150_000);
   test.skip(!serviceRoleKey, "Supabase service role key is required");
   const service = createClient(supabaseUrl, serviceRoleKey, {
@@ -444,7 +444,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
         };
       }),
     )).error).toBeNull();
-    const [rubberPending, incomePending, cashDeletePending] = await Promise.all([
+    const [rubberPending, incomePending, cashDeletePending, branchDeletePending] = await Promise.all([
       service
         .from("rubber_bill_approval_requests")
         .select("id", { count: "exact", head: true })
@@ -457,11 +457,17 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
         .from("cash_transfer_delete_requests")
         .select("id", { count: "exact", head: true })
         .eq("request_status", "pending"),
+      service
+        .from("branch_transfer_delete_requests")
+        .select("id", { count: "exact", head: true })
+        .eq("request_status", "pending"),
     ]);
     expect(rubberPending.error).toBeNull();
     expect(incomePending.error).toBeNull();
     expect(cashDeletePending.error).toBeNull();
-    const allIncomePendingCount = (incomePending.count ?? 0) + (cashDeletePending.count ?? 0);
+    expect(branchDeletePending.error).toBeNull();
+    const allRubberPendingCount = rubberPending.count ?? 0;
+    const allIncomePendingCount = (incomePending.count ?? 0) + (cashDeletePending.count ?? 0) + (branchDeletePending.count ?? 0);
 
     const page = await context.newPage();
     await page.goto("/");
@@ -481,13 +487,15 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
 
     await page.getByRole("button", { name: /^บิลยาง/ }).click();
     let approvalButton = page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 1 รายการ",
+      name: `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${allRubberPendingCount} รายการ`,
     });
     await expect(approvalButton).toBeVisible({ timeout: 15_000 });
     await approvalButton.click();
     let approvalModal = page.locator(".fixed.inset-0").last();
     let locationFilter = approvalModal.getByRole("combobox", { name: "สาขา", exact: true });
-    await expect(locationFilter).toHaveValue(locationIds[0]);
+    await expect(locationFilter).toHaveValue("all");
+    await expect(approvalModal.getByText(`รออนุมัติ ${allRubberPendingCount} รายการ`, { exact: true })).toBeVisible();
+    await locationFilter.selectOption(locationIds[0]);
     await expect(approvalModal.getByText("รออนุมัติ 1 รายการ", { exact: true })).toBeVisible();
     await locationFilter.selectOption(locationIds[1]);
     await expect(approvalModal.getByText(
@@ -498,7 +506,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
 
     await selectAppLocation(page, locationIds[1]);
     const secondBranchRubberButton = page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 2 รายการ",
+      name: `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${allRubberPendingCount} รายการ`,
     });
     await expect(secondBranchRubberButton).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
@@ -509,10 +517,11 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     await page.setViewportSize({ width: 1280, height: 720 });
     await selectAppLocation(page, locationIds[0]);
     approvalButton = page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติบิลยาง รออนุมัติ 1 รายการ",
+      name: `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${allRubberPendingCount} รายการ`,
     });
     await approvalButton.click();
     approvalModal = page.locator(".fixed.inset-0").last();
+    await approvalModal.getByRole("combobox", { name: "สาขา", exact: true }).selectOption(locationIds[0]);
     const rubberRequest = approvalModal.locator("article", {
       hasText: "คำขอบิลยาง Badge 1",
     });
@@ -523,13 +532,13 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     await expect(approvalModal.getByText("รออนุมัติ 0 รายการ", { exact: true })).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();
     await expect(page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติบิลยาง",
+      name: `ตั้งค่าและอนุมัติบิลยาง รออนุมัติ ${allRubberPendingCount - 1} รายการ`,
       exact: true,
     })).toBeVisible();
 
     await page.getByRole("button", { name: /^รับ-จ่าย/ }).click();
     approvalButton = page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ 1 รายการ",
+      name: `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${allIncomePendingCount} รายการ`,
     });
     await expect(approvalButton).toBeVisible({ timeout: 15_000 });
     await page.getByRole("button", { name: "รออนุมัติ (1)", exact: true }).click();
@@ -540,9 +549,7 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     await approvalButton.click();
     approvalModal = page.locator(".fixed.inset-0").last();
     locationFilter = approvalModal.getByRole("combobox", { name: "สาขา", exact: true });
-    await expect(locationFilter).toHaveValue(locationIds[0]);
-    await expect(approvalModal.getByText("คำขอรออนุมัติ 1 รายการ", { exact: true })).toBeVisible();
-    await locationFilter.selectOption("all");
+    await expect(locationFilter).toHaveValue("all");
     await expect(approvalModal.getByText(
       `คำขอรออนุมัติ ${allIncomePendingCount} รายการ`,
       { exact: true },
@@ -559,19 +566,19 @@ test("approval buttons and modal counts follow the selected branch", async ({ br
     await expect(approvalModal.getByText("คำขอรออนุมัติ 0 รายการ", { exact: true })).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();
     await expect(page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติรับ-จ่าย",
+      name: `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${allIncomePendingCount - 1} รายการ`,
       exact: true,
     })).toBeVisible();
 
     await selectAppLocation(page, locationIds[1]);
     const cappedApprovalButton = page.getByRole("button", {
-      name: "ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ 100 รายการ",
+      name: `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${allIncomePendingCount - 1} รายการ`,
     });
     await expect(cappedApprovalButton).toBeVisible();
     await expect(cappedApprovalButton.locator("span")).toHaveText("99+");
     await cappedApprovalButton.click();
     approvalModal = page.locator(".fixed.inset-0").last();
-    await expect(approvalModal.getByText("คำขอรออนุมัติ 100 รายการ", { exact: true })).toBeVisible();
+    await expect(approvalModal.getByText(`คำขอรออนุมัติ ${allIncomePendingCount - 1} รายการ`, { exact: true })).toBeVisible();
     await expect(approvalModal.locator("tbody tr", { hasText: "คำขอรับจ่าย Badge 2" }).first()).toBeVisible();
     await approvalModal.getByLabel("ปิด", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });

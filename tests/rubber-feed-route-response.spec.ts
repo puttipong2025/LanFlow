@@ -206,7 +206,58 @@ test("rubber bill feed rejects an empty work identity in a client cursor", async
   expect(await response.json()).toEqual({ error: "cursor ไม่ถูกต้อง", code: "INVALID_CURSOR" });
 });
 
-test("rubber bill feed rejects oversized query input before calling the RPC", async () => {
+test("pending approval feed rejects repeated and backwards pages", async () => {
+  const sortAt = "2026-10-05T00:00:00.000001Z";
+  const workIdentity = `approval:${locationId}`;
+  const cursor = Buffer.from(JSON.stringify({
+    version: 2, ownerUserId: "user-1", locationId, mode: "pending_approval",
+    documentStatus: "any", search: "", sortAt, workIdentity,
+  }), "utf8").toString("base64url");
+
+  for (const [nextSortAt, status] of [
+    ["2026-10-05T00:00:00.000002Z", 200],
+    [sortAt, 500],
+    ["2026-10-05T00:00:00Z", 500],
+  ] as const) {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
+      "src/app/api/lanflow/rubber-bills/feed/route.ts",
+      feedRouteDependencies({
+        rows: [{
+          row_kind: "approval_create", id: locationId, location_id: locationId, record_status: "active",
+          work_identity: workIdentity, operational_sort_at: nextSortAt, items: [],
+          revision_no: 0, approval_pending: true, approval_request_id: locationId,
+          approval_operation: "create", approval_reasons: ["price"],
+        }],
+        hasMore: true, nextSortAt, nextWorkIdentity: workIdentity,
+      }),
+    );
+    const response = await route.GET({
+      nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&cursor=${cursor}`),
+    } as never);
+    expect(response.status).toBe(status);
+  }
+});
+
+test("pending approval feed enforces the requested page size on the RPC response", async () => {
+  const rows = [locationId, caseVariantLocationId].map((id, index) => ({
+    row_kind: "approval_create", id, location_id: locationId, record_status: "active",
+    work_identity: `approval:${id}`, operational_sort_at: `2026-10-05T00:00:0${index}Z`, items: [],
+    revision_no: 0, approval_pending: true, approval_request_id: id,
+    approval_operation: "create", approval_reasons: ["price"],
+  }));
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/rubber-bills/feed/route")>(
+    "src/app/api/lanflow/rubber-bills/feed/route.ts",
+    feedRouteDependencies({ rows, hasMore: false, nextSortAt: null, nextWorkIdentity: null }),
+  );
+  for (const [limit, expected] of [[2, 200], [1, 500]] as const) {
+    const response = await route.GET({
+      nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}&mode=pending_approval&limit=${limit}`),
+    } as never);
+    expect(response.status).toBe(expected);
+  }
+});
+
+test("rubber bill feed rejects oversized search and NUL before calling the RPC", async () => {
   let rpcCalls = 0;
   const supabase = {
     rpc: async () => {
@@ -227,12 +278,13 @@ test("rubber bill feed rejects oversized query input before calling the RPC", as
       },
     },
   );
-  const response = await route.GET({
-    nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?locationId=${locationId}&search=${"x".repeat(201)}`),
-  } as never);
-
-  expect(response.status).toBe(400);
-  expect(await response.json()).toEqual({ error: "พารามิเตอร์รายการบิลยางไม่ถูกต้อง" });
+  for (const search of ["x".repeat(201), "\u0000"]) {
+    const response = await route.GET({
+      nextUrl: new URL(`http://local/api/lanflow/rubber-bills/feed?${new URLSearchParams({ locationId, search })}`),
+    } as never);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "พารามิเตอร์รายการบิลยางไม่ถูกต้อง" });
+  }
   expect(rpcCalls).toBe(0);
 });
 

@@ -304,7 +304,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     }
   });
 
-  test("manager sees the config button beside branch controls; regular user does not", async ({
+  test("account menu shows Telegram configuration only for managers", async ({
     browser,
   }) => {
     test.setTimeout(60_000);
@@ -314,6 +314,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
     try {
       const userPage = await user.newPage();
       await userPage.goto("/");
+      await userPage.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
       await expect(
         userPage.getByRole("button", {
           name: "ตั้งค่าการแจ้งเตือน Telegram",
@@ -322,6 +323,7 @@ test.describe.serial("Telegram badge digest @telegram-badge", () => {
 
       const managerPage = await manager.newPage();
       await managerPage.goto("/");
+      await managerPage.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
       const configButton = managerPage.getByRole("button", {
         name: "ตั้งค่าการแจ้งเตือน Telegram",
       });

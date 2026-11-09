@@ -1,7 +1,7 @@
 "use client";
 
-import { KeyRound } from "lucide-react";
-import { useRef, useState } from "react";
+import { BellRing, KeyRound, Menu } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { LogoutButton } from "@/components/lanflow/LogoutButton";
 import { ModalShell } from "@/components/shared/ModalShell";
@@ -16,26 +16,89 @@ export function AccountActions({
   online,
   onLogout,
   className,
+  compact = false,
+  onOpenTelegram,
 }: {
   online: boolean;
   onLogout: () => void | Promise<void>;
   className?: string;
+  compact?: boolean;
+  onOpenTelegram?: () => void;
 }) {
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuId = useId();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function closeOnOutsidePress(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [menuOpen]);
+
+  function closeMenu() {
+    if (!compact) return;
+    setMenuOpen(false);
+    triggerRef.current?.focus();
+  }
 
   return <>
-    <div className={cn("flex flex-wrap justify-end gap-2", className)}>
-      <button
-        type="button"
-        disabled={!online}
-        title={online ? "เปลี่ยนรหัสผ่านของฉัน" : "เปลี่ยนรหัสผ่านได้เมื่อออนไลน์เท่านั้น"}
-        onClick={() => setPasswordOpen(true)}
-        className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-river/25 bg-white px-3 text-sm font-semibold text-river shadow-sm disabled:cursor-not-allowed disabled:bg-field disabled:text-ink/40 disabled:shadow-none"
-      >
-        <KeyRound size={16} />
-        เปลี่ยนรหัสผ่าน
-      </button>
-      <LogoutButton online={online} onLogout={onLogout} />
+    <div ref={menuRef} className={className}
+      onBlur={(event) => {
+        if (menuOpen && !event.currentTarget.contains(event.relatedTarget)) setMenuOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !menuOpen) return;
+        event.stopPropagation();
+        closeMenu();
+      }}
+    >
+      {compact && (
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-label="เมนูบัญชี"
+          aria-expanded={menuOpen}
+          aria-controls={menuId}
+          onClick={() => setMenuOpen(!menuOpen)}
+          className="focus-ring inline-flex size-11 items-center justify-center rounded-lg border border-mint bg-white text-ink shadow-sm hover:bg-mint/35"
+        >
+          <Menu size={22} aria-hidden="true" />
+        </button>
+      )}
+      <div id={menuId} className={cn(
+        compact
+          ? "absolute right-0 top-full z-40 mt-2 w-48 flex-col gap-2 rounded-xl border border-mint bg-white p-2 shadow-xl"
+          : "flex flex-wrap justify-end gap-2",
+        compact && (menuOpen ? "flex" : "hidden"),
+      )}>
+        <button
+          type="button"
+          disabled={!online}
+          title={online ? "เปลี่ยนรหัสผ่านของฉัน" : "เปลี่ยนรหัสผ่านได้เมื่อออนไลน์เท่านั้น"}
+          onClick={() => { closeMenu(); setPasswordOpen(true); }}
+          className="focus-ring inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-river/25 bg-white px-3 text-sm font-semibold text-river shadow-sm disabled:cursor-not-allowed disabled:bg-field disabled:text-ink/40 disabled:shadow-none"
+        >
+          <KeyRound size={16} aria-hidden="true" />
+          เปลี่ยนรหัสผ่าน
+        </button>
+        {onOpenTelegram && (
+          <button
+            type="button"
+            onClick={() => { closeMenu(); onOpenTelegram(); }}
+            className="focus-ring flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-telegram px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-telegram/90"
+            aria-label="ตั้งค่าการแจ้งเตือน Telegram"
+          >
+            <BellRing size={16} aria-hidden="true" />
+            Telegram
+          </button>
+        )}
+        <LogoutButton online={online} onLogout={onLogout} onConfirmOpen={closeMenu} />
+      </div>
     </div>
     {passwordOpen && (
       <ChangePasswordModal onClose={() => setPasswordOpen(false)} />

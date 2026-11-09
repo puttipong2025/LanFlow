@@ -8,7 +8,7 @@ import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { authFetch } from "@/lib/auth-fetch";
 import { getPendingEvents } from "@/lib/idb-queue";
 import { cn } from "@/lib/cn";
-import { isRubberQueueRow, rubberQueueMessage, type RubberQueueRow } from "@/lib/rubber-bills/central-queue-contract";
+import { isRubberQueueDraft, isRubberQueueRow, rubberQueueMessage, type RubberQueueRow } from "@/lib/rubber-bills/central-queue-contract";
 import { RUBBER_QUEUE_ENDPOINT, isCentralRubberEvent } from "@/lib/rubber-bills/central-sync";
 import { rubberBillFromSyncEvent } from "@/lib/rubber-bills/local-feed";
 import type { RubberBill } from "@/types";
@@ -66,7 +66,7 @@ export function RubberCentralQueueStatus({ ownerUserId, locationId, locationName
   });
   const rows = query.data?.rows ?? [];
   const localOnly = (local.data ?? []).filter(event => isCentralRubberEvent(event)
-    && !(event as typeof event & { centralAccepted?: boolean }).centralAccepted
+    && !event.centralAccepted
     && !rows.some(row => row.commandId === event.payload.commandId));
   const notices = (query.data?.notices ?? []).filter(row => !noticeAcks.includes(rubberQueueNoticeKey(row)));
 
@@ -88,9 +88,9 @@ export function RubberCentralQueueStatus({ ownerUserId, locationId, locationName
     try {
       const params = new URLSearchParams({ locationId, draftCommandId: row.commandId });
       const response = await authFetch(`${RUBBER_QUEUE_ENDPOINT}?${params}`, { cache: "no-store" }, { background: true });
-      const data = await response.json();
-      if (!response.ok || data?.commandId !== row.commandId || data.locationId !== locationId
-        || data.clientTempId !== row.clientTempId || !data.payload) throw new Error("ร่างเปลี่ยนแล้ว กรุณาโหลดคิวใหม่");
+      const data: unknown = await response.json();
+      if (!response.ok || !isRubberQueueDraft(data) || data.commandId !== row.commandId || data.locationId !== locationId
+        || data.clientTempId !== row.clientTempId || data.actorUserId !== row.actorUserId) throw new Error("ร่างเปลี่ยนแล้ว กรุณาโหลดคิวใหม่");
       if (data.payload.inputMethod === "ocr" && data.actorUserId !== ownerUserId) throw new Error("รูป OCR ผูกกับผู้ส่งเดิม ให้ผู้ส่งเดิมเปิดแก้ไขหรือเลือกรูปใหม่");
       const bill = rubberBillFromSyncEvent({ id: row.clientTempId, entity: "rubber_bills", ownerUserId, locationId,
         operation: "create", payload: data.payload, timestamp: Date.parse(row.acceptedAt), status: "failed", failureHttpStatus: 400 }, ownerUserId);

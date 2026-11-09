@@ -10,8 +10,8 @@ import { prepareRubberBillCommand } from "./command";
 import { RubberPreparationError, isUnsubmittedRubberPreparationFailure } from "@/lib/rubber-bills/preparation-failure";
 import { notifyRubberBackgroundFailure, notifyRubberManagerOutcome } from "./background-notifications";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
-import { removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
-import { preserveRubberApprovalInCache } from "./feed-cache";
+import { preserveRubberApprovalInCache, removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
+import { isJsonObject } from "@/lib/validation/primitives";
 
 export const RUBBER_QUEUE_ENDPOINT = "/api/lanflow/rubber-bills/queue";
 const flight = createScopedSingleFlight();
@@ -26,7 +26,7 @@ export function subscribeRubberQueueActivity(owner: string, listener: () => void
     if (!listeners.size) activityListeners.delete(owner);
   };
 }
-type CentralEvent = SyncEvent & { nextAttemptAt?: number; attempts?: number; centralAccepted?: boolean };
+type CentralEvent = SyncEvent & { nextAttemptAt?: number; attempts?: number };
 export const isCentralRubberEvent = (event: SyncEvent) => event.entity === "rubber_bills" && event.payload.centralQueue === true;
 
 export function fairRubberQueueRound(events: CentralEvent[], limit = 20) {
@@ -89,21 +89,50 @@ export async function runRubberCentralQueue(queryClient: QueryClient, ownerUserI
   });
 }
 
+export function planRubberQueueWork(work: CentralEvent[], now: number, forceReceiptCheck = false) {
+  const unresolvedAdmissions = new Map<string, CentralEvent>();
+  for (const event of work) {
+    if (event.status !== "pending" || event.centralAccepted || !event.serverSubmissionAttempted) continue;
+    const previous = unresolvedAdmissions.get(event.locationId);
+    if (!previous || (event.queueId ?? Infinity) < (previous.queueId ?? Infinity)) {
+      unresolvedAdmissions.set(event.locationId, event);
+    }
+  }
+  const waitingAdmissions = new Set<string>();
+  let nextPendingAttemptAt: number | undefined;
+  const events = work.filter(event => {
+    if (isUnsubmittedRubberPreparationFailure(event)) return false;
+    const due = (event.nextAttemptAt ?? 0) <= now;
+    const unresolved = unresolvedAdmissions.get(event.locationId);
+    if (!event.centralAccepted && unresolved && unresolved !== event) {
+      if (due) waitingAdmissions.add(event.locationId);
+      return false;
+    }
+    if (event.status === "pending") {
+      const attemptAt = event.nextAttemptAt ?? 0;
+      nextPendingAttemptAt = Math.min(nextPendingAttemptAt ?? attemptAt, attemptAt);
+    }
+    return due || (forceReceiptCheck && event.centralAccepted && event.status === "pending");
+  });
+  return { events, unresolvedAdmissions, waitingAdmissions, nextPendingAttemptAt };
+}
+
 async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId: string, forceReceiptCheck: boolean) {
     if (!ownerUserId || !navigator.onLine) return;
-    const events = (await rubberOwnerWork(ownerUserId)).filter(event => !isUnsubmittedRubberPreparationFailure(event)
-      && ((event.nextAttemptAt ?? 0) <= Date.now()
-      || (forceReceiptCheck && event.centralAccepted && event.status === 'pending')))
-      .sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0));
+    const work = await rubberOwnerWork(ownerUserId);
+    const { events, unresolvedAdmissions, waitingAdmissions } = planRubberQueueWork(work, Date.now(), forceReceiptCheck);
+    events.sort((a, b) => (a.nextAttemptAt ?? 0) - (b.nextAttemptAt ?? 0));
     const changed = new Set<string>();
     const localStatusChanges = new Set<string>();
-    const deferredBranches = new Set<string>();
+    const unavailableBranches = new Set<string>();
+    const deferredAdmissions = new Set<string>();
     for (let snapshot of fairRubberQueueRound(events)) {
       if (!navigator.onLine) break;
-      if (deferredBranches.has(snapshot.locationId)) continue;
+      if (unavailableBranches.has(snapshot.locationId)
+        || (!snapshot.centralAccepted && deferredAdmissions.has(snapshot.locationId))) continue;
       if (!await canSyncCurrentSession(ownerUserId, snapshot.locationId, { background: true })) {
         if (!await canSyncCurrentSession(ownerUserId, undefined, { background: true })) break;
-        deferredBranches.add(snapshot.locationId);
+        unavailableBranches.add(snapshot.locationId);
         await reconcileSyncEventsIfCurrent([snapshot], { ...snapshot, nextAttemptAt: Date.now() + 30_000 } as CentralEvent);
         continue;
       }
@@ -117,7 +146,7 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
           if (snapshot.errorMessage) localStatusChanges.add(snapshot.locationId);
           snapshot = prepared;
         } catch (error) {
-          deferredBranches.add(snapshot.locationId);
+          deferredAdmissions.add(snapshot.locationId);
           const permanent = error instanceof RubberPreparationError && !snapshot.serverSubmissionAttempted && !snapshot.centralAccepted;
           const next: CentralEvent = { ...snapshot, nextAttemptAt: Date.now() + 15000,
             status: permanent ? "failed" : "pending", serverSubmissionAttempted: snapshot.serverSubmissionAttempted ?? false,
@@ -129,8 +158,18 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
         }
       }
       // The marked immutable snapshot survives lost admission responses.
-      const event: CentralEvent = { ...snapshot, serverSubmissionAttempted: true };
+      let event: CentralEvent = { ...snapshot, serverSubmissionAttempted: true };
       if (!await reconcileSyncEventsIfCurrent([snapshot], event)) continue;
+      // An unresolved submission can affect admission order. Reading an
+      // already admitted command cannot change that order.
+      const deferUnconfirmedAdmission = () => {
+        if (!event.centralAccepted) deferredAdmissions.add(event.locationId);
+      };
+      const resumeWaitingAdmissions = () => {
+        if (unresolvedAdmissions.get(event.locationId) === snapshot && waitingAdmissions.has(event.locationId)) {
+          requestedOwners.add(ownerUserId);
+        }
+      };
       try {
         const params = new URLSearchParams({ commandId: event.payload.commandId, locationId: event.locationId });
         const response = await authFetch(event.centralAccepted ? `${RUBBER_QUEUE_ENDPOINT}?${params}` : RUBBER_QUEUE_ENDPOINT,
@@ -147,8 +186,19 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
               : isConfirmedRubberSyncResult(row.result, event);
             const managerRetired = manager && row.result.status === "discarded" && row.result.commandId === event.payload.commandId
               && row.result.operation === manager && row.result.clientTempId === event.id;
+            if (confirmed || managerRetired) {
+              // Persist admission before acknowledging locally. If that
+              // transaction fails, recovery reads the same server receipt.
+              const accepted: CentralEvent = { ...event, centralAccepted: true, status: "pending",
+                nextAttemptAt: Date.now() + 15_000 };
+              if (!await reconcileSyncEventsIfCurrent([event], accepted)) continue;
+              if (!event.centralAccepted) changed.add(event.locationId);
+              event = accepted;
+              resumeWaitingAdmissions();
+            }
             if (confirmed && !manager && row.result.status === "pending_approval") await preserveRubberApprovalInCache(queryClient, event, String(row.result.requestId));
             if ((confirmed || managerRetired) && await acknowledgeRubberCommand(event, row.result)) {
+              resumeWaitingAdmissions();
               if (manager) notifyRubberManagerOutcome(event, managerRetired ? rubberQueueMessage(row)
                 : manager === "approve" ? "อนุมัติคำขอแล้ว" : "ลบคำขอแล้ว", !managerRetired);
               const scope = { ownerUserId, locationId: event.locationId };
@@ -164,7 +214,7 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
               } catch (error) { console.warn("Unable to refresh completed Rubber command cache", error); }
               changed.add(event.locationId);
             } else if (!confirmed && !managerRetired) {
-              deferredBranches.add(event.locationId);
+              deferUnconfirmedAdmission();
               await reconcileSyncEventsIfCurrent([event], { ...event, nextAttemptAt: Date.now() + 15_000 } as CentralEvent);
             }
             continue;
@@ -178,28 +228,43 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
             errorMessage: row.state === "queued" ? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล" : rubberQueueMessage(row),
             nextAttemptAt: now + delay };
           if (await reconcileSyncEventsIfCurrent([event], next)) {
+            resumeWaitingAdmissions();
             if (!event.centralAccepted || snapshot.status !== next.status || snapshot.failureHttpStatus !== next.failureHttpStatus) changed.add(event.locationId);
             else if ((event.errorMessage ?? "เซิร์ฟเวอร์รับแล้ว รอประมวลผล") !== next.errorMessage) localStatusChanges.add(event.locationId);
             if (correction) await notifyRubberBackgroundFailure(next);
           }
         } else {
-          if ([400, 409].includes(response.status) && event.payload.billNumbering !== undefined && row && typeof row === "object"
-            && "errorCode" in row && row.errorCode === "NUMBERING_REJECTED"
-            && "commandId" in row && row.commandId === event.payload.commandId && "clientTempId" in row && row.clientTempId === event.id
-            && "operation" in row && row.operation === event.operation) {
+          const matchesRejection = isJsonObject(row)
+            && row.commandId === event.payload.commandId && row.clientTempId === event.id;
+          const action = event.payload.queueAction;
+          if (matchesRejection && response.status === 409 && !event.centralAccepted
+            && (action === "approve" || action === "cancel") && row.errorCode === "REQUEST_CHANGED"
+            && row.queueAction === action && row.targetRequestId === event.payload.targetRequestId) {
+            if (await reconcileSyncEventsIfCurrent([event], undefined, true)) {
+              resumeWaitingAdmissions();
+              changed.add(event.locationId);
+              notifyRubberManagerOutcome(event, "คำขอเปลี่ยนแล้ว กรุณาตรวจรายการล่าสุด", false);
+            }
+            continue;
+          }
+          if (matchesRejection && [400, 409].includes(response.status) && event.payload.billNumbering !== undefined
+            && row.errorCode === "NUMBERING_REJECTED" && row.operation === event.operation) {
             const failed: CentralEvent = { ...event, status: "failed", failureCode: "NUMBERING_REJECTED",
               failureHttpStatus: response.status, nextAttemptAt: Number.MAX_SAFE_INTEGER,
               errorMessage: "เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแลก่อนลองใหม่" };
-            if (await reconcileSyncEventsIfCurrent([event], failed)) changed.add(event.locationId);
+            if (await reconcileSyncEventsIfCurrent([event], failed)) {
+              resumeWaitingAdmissions();
+              changed.add(event.locationId);
+            }
             continue;
           }
-          deferredBranches.add(event.locationId);
+          deferUnconfirmedAdmission();
           const attempts = (event.attempts ?? 0) + 1;
           await reconcileSyncEventsIfCurrent([event], { ...event, attempts,
             nextAttemptAt: Date.now() + Math.min(120_000, 5_000 * 2 ** Math.min(attempts, 5)) } as CentralEvent);
         }
       } catch {
-        deferredBranches.add(event.locationId);
+        deferUnconfirmedAdmission();
         await reconcileSyncEventsIfCurrent([event], { ...event, nextAttemptAt: Date.now() + 15_000 } as CentralEvent);
       }
     }

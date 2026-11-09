@@ -3,6 +3,7 @@ import { requireSystemManager } from "@/lib/server/auth";
 import { cashTransferErrorResponse } from "@/lib/server/cash-branch-transfer-response";
 import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 import { isMatchingApprovalDecision } from "@/lib/income-expense/approval-decision-response";
+import { isPostgresText } from "@/lib/validation/primitives";
 
 export async function POST(
   request: NextRequest,
@@ -18,7 +19,7 @@ export async function POST(
       !isUuid(id)
       || !isJsonObject(body)
       || (body.decision !== "approved" && body.decision !== "rejected")
-      || (body.comment != null && typeof body.comment !== "string")
+      || (body.comment != null && (typeof body.comment !== "string" || !isPostgresText(body.comment)))
     ) {
       return NextResponse.json({ error: "ข้อมูลคำตัดสินไม่ถูกต้อง" }, { status: 400 });
     }
@@ -36,7 +37,7 @@ export async function POST(
     if (!isMatchingApprovalDecision(data, id, body.decision)) {
       return cashTransferErrorResponse("CASH_TRANSFER_DECISION_RESPONSE_INVALID");
     }
-    return NextResponse.json(data);
+    return NextResponse.json({ requestId: data.requestId, status: body.decision });
   } catch {
     return NextResponse.json({ error: "ดำเนินการรายการเงินสดไม่สำเร็จ" }, {
       status: 503, headers: { "Cache-Control": "private, no-store" },

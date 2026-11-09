@@ -1,4 +1,5 @@
 import { isRubberBillNumbering, isNumberedRubberFinal } from "@/lib/rubber-bills/numbering-contract";
+import { isPostgresText } from "@/lib/validation/primitives";
 import {
   isCanonicalDate,
   isFeedTimestamp,
@@ -370,6 +371,7 @@ export function isValidApprovalComment(value: unknown) {
   return value == null || (
     typeof value === "string"
     && value.length <= 1_000
+    && isPostgresText(value)
     && !CONTROL_CHARACTERS.test(value)
   );
 }

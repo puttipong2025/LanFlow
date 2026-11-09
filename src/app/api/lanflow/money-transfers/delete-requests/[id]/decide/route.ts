@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { requireSystemManager } from "@/lib/server/auth";
 import { isJsonObject, isUuid } from "@/lib/server/management-route-error";
 import { isMatchingApprovalDecision } from "@/lib/income-expense/approval-decision-response";
+import { isPostgresText } from "@/lib/validation/primitives";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try { return await decide(request, params); }
@@ -27,7 +28,7 @@ async function decide(request: Request, params: Promise<{ id: string }>) {
     return NextResponse.json({ error: "ข้อมูลไม่ถูกต้อง" }, { status: 400 });
   }
   const comment = payload.comment?.trim() || null;
-  if (comment && (comment.includes("\u0000") || /[\uD800-\uDFFF]/u.test(comment))) {
+  if (comment && !isPostgresText(comment)) {
     return NextResponse.json({ error: "เหตุผลมีอักขระที่ระบบไม่รองรับ" }, { status: 400 });
   }
   // Match PostgreSQL char_length for Unicode comments.
@@ -65,5 +66,5 @@ async function decide(request: Request, params: Promise<{ id: string }>) {
       { status: 500 },
     );
   }
-  return NextResponse.json(data);
+  return NextResponse.json({ requestId: data.requestId, status: payload.decision });
 }

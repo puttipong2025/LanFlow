@@ -60,7 +60,7 @@ test("count alerts share the existing dialog and acknowledge closes all pages", 
   } }));
   await page.goto("/");
   const dialog = page.getByRole("alertdialog", { name: "แจ้งเตือน", exact: true });
-  await page.getByRole("button", { name: "ตรวจแจ้งเตือน", exact: true }).click();
+  await page.getByRole("button", { name: "แจ้งเตือน", exact: true }).click();
   await dialog.getByRole("button", { name: "นับเงิน · 1", exact: true }).click();
   await expect(dialog.getByText("เกินกำหนด 3 วัน", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "รับทราบ", exact: true }).click();

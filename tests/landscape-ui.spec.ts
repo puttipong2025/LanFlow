@@ -66,6 +66,15 @@ for (const viewport of landscapeViewports) {
       expect(listboxBox!.x + listboxBox!.width).toBeLessThanOrEqual(viewport.width);
       await page.keyboard.press("Escape");
 
+      const accountMenu = page.getByRole("button", { name: "เมนูบัญชี", exact: true });
+      const menuBox = (await accountMenu.boundingBox())!;
+      expect(menuBox.x + menuBox.width).toBeGreaterThan(viewport.width - 40);
+      await accountMenu.click();
+      await expect(accountMenu).toHaveAttribute("aria-expanded", "true");
+      await page.keyboard.press("Escape");
+      await expect(accountMenu).toHaveAttribute("aria-expanded", "false");
+      await expect(accountMenu).toBeFocused();
+      await accountMenu.click();
       const passwordButton = page.getByRole("button", { name: "เปลี่ยนรหัสผ่าน" });
       await passwordButton.click();
       const dialog = page.getByRole("dialog", { name: "เปลี่ยนรหัสผ่านของฉัน" });

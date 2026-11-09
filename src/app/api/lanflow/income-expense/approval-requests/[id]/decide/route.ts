@@ -8,12 +8,6 @@ import {
   publicIncomeExpenseErrorMessage,
 } from "@/lib/income-expense/contracts";
 
-type DecisionRpcResponse = {
-  status?: string;
-  errorMessage?: string;
-  requestId?: unknown;
-};
-
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -22,17 +16,12 @@ export async function POST(
   const adminCheck = await requireSystemManager(request);
   if (!adminCheck.ok) return adminCheck.response;
 
-  const { id } = await params;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
-  }
-  if (!isJsonObject(body)) {
-    return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
-  }
-  const decision = body.decision;
+    const { id } = await params;
+    const body: unknown = await request.json().catch(() => null);
+    if (!isJsonObject(body)) {
+      return NextResponse.json({ status: "failed", errorMessage: "Invalid request body" }, { status: 400 });
+    }
+    const decision = body.decision;
 
     if (!isUuid(id)) {
       return NextResponse.json({ status: "failed", errorMessage: "Invalid request ID" }, { status: 400 });
@@ -60,7 +49,7 @@ export async function POST(
       return NextResponse.json({ status: "failed", errorMessage: "ดำเนินการคำขอไม่สำเร็จ" }, { status: 503 });
     }
 
-    const rawResult = (data || {}) as DecisionRpcResponse;
+    const rawResult = isJsonObject(data) ? data : {};
     const result = (rawResult.status === "conflict" || rawResult.status === "failed")
       && rawResult.requestId === undefined
       ? { ...rawResult, requestId }
@@ -72,21 +61,18 @@ export async function POST(
         { status: 500 },
       );
     }
-    if (result.status === "approved" || result.status === "rejected") {
-      return NextResponse.json(result, { status: 200 });
+    if (result.status === "approved") {
+      return NextResponse.json({ requestId, status: result.status, incomeExpenseId: result.incomeExpenseId });
     }
-
-    if (result.status === "conflict") {
-      return NextResponse.json({
-        ...result,
-        errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ดำเนินการคำขอไม่สำเร็จ"),
-      }, { status: 409 });
+    if (result.status === "rejected") {
+      return NextResponse.json({ requestId, status: result.status });
     }
 
     return NextResponse.json({
-      ...result,
+      requestId,
+      status: result.status,
       errorMessage: publicIncomeExpenseErrorMessage(result.errorMessage, "ดำเนินการคำขอไม่สำเร็จ"),
-    }, { status: 400 });
+    }, { status: result.status === "conflict" ? 409 : 400 });
   } catch (error: unknown) {
     console.error("Decide income-expense approval request API error:", error);
     return NextResponse.json({ status: "failed", errorMessage: "ดำเนินการคำขอไม่สำเร็จ" }, {

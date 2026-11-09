@@ -12,16 +12,27 @@ const accepted = { commandId, actorUserId: owner, locationId: branch, clientTemp
 type Routes = typeof import("../src/app/api/lanflow/rubber-bills/queue/route");
 function route(data: unknown, error: unknown = null, authOk = true,
   immediate: () => Promise<boolean> = async () => false, refreshed: unknown = data) {
-  let calls = 0; const names: string[] = [];
+  let calls = 0; const names: string[] = []; const args: unknown[] = [];
   const handlers = loadSourceModule<Routes>("src/app/api/lanflow/rubber-bills/queue/route.ts", {
     "@/lib/server/rubber-queue-immediate": { processRubberQueueImmediately: immediate },
     "@/lib/server/auth": { requireAuth: async () => authOk ? { ok: true, auth: { sub: owner },
-      supabase: { rpc: async (name: string) => { names.push(name); calls++; return { data: calls === 1 ? data : typeof refreshed === 'function' ? await refreshed() : refreshed, error }; } } } : { ok: false, response: Response.json({}, { status: 401 }) } },
+      supabase: { rpc: async (name: string, params: unknown) => { names.push(name); args.push(params); calls++; return { data: calls === 1 ? data : typeof refreshed === 'function' ? await refreshed() : refreshed, error }; } } } : { ok: false, response: Response.json({}, { status: 401 }) } },
   });
-  return { ...handlers, calls: () => calls, names };
+  return { ...handlers, calls: () => calls, names, args };
 }
 const post = (value: unknown) => new Request("https://example.test/api/lanflow/rubber-bills/queue", {
   method: "POST", body: JSON.stringify(value), headers: { "Content-Type": "application/json" },
+});
+
+test("a changed manager request returns an identity-bound admission rejection", async () => {
+  const manager = { ...payload, operation: "update", queueAction: "approve",
+    targetRequestId: owner, clientTempId: `request:${owner}` };
+  const response = await route(null, { message: "REQUEST_CHANGED" }).POST(post(manager));
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    errorCode: "REQUEST_CHANGED", commandId, clientTempId: manager.clientTempId,
+    queueAction: "approve", targetRequestId: owner,
+  });
 });
 
 test("numbering validation rejection identifies the unchanged command instead of masquerading as an outage", async () => {
@@ -74,10 +85,63 @@ test("POST accepts equivalent UUID casing without reporting an already committed
 });
 
 test("PATCH accepts a canonical receipt for a differently cased UUID", async () => {
-  const response = await route(accepted).PATCH(new Request("https://example.test", {
+  const response = await route({ ...accepted, version: 2 }).PATCH(new Request("https://example.test", {
     method: "PATCH", body: JSON.stringify({ commandId: commandId.toUpperCase(), version: 1, action: "retry" }),
   }));
   expect(response.status).toBe(200);
+});
+
+test("PATCH only acknowledges the next version and state for the requested action", async () => {
+  const mutate = (row: unknown, action: "retry" | "retire") => route(row).PATCH(new Request("https://example.test", {
+    method: "PATCH", body: JSON.stringify({ commandId, version: 1, action }),
+  }));
+  const queued = { ...accepted, version: 2 };
+  const retired = {
+    ...queued, state: "done", errorCode: "ACCOUNT_CLOSED", completedAt: accepted.acceptedAt,
+    result: { status: "discarded", operation: accepted.action, clientTempId: accepted.clientTempId, commandId },
+  };
+  expect((await mutate(queued, "retry")).status).toBe(200);
+  expect((await mutate(retired, "retire")).status).toBe(200);
+  expect((await mutate(accepted, "retry")).status).toBe(503);
+  expect((await mutate(retired, "retry")).status).toBe(503);
+  expect((await mutate(queued, "retire")).status).toBe(503);
+});
+
+test("GET rejects ambiguous command selectors and a cursor ID without its timestamp", async () => {
+  for (const query of [`commandId=${commandId}&draftCommandId=${owner}`, `beforeId=${commandId}`]) {
+    const handlers = route(accepted);
+    const response = await handlers.GET(new Request(`https://example.test?locationId=${branch}&${query}`));
+    expect(response.status).toBe(400);
+    expect(handlers.calls()).toBe(0);
+  }
+});
+
+test("queue search preserves full Unicode characters and rejects NUL before RPC", async () => {
+  const data = { rows: [], counts: { pending: 0, attention: 0 } };
+  const request = (search: string) => new Request(`https://example.test?${new URLSearchParams({ locationId: branch, search })}`);
+  const valid = route(data);
+  const atLimit = "ก".repeat(511) + "📋";
+  expect((await valid.GET(request(atLimit + "x"))).status).toBe(200);
+  expect(valid.args).toEqual([expect.objectContaining({ p_search: atLimit })]);
+  const invalid = route(data);
+  expect((await invalid.GET(request("ก\u0000"))).status).toBe(400);
+  expect(invalid.calls()).toBe(0);
+});
+
+test("draft lookup binds the editable payload to the selected queue entry", async () => {
+  const clientTempId = "local-draft";
+  const draft = {
+    commandId, actorUserId: owner, locationId: branch, clientTempId,
+    payload: { commandId, locationId: branch, clientTempId, operation: "create" },
+  };
+  const read = (result: unknown) => route(result).GET(new Request(
+    `https://example.test?locationId=${branch}&draftCommandId=${commandId}`,
+  ));
+  expect((await read(draft)).status).toBe(200);
+  for (const mismatch of [{ locationId: owner }, { clientTempId: "other" },
+    { commandId: owner }, { operation: "delete" }, { actorUserId: branch }]) {
+    expect((await read({ ...draft, payload: { ...draft.payload, ...mismatch } })).status).toBe(503);
+  }
 });
 
 test("POST returns 202 admission without claiming business success and disables caching", async () => {
@@ -161,6 +225,19 @@ test("account mismatch and oversized body are rejected before RPC", async () => 
   expect((await handlers.POST(post({ ...payload, items: "x".repeat(1024 * 1024) }))).status).toBe(400);
   expect(handlers.calls()).toBe(0);
 });
+
+test("queue rejects malformed UTF-8 before admission", async () => {
+  const json = JSON.stringify({ ...payload, note: "marker" });
+  const bytes = Buffer.from(json);
+  bytes[bytes.indexOf("marker")] = 0xff;
+  const handler = route(accepted);
+  const response = await handler.POST(new Request("https://example.test", {
+    method: "POST", body: Uint8Array.from(bytes),
+  }));
+  expect(response.status).toBe(400);
+  expect(handler.calls()).toBe(0);
+  expect((await route(accepted).POST(post({ ...payload, note: "ภาษาไทย 📋" }))).status).toBe(202);
+});
 test("authentication and database details never become success receipts", async () => {
   expect((await route(accepted, null, false).POST(post(payload))).status).toBe(401);
   const response = await route(null, { message: 'relation private.secret does not exist' }).POST(post(payload));
@@ -216,4 +293,21 @@ test("manager receipts require a string business operation while valid approvals
     expect((await handlers.GET(new Request(`https://example.test?locationId=${branch}`))).status)
       .toBe(typeof operation === "string" ? 200 : 503);
   }
+});
+
+test("manager receipts require the request namespace and the initial revision for created bills", async () => {
+  const manager = {
+    ...accepted, clientTempId: `request:${owner}`, action: "approve", state: "done",
+    completedAt: accepted.acceptedAt,
+    result: {
+      status: "approved", commandId, requestId: owner, billId: branch, operation: "create",
+      syncResult: { status: "synced", id: branch, revisionNo: 1, serverBillNo: "S-1", serverReceivedAt: accepted.acceptedAt },
+    },
+  };
+  const read = (row: unknown) => route(row).GET(new Request(`https://example.test?locationId=${branch}&commandId=${commandId}`));
+  expect((await read(manager)).status).toBe(200);
+  expect((await read({ ...manager, clientTempId: `invalid:${owner}` })).status).toBe(503);
+  expect((await read({ ...manager, result: {
+    ...manager.result, syncResult: { ...manager.result.syncResult, revisionNo: 2 },
+  } })).status).toBe(503);
 });

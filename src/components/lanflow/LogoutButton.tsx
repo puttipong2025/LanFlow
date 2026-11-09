@@ -8,15 +8,18 @@ const OFFLINE_LOGOUT_MESSAGE = "ออกจากระบบได้เมื
 export function LogoutButton({
   online,
   onLogout,
+  onConfirmOpen,
   className = "",
 }: {
   online: boolean;
   onLogout: () => void | Promise<void>;
+  onConfirmOpen?: () => void;
   className?: string;
 }) {
   async function handleLogout() {
     if (!online) return;
 
+    onConfirmOpen?.();
     const result = await appSwal.fire({
       title: "ยืนยันออกจากระบบ?",
       text: "คุณต้องการออกจากบัญชีนี้หรือไม่",

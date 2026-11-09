@@ -45,7 +45,7 @@ test("Rubber Export loads available bills once before the guard and opens only a
 test("edit paths and excluded Rubber Bill actions do not request confirmation", () => {
   const rubber = source("src/components/rubber-bills/RubberBillsModule.tsx");
   const rubberEdit = between(rubber, "function openEdit", "function openView");
-  const queueActions = between(rubber, "บัตรคิว", "ตั้งค่าและอนุมัติบิลยาง");
+  const queueActions = between(rubber, "บัตรคิว", "onClick={() => void openBranchReceipt()}");
   const wex = source("src/components/rubber-bills/ExportVehicleWeighBillsModal.tsx");
   const wexEdit = between(wex, "async function openEdit", "async function submitForm");
 

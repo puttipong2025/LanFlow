@@ -52,7 +52,7 @@ test("shows one read-only share action for one synced sale parent", async ({ pag
   await page.locator("#phone").fill(process.env.TEST_PHONE ?? "0800000000");
   await page.locator("#password").fill(process.env.TEST_PASSWORD ?? "password123");
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
-  await expect(page.getByRole("button", { name: "ออกจากระบบ", exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "เมนูบัญชี", exact: true })).toBeVisible({ timeout: 30_000 });
 
   const meResponse = await page.request.get("/api/auth/me");
   expect(meResponse.ok()).toBeTruthy();

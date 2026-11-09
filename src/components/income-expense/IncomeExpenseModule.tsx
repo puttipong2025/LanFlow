@@ -1,6 +1,6 @@
 import { IncomeExpenseOfflineHistory } from "./IncomeExpenseOfflineHistory";
 import { persistIncomeExpenseSubmissions } from "@/lib/income-expense/persist-submissions";
-import { ArrowRightLeft, ExternalLink, Eye, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
+import { ArrowRightLeft, ExternalLink, Eye, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useRef, useState } from "react";
 import { formatCurrency } from "@/lib/format";
@@ -104,12 +104,7 @@ export function IncomeExpenseModule({
     settings: approvalSettings,
     submitForApprovalIfNeeded,
     validateLocalCreate,
-  } = useIncomeExpenseApprovals({
-    includePendingCount: false,
-  });
-  const approvalButtonLabel = isOnline && pendingApprovalCount > 0
-    ? `ตั้งค่าและอนุมัติรับ-จ่าย รออนุมัติ ${pendingApprovalCount} รายการ`
-    : "ตั้งค่าและอนุมัติรับ-จ่าย";
+  } = useIncomeExpenseApprovals();
   const activeCashDetailId = cashReceiptId ?? cashDetailsId ?? cashEditingId;
   const cashTransfers = useCashBranchTransfers(profile.id, selectedLocation.id, activeCashDetailId);
   const branchReceipts = useBranchTransferReceipts(profile.id, selectedLocation.id, branchReceiptId);
@@ -523,34 +518,6 @@ export function IncomeExpenseModule({
             </button>
           )}
           <BranchTransferReceiptButton online={isOnline} total={branchReceipts.pendingTotal} firstId={pendingBranchReceipts[0]?.id} onOpen={setBranchReceiptId} />
-          {canManageSystem && (
-            <button
-              type="button"
-              onClick={() => {
-                if (!isOnline) {
-                  toast.error("ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น");
-                  return;
-                }
-                setApprovalRequestId(undefined);
-                setApprovalModalOpen(true);
-              }}
-              disabled={!isOnline}
-              aria-label={approvalButtonLabel}
-              title={isOnline ? approvalButtonLabel : "ตั้งค่าและอนุมัติรับ-จ่ายใช้ได้เมื่อออนไลน์เท่านั้น"}
-              className="focus-ring flex h-10 items-center justify-center gap-2 rounded-md bg-settings px-3 text-sm font-semibold text-white hover:bg-settings/90 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              <Settings size={18} />
-              ตั้งค่าและอนุมัติรับ-จ่าย
-              {isOnline && pendingApprovalCount > 0 && (
-                <span
-                  aria-hidden="true"
-                  className="min-w-5 rounded-full bg-amber px-1.5 py-0.5 text-center text-[10px] font-extrabold leading-none text-white"
-                >
-                  {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
-                </span>
-              )}
-            </button>
-          )}
         </div>
       </div>
 

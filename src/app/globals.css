@@ -95,12 +95,14 @@ div {
     gap: 0.75rem;
     padding-top: 0.375rem;
     padding-bottom: 0.375rem;
+    padding-right: 4rem;
   }
 
   .landscape-compact-identity {
     min-width: 9rem;
     max-width: 12rem;
     flex: 0 1 12rem;
+    padding-right: 0;
   }
 
   button {
@@ -116,8 +118,7 @@ div {
     gap: 0.5rem;
   }
 
-  .landscape-compact-actions > *,
-  .landscape-account-actions > * {
+  .landscape-compact-actions > * {
     flex-shrink: 0;
   }
 
@@ -126,9 +127,8 @@ div {
     min-width: 12rem;
   }
 
-  .landscape-account-actions {
-    flex-wrap: nowrap;
-    gap: 0.5rem;
+  .landscape-account-menu {
+    top: 0.375rem;
   }
 
   .landscape-compact-navigation {

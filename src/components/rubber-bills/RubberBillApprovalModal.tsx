@@ -8,7 +8,7 @@ import { RubberApprovalPolicyPanel } from "@/components/rubber-bills/RubberAppro
 import { useLocations } from "@/hooks/useLocations";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useRubberBillApprovals } from "@/hooks/useRubberBillApprovals";
-import { useRubberBillList, useRubberBillWorkCounts } from "@/hooks/useRubberBillList";
+import { useRubberApprovalQueue } from "@/hooks/useRubberApprovalQueue";
 import type {
   RubberBillApprovalReason,
   Profile,
@@ -40,12 +40,10 @@ export function RubberBillApprovalModal({
   onClose: () => void;
 }) {
   const isOnline = useOnlineStatus();
-  const [locationFilter, setLocationFilter] = useState(locationId);
-  const {
-    locations,
-    isLoading: locationsLoading,
-    error: locationsError,
-  } = useLocations();
+  const [locationFilter, setLocationFilter] = useState("all");
+  const allLocations = locationFilter === "all";
+  const { locations, isLoading: locationsLoading, error: locationsError } = useLocations();
+  const activeLocations = locations.filter((location) => location.active && profile.locationIds.includes(location.id));
   const {
     settings,
     isLoading: settingsLoading,
@@ -55,17 +53,10 @@ export function RubberBillApprovalModal({
     approveRequest,
     deleteRequest,
   } = useRubberBillApprovals({
-    locationId: locationFilter,
+    locationId: allLocations ? locationId : locationFilter,
     ownerUserId: profile.id,
   });
-  const queue = useRubberBillList({
-    ownerUserId: profile.id,
-    locationId: locationFilter,
-    mode: "pending_approval",
-    documentStatus: "any",
-    search: "",
-  });
-  const counts = useRubberBillWorkCounts(profile.id, locationFilter);
+  const queue = useRubberApprovalQueue(profile.id, activeLocations, locationFilter, isOnline);
   const [nonCurrentDateRequiresApproval, setNonCurrentDateRequiresApproval] = useState(false);
   const [page, setPage] = useState(1);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
@@ -88,7 +79,7 @@ export function RubberBillApprovalModal({
         if (!active) return;
         const pending = new Set<string>(requestLocksRef.current);
         for (const event of events) {
-          if (event.locationId === locationFilter && event.payload.queueAction
+          if ((allLocations || event.locationId === locationFilter) && event.payload.queueAction
               && event.status === "pending") pending.add(event.payload.targetRequestId);
         }
         setBusyIds(pending);
@@ -98,16 +89,12 @@ export function RubberBillApprovalModal({
     void refresh();
     const timer = window.setInterval(() => void refresh(), 1000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [profile.id, locationFilter]);
+  }, [profile.id, locationFilter, allLocations]);
 
   useEffect(() => {
     if (serverDateRule === undefined) return;
     setNonCurrentDateRequiresApproval(serverDateRule);
   }, [serverDateRule]);
-
-  useEffect(() => {
-    setLocationFilter(locationId);
-  }, [locationId]);
 
   useEffect(() => {
     setPage(1);
@@ -215,7 +202,7 @@ export function RubberBillApprovalModal({
   return (
     <ModalShell
       title="ตั้งค่าและอนุมัติบิลยาง"
-      subtitle={`รออนุมัติ ${counts.data?.pendingApproval ?? 0} รายการ`}
+      subtitle={queue.error ? `โหลดแล้ว ${queue.bills.length} รายการ` : `รออนุมัติ ${queue.bills.length} รายการ`}
       onClose={onClose}
       closeDisabled={isSaving}
       size="wide"
@@ -233,7 +220,8 @@ export function RubberBillApprovalModal({
                   onChange={(event) => setLocationFilter(event.target.value)}
                   className="focus-ring h-11 max-w-full rounded-lg border border-black/15 bg-white px-3"
                 >
-                  {locations.map((location) => (
+                  <option value="all">ทุกสาขา</option>
+                  {activeLocations.map((location) => (
                     <option key={location.id} value={location.id}>{location.name}</option>
                   ))}
                 </select>
@@ -242,24 +230,33 @@ export function RubberBillApprovalModal({
           </div>
 
           <div className="space-y-3">
+            {isOnline && queue.error && (
+              <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                <p>โหลดคิวอนุมัติไม่ครบ · {queue.error.message}</p>
+                <button type="button" disabled={queue.isRetrying} onClick={() => void queue.retryFailed()}
+                  className="focus-ring min-h-10 rounded-md border border-rose-200 bg-white px-3 font-semibold disabled:opacity-50">
+                  ลองใหม่
+                </button>
+              </div>
+            )}
             {!isOnline ? (
               <p role="alert" className="rounded-md bg-amber-50 px-3 py-4 text-center text-pretty text-sm text-amber-800">
                 งานอนุมัติบิลยางใช้ได้เมื่อออนไลน์เท่านั้น
               </p>
-            ) : locationsError || queue.error || counts.error ? (
-              <p role="alert" className="rounded-md bg-rose-50 px-3 py-4 text-center text-pretty text-sm text-rose-700">
-                {(locationsError ?? queue.error ?? counts.error) instanceof Error
-                  ? (locationsError ?? queue.error ?? counts.error as Error).message
-                  : "โหลดคำขอไม่สำเร็จ"}
+            ) : locationsError ? (
+              <p role="alert" className="rounded-md bg-rose-50 px-3 py-4 text-center text-pretty text-sm text-rose-800">
+                {locationsError.message}
               </p>
-            ) : locationsLoading || queue.isLoading || counts.isLoading ? (
+            ) : locationsLoading || queue.isLoading ? (
               <div className="space-y-2" role="status" aria-label="กำลังโหลดงานรออนุมัติ">
                 {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-md bg-field" />)}
               </div>
             ) : visibleRequests.length === 0 ? (
               <div className="py-6 text-center">
-                <p className="text-pretty text-sm text-ink/50">ไม่มีงานรออนุมัติในสาขานี้</p>
-                {locations.length > 1 && <p className="mt-1 text-pretty text-xs text-ink/45">เลือกสาขาอื่นเพื่อตรวจคิวถัดไป</p>}
+                <p className="text-pretty text-sm text-ink/50">
+                  {queue.error ? "ไม่มีรายการจากสาขาที่โหลดสำเร็จ" : allLocations ? "ไม่มีงานรออนุมัติ" : "ไม่มีงานรออนุมัติในสาขานี้"}
+                </p>
+                {!allLocations && activeLocations.length > 1 && <p className="mt-1 text-pretty text-xs text-ink/45">เลือกสาขาอื่นเพื่อตรวจคิวถัดไป</p>}
               </div>
             ) : visibleRequests.map((request) => {
               const summary = request.approvalProposedSummary ?? {
@@ -342,9 +339,6 @@ export function RubberBillApprovalModal({
               <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ก่อนหน้า</button>
               <span className="tabular-nums text-sm text-ink/60">หน้า {currentPage} / {totalPages}</span>
               <button type="button" disabled={currentPage >= totalPages} onClick={() => setPage(currentPage + 1)} className="focus-ring h-10 rounded-md border border-black/15 px-3 text-sm font-semibold disabled:opacity-40">ถัดไป</button>
-              {queue.hasMore && currentPage === totalPages && (
-                <button type="button" disabled={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()} className="focus-ring h-10 rounded-md bg-river px-3 text-sm font-semibold text-white disabled:opacity-50">{queue.isFetchingNextPage ? "กำลังโหลด..." : "โหลดงานถัดไป"}</button>
-              )}
             </nav>
           )}
         </section>

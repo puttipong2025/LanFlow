@@ -388,6 +388,7 @@ test.describe("last location preference", () => {
     await page.reload();
     await expect.poll(() => selectedAppLocationId(page)).toBe(targetLocationId);
 
+    await page.getByRole("button", { name: "เมนูบัญชี", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).click();
     await page.getByRole("button", { name: "ออกจากระบบ", exact: true }).last().click();
     await expect(page.getByRole("button", { name: "เข้าสู่ระบบ" })).toBeVisible({

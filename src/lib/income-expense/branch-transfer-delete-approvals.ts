@@ -1,5 +1,5 @@
 import { authFetch } from "@/lib/auth-fetch";
-import { readAllSupabaseRows } from "@/lib/supabase-pages";
+import { readAllSupabaseRowsByCreatedAt, requireSupabaseExactCount } from "@/lib/supabase-pages";
 import { readApprovalDecisionResponse } from "@/lib/income-expense/approval-decision-response";
 import type { BranchTransferDeleteRequest } from "@/types";
 
@@ -7,10 +7,11 @@ export async function loadBranchTransferDeleteRequests(supabase: any, locationId
   const buildQuery = () => supabase
     .from("branch_transfer_delete_requests")
     .select("id, location_id, location_name, transfer_display_no, amount, request_status, requested_by_name, requested_by_phone, decided_by_name, decided_by_phone, created_at");
-  const pendingRowsPromise = readAllSupabaseRows<any>((from, to) => {
+  const pendingRowsPromise = readAllSupabaseRowsByCreatedAt<any>((limit, before) => {
     let query = buildQuery().eq("request_status", "pending");
     if (locationId) query = query.eq("location_id", locationId);
-    return query.order("created_at", { ascending: false }).order("id", { ascending: false }).range(from, to);
+    if (before) query = query.or(before);
+    return query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit);
   });
   let historyQuery = buildQuery().neq("request_status", "pending");
   if (locationId) historyQuery = historyQuery.eq("location_id", locationId);
@@ -51,7 +52,7 @@ export async function loadPendingApprovalCount(supabase: any, locationId?: strin
   const results = await Promise.all([incomeExpense, cashTransfer, branchTransfer]);
   const failed = results.find((result) => result.error);
   if (failed?.error) throw new Error(failed.error.message || JSON.stringify(failed.error));
-  return results.reduce((total, result) => total + (result.count ?? 0), 0);
+  return results.reduce((total, result) => total + requireSupabaseExactCount(result.count), 0);
 }
 
 export async function decideBranchTransferDeleteRequest(input: {

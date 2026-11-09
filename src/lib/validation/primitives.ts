@@ -16,6 +16,10 @@ export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export function isPostgresText(value: string): boolean {
+  return !value.includes("\u0000") && !/[\uD800-\uDFFF]/u.test(value);
+}
+
 export function isIsoTimestamp(value: unknown): value is string {
   if (typeof value !== "string"
       || value.startsWith("0000")
@@ -26,6 +30,12 @@ export function isIsoTimestamp(value: unknown): value is string {
   const calendarDate = value.slice(0, 10);
   return new Date(`${calendarDate}T00:00:00.000Z`).toISOString().slice(0, 10)
     === calendarDate;
+}
+
+// Callers validate the ISO timestamp before converting it.
+export function isoTimestampMicros(value: string): bigint {
+  const fraction = /\.(\d{1,6})/.exec(value)?.[1]?.padEnd(6, "0") ?? "000000";
+  return BigInt(Date.parse(value)) * BigInt(1_000) + BigInt(fraction.slice(3));
 }
 
 export function isPostgresInteger(value: unknown): value is number {

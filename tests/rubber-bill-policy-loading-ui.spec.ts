@@ -8,7 +8,7 @@ async function openRubberPage(page: Page) {
     await notice.getByRole("button", { name: "รับทราบ", exact: true }).click();
   });
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "ออกจากระบบ" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "เมนูบัญชี", exact: true })).toBeVisible({ timeout: 30_000 });
   const initialPolicy = page.waitForResponse((response) => response.url().includes("/rubber-bills/approval-settings?"));
   await page.getByRole("button", { name: "บิลยาง", exact: true }).click();
   const policy = await (await initialPolicy).json();

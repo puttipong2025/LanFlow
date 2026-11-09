@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isoTimestampMicros, isPostgresText } from "@/lib/validation/primitives";
+import { isPendingRubberApprovalIdentity } from "@/lib/rubber-bills/approval";
 
 import { hasSystemManagerAccess, requireAuth } from "@/lib/server/auth";
 import {
@@ -178,11 +180,7 @@ function isFeedRow(
       ? `approval:${value.id}`
       : null;
   if (expectedIdentity === null || value.work_identity !== expectedIdentity) return false;
-  const hasValidPendingApproval = value.approval_pending === true
-    && isUuid(value.approval_request_id)
-    && (value.approval_operation === "create"
-      || value.approval_operation === "update"
-      || value.approval_operation === "delete")
+  const hasValidPendingApproval = isPendingRubberApprovalIdentity(value)
     && isApprovalReasonArray(value.approval_reasons);
   if (mode === "pending_approval" && (
     !hasValidPendingApproval
@@ -198,31 +196,25 @@ function isFeedRow(
         || (typeof item.price === "number" && item.price <= 0))
     ))
   )) return false;
-  if (value.row_kind === "bill") {
-    return value.approval_pending === false
-      || (hasValidPendingApproval && value.approval_operation !== "create");
-  }
-  return hasValidPendingApproval
-    && value.approval_request_id === value.id
-    && value.approval_operation === "create"
-    && value.revision_no === 0;
+  return hasValidPendingApproval || (value.row_kind === "bill" && value.approval_pending === false);
 }
 
-function hasExpectedFeedOrder(rows: Array<Record<string, unknown>>, mode: string) {
+function hasExpectedFeedOrder(rows: Array<Record<string, unknown>>, mode: string, cursor: Cursor | null) {
   const ascending = mode === "unpriced" || mode === "pending_approval";
-  const timestampMicros = (value: string) => {
-    const fraction = /\.(\d{1,6})/.exec(value)?.[1]?.padEnd(6, "0") ?? "000000";
-    return BigInt(Date.parse(value)) * BigInt(1_000) + BigInt(fraction.slice(3) || "0");
-  };
-  return rows.every((row, index) => {
-    if (index === 0) return true;
-    const previous = rows[index - 1];
-    const rowTime = timestampMicros(row.operational_sort_at as string);
-    const previousTime = timestampMicros(previous.operational_sort_at as string);
-    if (rowTime !== previousTime) return ascending ? rowTime > previousTime : rowTime < previousTime;
-    return ascending
-      ? (row.work_identity as string) > (previous.work_identity as string)
-      : (row.work_identity as string) < (previous.work_identity as string);
+  let previousTime = cursor ? isoTimestampMicros(cursor.sortAt) : null;
+  let previousIdentity = cursor?.workIdentity ?? "";
+  return rows.every((row) => {
+    const rowTime = isoTimestampMicros(row.operational_sort_at as string);
+    const rowIdentity = row.work_identity as string;
+    let isOrdered = true;
+    if (previousTime !== null) {
+      isOrdered = rowTime === previousTime
+        ? (ascending ? rowIdentity > previousIdentity : rowIdentity < previousIdentity)
+        : (ascending ? rowTime > previousTime : rowTime < previousTime);
+    }
+    previousTime = rowTime;
+    previousIdentity = rowIdentity;
+    return isOrdered;
   });
 }
 
@@ -231,11 +223,14 @@ function isFeedPayload(
   expectedLocationId: string,
   mode: string,
   documentStatus: string,
+  cursor: Cursor | null,
+  pageSize: number,
 ): value is FeedPayload {
   if (!isJsonObject(value)
       || !Array.isArray(value.rows)
+      || value.rows.length > pageSize
       || !value.rows.every((row) => isFeedRow(row, expectedLocationId, mode, documentStatus))
-      || !hasExpectedFeedOrder(value.rows, mode)
+      || !hasExpectedFeedOrder(value.rows, mode, cursor)
       || typeof value.hasMore !== "boolean") {
     return false;
   }
@@ -347,7 +342,7 @@ async function getFeed(request: NextRequest) {
   }
   if (!["latest", "unpriced", "pending_approval"].includes(mode)
     || !["any", "editable", "report_locked", "in_transfer"].includes(documentStatus)
-    || search.length > 200
+    || search.length > 200 || !isPostgresText(search)
     || !Number.isInteger(limit) || limit < 1 || limit > 150) {
     return NextResponse.json({ error: "พารามิเตอร์รายการบิลยางไม่ถูกต้อง" }, { status: 400 });
   }
@@ -384,7 +379,7 @@ async function getFeed(request: NextRequest) {
     return NextResponse.json({ error: "โหลดรายการบิลยางไม่สำเร็จ" }, { status: 500 });
   }
 
-  if (!isFeedPayload(data, locationId, mode, documentStatus)) {
+  if (!isFeedPayload(data, locationId, mode, documentStatus, cursor, limit)) {
     return NextResponse.json(
       { error: "ระบบไม่ตอบกลับรายการบิลยางตามรูปแบบที่กำหนด" },
       { status: 500 },
@@ -434,5 +429,5 @@ async function getFeed(request: NextRequest) {
     })
     : null;
 
-  return NextResponse.json({ rows, evidenceStates, hasMore: Boolean(payload.hasMore), nextCursor });
+  return NextResponse.json({ rows, evidenceStates, hasMore: payload.hasMore, nextCursor });
 }

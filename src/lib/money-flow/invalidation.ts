@@ -16,6 +16,12 @@ export function invalidateMoneyFlowLocation(
     queryClient.invalidateQueries({
       queryKey: moneyFlowQueryKeys.rubberBillWorkCounts(ownerUserId, locationId),
     }, options),
+    queryClient.invalidateQueries({
+      queryKey: [...moneyFlowQueryKeys.rubberBillOperationalFeedRoot(), "approvalQueue", ownerUserId, locationId],
+    }, options),
+    queryClient.invalidateQueries({
+      queryKey: moneyFlowQueryKeys.rubberBillWorkCounts(ownerUserId, "all"),
+    }, options),
     queryClient.invalidateQueries({ queryKey: scope.incomeExpenseScope === "all"
       ? moneyFlowQueryKeys.incomeExpenseFeedRoot()
       : moneyFlowQueryKeys.incomeExpenseFeed(ownerUserId, locationId) }, options),

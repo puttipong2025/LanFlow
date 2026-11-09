@@ -130,7 +130,7 @@ function dateRuleForm() {
     "@/hooks/useLocations": { useLocations: () => ({ locations: [] }) },
     "@/hooks/useOnlineStatus": { useOnlineStatus: () => true },
     "@/hooks/useRubberBillApprovals": { useRubberBillApprovals: () => ({ settings: current }) },
-    "@/hooks/useRubberBillList": { useRubberBillList: () => ({ bills: [] }), useRubberBillWorkCounts: () => ({}) },
+    "@/hooks/useRubberApprovalQueue": { useRubberApprovalQueue: () => ({ bills: [] }) },
     "@/lib/rubber-bills/central-sync": { rubberOwnerWork: async () => [] },
   }, { window: { setInterval: () => 0, clearInterval: noop } });
   const render = () => {

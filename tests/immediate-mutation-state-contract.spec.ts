@@ -36,9 +36,8 @@ test.describe("immediate mutation state contract", () => {
         "@/hooks/useLocations": { useLocations: () => ({ locations: [] }) },
         "@/hooks/useOnlineStatus": { useOnlineStatus: () => true },
         "@/hooks/useRubberBillApprovals": { useRubberBillApprovals: () => ({}) },
-        "@/hooks/useRubberBillList": {
-          useRubberBillList: () => ({ bills: [], isLoading: true }),
-          useRubberBillWorkCounts: () => ({}),
+        "@/hooks/useRubberApprovalQueue": {
+          useRubberApprovalQueue: () => ({ bills: [], isLoading: true }),
         },
         "@/lib/rubber-bills/central-sync": { rubberOwnerWork: () => { reads++; return pending; } },
       }, { window: { setInterval: (callback: () => void) => { tick = callback; return 1; }, clearInterval: () => {} } },

@@ -1,11 +1,5 @@
+import { isIsoTimestamp, isJsonObject, isSafePositiveInteger, isUuid } from "@/lib/validation/primitives";
 import { isRubberBillNumbering } from "./numbering-contract";
-const isUuid = (value: unknown): value is string => typeof value === "string"
-  && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-const isJsonObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-const isIsoTimestamp = (value: unknown): value is string => typeof value === "string" && !value.startsWith("0000")
-  && /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/.test(value)
-  && Number.isFinite(Date.parse(value))
-  && new Date(`${value.slice(0, 10)}T00:00:00Z`).toISOString().slice(0, 10) === value.slice(0, 10);
 
 export function isConfirmedRubberManagerResult(value: unknown, action: "approve" | "cancel", target: string) {
   if (!isJsonObject(value) || value.requestId !== target) return false;
@@ -14,7 +8,8 @@ export function isConfirmedRubberManagerResult(value: unknown, action: "approve"
   return value.status === "approved" && isUuid(value.billId) && typeof value.operation === "string"
     && ["create", "update", "delete"].includes(value.operation)
     && isJsonObject(sync) && sync.status === "synced" && sync.id === value.billId
-    && Number.isSafeInteger(sync.revisionNo) && Number(sync.revisionNo) > 0
+    && isSafePositiveInteger(sync.revisionNo)
+    && (value.operation !== "create" || sync.revisionNo === 1)
     && typeof sync.serverBillNo === "string" && sync.serverBillNo.trim().length > 0 && isIsoTimestamp(sync.serverReceivedAt);
 }
 
@@ -31,6 +26,26 @@ function validTerminalResult(row: Record<string, unknown>) {
 
 export type RubberQueueAction = "create" | "update" | "delete" | "approve" | "cancel";
 export type RubberQueueState = "queued" | "retry_wait" | "paused" | "correction_required" | "done";
+
+export function isRubberQueueDraft(value: unknown): value is {
+  commandId: string;
+  actorUserId: string;
+  locationId: string;
+  clientTempId: string;
+  payload: Record<string, unknown>;
+} {
+  if (!isJsonObject(value) || !isUuid(value.commandId) || !isUuid(value.locationId)
+    || !isUuid(value.actorUserId) || typeof value.clientTempId !== "string" || !value.clientTempId
+    || !isJsonObject(value.payload)) return false;
+  const payload = value.payload;
+  return payload.operation === "create"
+    && payload.clientTempId === value.clientTempId
+    && isUuid(payload.commandId) && payload.commandId.toLowerCase() === value.commandId.toLowerCase()
+    && isUuid(payload.locationId) && payload.locationId.toLowerCase() === value.locationId.toLowerCase()
+    && (payload.actorUserId === undefined
+      || (isUuid(payload.actorUserId) && payload.actorUserId.toLowerCase() === value.actorUserId.toLowerCase()));
+}
+
 export interface RubberQueueRow {
   commandId: string;
   actorUserId: string;
@@ -55,6 +70,8 @@ export function isRubberQueueRow(value: unknown): value is RubberQueueRow {
     && typeof value.clientTempId === "string" && value.clientTempId.length > 0 && value.clientTempId.length <= 512
     && (value.reference === undefined || (typeof value.reference === "string" && value.reference.length <= 128))
     && typeof value.action === "string" && ["create", "update", "delete", "approve", "cancel"].includes(value.action)
+    && ((value.action !== "approve" && value.action !== "cancel")
+      || (value.clientTempId.startsWith("request:") && isUuid(value.clientTempId.slice("request:".length))))
     && typeof value.state === "string" && ["queued", "retry_wait", "paused", "correction_required", "done"].includes(value.state)
     && isIsoTimestamp(value.acceptedAt) && isIsoTimestamp(value.nextAttemptAt)
     && Number.isSafeInteger(value.version) && Number(value.version) > 0
