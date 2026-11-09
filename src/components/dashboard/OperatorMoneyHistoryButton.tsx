@@ -16,7 +16,7 @@ export function OperatorMoneyHistoryButton({ profile, online }: { profile: Profi
   return <>
     <button ref={button} type="button" disabled={!online} onClick={() => setOpen(true)}
       onPointerEnter={preloadHistoryDialog} onFocus={preloadHistoryDialog}
-      className="focus-ring min-h-11 whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50">
+      className="focus-ring min-h-11 w-fit shrink-0 self-start whitespace-nowrap rounded-md border border-black/15 bg-white px-3 text-sm font-semibold disabled:opacity-50">
       ประวัติผู้สร้าง
     </button>
     {open && <HistoryDialog key={scope} ownerScope={scope} online={online} returnFocusElement={button.current} onClose={() => setOpen(false)} />}
