@@ -464,8 +464,8 @@ export function RubberBillsModule({
       ) : (
         <div id="rubber-bills-purchase-panel" role="tabpanel" aria-labelledby="rubber-bills-purchase-tab" className="space-y-4">
       <div className="flex flex-col items-start gap-3 rounded-md border border-black/10 bg-white p-4 shadow-panel">
-        <div className="flex w-full flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
+        <div className="flex w-full flex-wrap items-start gap-2">
+          <div className="min-w-0">
             <h2 className="text-balance text-lg font-bold text-ink">รายการบิลยาง · {selectedLocation.name}</h2>
             <p className="text-pretty text-sm text-ink/60">ค้นหาและจัดการบิลของสาขาที่เลือก</p>
           </div>
