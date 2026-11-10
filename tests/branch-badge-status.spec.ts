@@ -8,6 +8,7 @@ import type { ModuleBadgeCounts } from "../src/hooks/useActionableBadges";
 const { BranchBadgeSummary } = loadSourceModule<typeof import("../src/components/lanflow/BranchBadgeSummary")>(
   "src/components/lanflow/BranchBadgeSummary.tsx", {},
 );
+const textContent = (html: string) => html.replace(/<[^>]*>/g, "");
 
 test("two groups use the existing module snapshot without duplicating transfers or browser requests", () => {
   const counts = {
@@ -36,10 +37,10 @@ test("updating the shared source immediately updates both groups without a secon
   const render = (counts: ModuleBadgeCounts) => renderToStaticMarkup(createElement(BranchBadgeSummary, {
     counts, browserCount: 0, fallbackTotal: 0, active: false, unavailable: false,
   }));
-  expect(render({ "money-transfer": 3, cash: 7 })).toContain("รอโอน 3");
+  expect(textContent(render({ "money-transfer": 3, cash: 7 }))).toContain("รอโอน 3");
   const updated = render({ "money-transfer": 0, cash: 2 });
   expect(updated).not.toContain("รอโอน");
-  expect(updated).toContain("รอจัดการ 2");
+  expect(textContent(updated)).toContain("รอจัดการ 2");
   expect(updated).toContain("มีงาน 2 รายการ");
 });
 
@@ -71,8 +72,8 @@ test("loaded summaries expose exactly two labels and the matching accessible tot
     fallbackTotal: 99, active: false, unavailable: false,
   }));
   expect(html).toContain("มีงาน 12 รายการ");
-  expect(html).toContain("รอโอน 3");
-  expect(html).toContain("รอจัดการ 9");
+  expect(textContent(html)).toContain("รอโอน 3");
+  expect(textContent(html)).toContain("รอจัดการ 9");
   expect(html).not.toContain("รออนุมัติ");
   expect(html).not.toContain("data-branch-badge");
   expect(html.match(/data-branch-status-group=/g)).toHaveLength(2);

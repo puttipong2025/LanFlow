@@ -12,16 +12,18 @@ export function BranchBadgeSummary({ counts, browserCount, fallbackTotal, active
   const invalid = counts !== undefined && entries === null;
   const safeFallback = Number.isSafeInteger(fallbackTotal) && fallbackTotal > 0 ? fallbackTotal : 0;
   const total = entries === null ? safeFallback : entries.reduce((sum, entry) => sum + entry.count, 0);
+  const badgeClassName = `min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none tabular-nums ${active ? "bg-white text-leaf" : "bg-amber text-white"}`;
   return <>
     {total > 0 && <>
       <span className="sr-only">มีงาน {total} รายการ</span>
       {entries === null && <span aria-hidden="true" data-branch-badge
-        className={`min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none tabular-nums ${active ? "bg-white text-leaf" : "bg-amber text-white"}`}>
+        className={badgeClassName}>
         {total > 99 ? "99+" : total}
       </span>}
     </>}
-    {entries?.map(({ status, label, count }) => <span key={status} data-branch-status-group={status} className="shrink-0 text-xs font-semibold text-ink/70 tabular-nums">
-      <span aria-hidden="true">· </span>{label} {count}
+    {entries?.map(({ status, label, count }) => <span key={status} data-branch-status-group={status} className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-ink/70 tabular-nums">
+      <span><span aria-hidden="true">· </span>{label} </span>
+      <span className={badgeClassName}>{count}</span>
     </span>)}
     {(unavailable || invalid) && <span className="shrink-0 text-xs text-ink/55">· โหลดรายละเอียดสถานะไม่ได้</span>}
   </>;
