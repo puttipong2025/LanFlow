@@ -291,8 +291,8 @@ test("time/payroll pending count reaches the module nav and primary-branch selec
     await expect(branchOption).toHaveAccessibleName(
       new RegExp(`มีงาน ${branchTotal} รายการ`),
     );
-    await expect(branchOption.locator("[data-branch-badge]"))
-      .toHaveText(/^[1-9]\d*$|^99\+$/);
+    await expect(branchOption.locator("[data-branch-status-group]").first())
+      .toHaveText(/· (รอโอน|รอจัดการ) [1-9]\d*/);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("listbox", { name: "สาขาที่เข้าถึงได้" }))
       .toHaveCount(0);

@@ -4,43 +4,41 @@ import { useQuery } from "@tanstack/react-query";
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { millisecondsUntilNextActionableBadgeRefresh } from "@/lib/time-tracking/payroll-cutoff-refresh";
-import type { Tab } from "@/components/lanflow/tabs";
+import { parseActionableBadgeCounts } from "@/lib/actionable-badge-counts";
 
 export const ACTIONABLE_BADGES_QUERY_KEY = "actionableBadges";
 
-export type ModuleBadgeCounts = Partial<Record<Tab, number>>;
-export type ActionableBadgeCounts = Record<string, ModuleBadgeCounts>;
-
-type BadgeCountRow = {
-  location_id: string;
-  module_id: Tab;
-  item_count: number;
-};
+export type { ModuleBadgeCounts, ActionableBadgeCounts } from "@/lib/actionable-badge-counts";
 
 type PayrollSettings = {
   workdayEndTime?: string;
   pendingEffectiveDate?: string | null;
 };
 
-export function useActionableBadges(enabled: boolean, poll = true) {
+export function useActionableBadges(ownerUserId: string, enabled: boolean, poll = true) {
   const query = useQuery({
-    queryKey: [ACTIONABLE_BADGES_QUERY_KEY],
-    enabled,
-    queryFn: async () => {
+    queryKey: [ACTIONABLE_BADGES_QUERY_KEY, ownerUserId],
+    enabled: Boolean(ownerUserId) && enabled,
+    queryFn: async ({ signal }) => {
+      if (!ownerUserId) throw new Error("ไม่พบบัญชีสำหรับตรวจจำนวนงาน");
       const supabase = createSupabaseBrowserClient();
+      // Auth can switch sessions before the profile state catches up.
+      const assertOwner = async () => {
+        if (signal.aborted) throw signal.reason;
+        const { data, error } = await supabase.auth.getSession();
+        if (error || data.session?.user.id !== ownerUserId) throw new Error("บัญชีเปลี่ยนแล้ว กรุณาโหลดจำนวนงานใหม่");
+        if (signal.aborted) throw signal.reason;
+      };
+      await assertOwner();
       const [badgesResult, settingsResult] = await Promise.all([
-        supabase.rpc("get_actionable_badge_counts"),
-        supabase.rpc("get_time_payroll_settings"),
+        supabase.rpc("get_actionable_badge_counts").abortSignal(signal),
+        supabase.rpc("get_time_payroll_settings").abortSignal(signal),
       ]);
+      await assertOwner();
       if (badgesResult.error) throw new Error(badgesResult.error.message);
 
-      const counts: ActionableBadgeCounts = {};
-      for (const row of (badgesResult.data ?? []) as BadgeCountRow[]) {
-        counts[row.location_id] ??= {};
-        counts[row.location_id][row.module_id] = Number(row.item_count ?? 0);
-      }
       return {
-        counts,
+        counts: parseActionableBadgeCounts(badgesResult.data),
         payrollSettings: settingsResult.error ? null : settingsResult.data as PayrollSettings,
       };
     },

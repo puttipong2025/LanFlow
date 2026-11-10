@@ -3,6 +3,9 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   testMatch: [
+    '**/actionable-badge-payload.spec.ts',
+    '**/actionable-badge-scope.spec.ts',
+    '**/branch-badge-status.spec.ts',
     '**/branch-bonus-route.spec.ts',
     '**/bill-device-reset-route.spec.ts',
     '**/income-expense-fifth-scan.spec.ts',

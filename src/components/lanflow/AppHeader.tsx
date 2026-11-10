@@ -7,6 +7,8 @@ import { canManageSystemFeatures } from "@/lib/permissions";
 import { TelegramBadgeConfigModal } from "@/components/lanflow/TelegramBadgeConfigModal";
 import { HeaderApprovalActions } from "@/components/lanflow/HeaderApprovalActions";
 import { AccountActions } from "@/components/lanflow/AccountActions";
+import { BranchBadgeSummary } from "@/components/lanflow/BranchBadgeSummary";
+import type { ActionableBadgeCounts } from "@/lib/actionable-badge-counts";
 import { OfflineReadinessStatus } from "@/components/lanflow/OfflineReadinessStatus";
 import { OperatorMoneyHistoryButton } from "@/components/dashboard/OperatorMoneyHistoryButton";
 import { useDashboardBranchSummaries } from "@/hooks/useDashboardOverview";
@@ -70,6 +72,8 @@ export function AppHeader({
   locations,
   selectedLocationId,
   locationBadgeTotals,
+  locationBadgeCounts,
+  browserApprovalCounts = {},
   onLocationChange,
   onLogout,
   online,
@@ -81,6 +85,8 @@ export function AppHeader({
   locations: Location[];
   selectedLocationId: string;
   locationBadgeTotals: Record<string, number>;
+  locationBadgeCounts?: ActionableBadgeCounts;
+  browserApprovalCounts?: Record<string, number>;
   onLocationChange: (locationId: string) => void;
   onLogout: () => void | Promise<void>;
   online: boolean;
@@ -328,6 +334,11 @@ export function AppHeader({
                         setLocationSearch("");
                       }}
                       onKeyDown={(event) => {
+                        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                          event.preventDefault();
+                          event.currentTarget.querySelector("[data-branch-status-strip]")?.scrollBy({ left: event.key === "ArrowRight" ? 160 : -160 });
+                          return;
+                        }
                         if (event.key === "Escape") {
                           event.preventDefault();
                           setLocationMenuOpen(false);
@@ -357,22 +368,12 @@ export function AppHeader({
                     >
                       <Check size={15} className={`mt-0.5 ${active ? "opacity-100 text-leaf" : "opacity-0"}`} />
                       <span className="min-w-0 flex-1">
-                        <span className="flex min-w-0 items-start gap-2">
-                          <span className="min-w-0 flex-1 truncate font-semibold">{location.name}</span>
-                          {badgeTotal > 0 && (
-                            <>
-                              <span className="sr-only">มีงาน {badgeTotal} รายการ</span>
-                              <span
-                                aria-hidden="true"
-                                data-branch-badge
-                                className={`min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none tabular-nums ${
-                                  active ? "bg-white text-leaf" : "bg-amber text-white"
-                                }`}
-                              >
-                                {badgeTotal > 99 ? "99+" : badgeTotal}
-                              </span>
-                            </>
-                          )}
+                        <span data-branch-status-strip className="flex min-w-0 items-start gap-2 overflow-x-auto whitespace-nowrap">
+                          <span className="shrink-0 font-semibold">{location.name}</span>
+                          <BranchBadgeSummary counts={online && locationBadgeCounts
+                            ? locationBadgeCounts[location.id] ?? {} : undefined}
+                            browserCount={browserApprovalCounts[location.id] ?? 0} fallbackTotal={badgeTotal}
+                            active={active} unavailable={online && locationBadgeCounts === undefined} />
                         </span>
 
                         {branchSummary?.summary ? (

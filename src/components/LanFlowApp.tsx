@@ -413,7 +413,7 @@ function BusinessLanFlowApp() {
   const canAccessMoneyTransfer = canUseMoneyTransfer(profile);
   const canAccessReports = canUseReports(profile);
   const browserApprovals = useBrowserApprovals(activeTab !== "admin");
-  const { counts: actionableBadgeCounts, error: badgeError, refresh: refreshBadges } = useActionableBadges(isLoaded, activeTab !== "time-tracking");
+  const { counts: actionableBadgeCounts, error: badgeError, refresh: refreshBadges } = useActionableBadges(authProfileId ?? "", isLoaded, activeTab !== "time-tracking");
 
   useEffect(() => {
     if (activeTab === "money-transfer" && !canAccessMoneyTransfer) {
@@ -662,10 +662,10 @@ function BusinessLanFlowApp() {
           profile={profile}
           locations={locations}
           selectedLocationId={selectedLocationId}
-          locationBadgeTotals={locationBadgeTotals}
+          locationBadgeTotals={locationBadgeTotals} locationBadgeCounts={badgeError ? undefined : visibleActionableBadgeCounts}
           onLocationChange={changeSelectedLocation}
           onLogout={() => withBonusLeaveGuard(() => void auth.logout())}
-          online={online} businessCacheStatus={businessCacheStatus}
+          online={online} browserApprovalCounts={browserApprovals.byLocation} businessCacheStatus={businessCacheStatus}
           serviceUnavailable={serviceUnavailable}
         />
         <NavigationTabs
