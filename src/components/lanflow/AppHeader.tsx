@@ -373,7 +373,7 @@ export function AppHeader({
                           <BranchBadgeSummary counts={online && locationBadgeCounts
                             ? locationBadgeCounts[location.id] ?? {} : undefined}
                             browserCount={browserApprovalCounts[location.id] ?? 0} fallbackTotal={badgeTotal}
-                            active={active} unavailable={online && locationBadgeCounts === undefined} />
+                            unavailable={online && locationBadgeCounts === undefined} />
                         </span>
 
                         {branchSummary?.summary ? (

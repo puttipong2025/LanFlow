@@ -1,18 +1,17 @@
 import type { ModuleBadgeCounts } from "@/lib/actionable-badge-counts";
 import { branchBadgeStatusEntries } from "@/lib/branch-badge-status";
 
-export function BranchBadgeSummary({ counts, browserCount, fallbackTotal, active, unavailable }: {
+export function BranchBadgeSummary({ counts, browserCount, fallbackTotal, unavailable }: {
   counts?: ModuleBadgeCounts;
   browserCount: number;
   fallbackTotal: number;
-  active: boolean;
   unavailable: boolean;
 }) {
   const entries = unavailable || counts === undefined ? null : branchBadgeStatusEntries(counts, browserCount);
   const invalid = counts !== undefined && entries === null;
   const safeFallback = Number.isSafeInteger(fallbackTotal) && fallbackTotal > 0 ? fallbackTotal : 0;
   const total = entries === null ? safeFallback : entries.reduce((sum, entry) => sum + entry.count, 0);
-  const badgeClassName = `min-w-6 shrink-0 rounded-full px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none tabular-nums ${active ? "bg-white text-leaf" : "bg-amber text-white"}`;
+  const badgeClassName = "min-w-6 shrink-0 rounded-full bg-amber px-1.5 py-0.5 text-center text-[11px] font-extrabold leading-none text-white tabular-nums";
   return <>
     {total > 0 && <>
       <span className="sr-only">มีงาน {total} รายการ</span>

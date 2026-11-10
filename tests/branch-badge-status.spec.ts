@@ -35,7 +35,7 @@ test("zero groups are omitted and counts above 99 remain exact", () => {
 
 test("updating the shared source immediately updates both groups without a second cache", () => {
   const render = (counts: ModuleBadgeCounts) => renderToStaticMarkup(createElement(BranchBadgeSummary, {
-    counts, browserCount: 0, fallbackTotal: 0, active: false, unavailable: false,
+    counts, browserCount: 0, fallbackTotal: 0, unavailable: false,
   }));
   expect(textContent(render({ "money-transfer": 3, cash: 7 }))).toContain("รอโอน 3");
   const updated = render({ "money-transfer": 0, cash: 2 });
@@ -51,7 +51,7 @@ test("overflow across otherwise valid category counts cannot crash the header", 
   ]) {
     expect(branchBadgeStatusEntries(counts)).toBeNull();
     const html = renderToStaticMarkup(createElement(BranchBadgeSummary, {
-      counts, browserCount: 0, fallbackTotal: 10, active: false, unavailable: false,
+      counts, browserCount: 0, fallbackTotal: 10, unavailable: false,
     }));
     expect(html).toContain("มีงาน 10 รายการ");
     expect(html).toContain("โหลดรายละเอียดสถานะไม่ได้");
@@ -69,7 +69,7 @@ for (const invalid of [-1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
 test("loaded summaries expose exactly two labels and the matching accessible total", () => {
   const html = renderToStaticMarkup(createElement(BranchBadgeSummary, {
     counts: { "money-transfer": 3, cash: 7 }, browserCount: 2,
-    fallbackTotal: 99, active: false, unavailable: false,
+    fallbackTotal: 99, unavailable: false,
   }));
   expect(html).toContain("มีงาน 12 รายการ");
   expect(textContent(html)).toContain("รอโอน 3");
@@ -82,7 +82,7 @@ test("loaded summaries expose exactly two labels and the matching accessible tot
 test("failed source hides stale groups and retains only a valid fallback", () => {
   for (const fallbackTotal of [10, NaN, -1]) {
     const html = renderToStaticMarkup(createElement(BranchBadgeSummary, {
-      counts: { "money-transfer": 3 }, browserCount: 0, fallbackTotal, active: true, unavailable: true,
+      counts: { "money-transfer": 3 }, browserCount: 0, fallbackTotal, unavailable: true,
     }));
     expect(html).toContain("โหลดรายละเอียดสถานะไม่ได้");
     expect(html).not.toContain("รอโอน");
