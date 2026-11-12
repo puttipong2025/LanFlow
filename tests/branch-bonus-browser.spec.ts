@@ -426,3 +426,50 @@ test('missing age warns before settings, blocks only when enabled, then permits 
     await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeEnabled();
   }finally{await context.close();}
 });
+
+
+test('selection keeps review panels mounted and open while recalculating',async({browser})=>{
+  test.setTimeout(90000);await ready();
+  resetTestSql(`insert into public.income_expense(id,client_temp_id,local_bill_no,server_bill_no,sync_status,record_status,location_id,type,number,tx_date,title,cost,bill_option,created_by_user_id,created_by_name,created_by_phone,created_at)
+    select gen_random_uuid(),'KEEP-'||n,'KEEP-'||n,'KEEP-'||n,'synced','active',${scope},'expense',n::text,'2020-01-12','Keep expense '||n,n,'ค่าใช้จ่าย','${actor}','${label}','${phone}','2020-01-12Z' from generate_series(1,61)n;`);
+  const {page,context}=await open(browser);let release=()=>{};
+  try{
+    await page.getByRole('button',{name:'สร้างโบนัส',exact:true}).click();
+    await page.getByRole('button',{name:'ตรวจสอบและถัดไป',exact:true}).click();
+    const expenses=page.locator('details').filter({has:page.locator('summary').filter({hasText:'รายการค่าใช้จ่าย'})});
+    await expenses.locator('summary').click();
+    await expect(expenses.getByRole('checkbox',{name:/รวม Keep expense /})).toHaveCount(50);
+    await expenses.getByRole('button',{name:'โหลดรายละเอียดเพิ่ม',exact:true}).click();
+    await expect(expenses.getByRole('checkbox',{name:/รวม Keep expense /})).toHaveCount(61);
+    const exports=page.locator('details').filter({has:page.locator('summary').filter({hasText:'ตรวจน้ำหนักลดลงรายเที่ยว'})});
+    await exports.locator('summary').click();
+    const oldExpenses=await expenses.elementHandle(),oldExports=await exports.elementHandle();
+
+    const gate=new Promise<void>(resolve=>{release=resolve;});
+    await page.route('**/api/lanflow/branch-bonuses',async route=>{
+      if(route.request().postDataJSON()?.action==='previewBatch')await gate;
+      await route.continue();
+    });
+    const calculating=page.waitForRequest(r=>r.method()==='POST'&&r.url().endsWith('/api/lanflow/branch-bonuses')&&r.postDataJSON()?.action==='previewBatch');
+    await expenses.getByRole('checkbox',{name:'รวม Keep expense 1',exact:true}).click();
+    await calculating;
+    expect(await oldExpenses!.evaluate(el=>el.isConnected)).toBe(true);
+    expect(await oldExports!.evaluate(el=>el.isConnected)).toBe(true);
+    await expect(expenses).toHaveAttribute('open','');await expect(exports).toHaveAttribute('open','');
+    await expect(expenses.getByRole('checkbox',{name:/รวม Keep expense /})).toHaveCount(61);
+    await expect(expenses.getByRole('checkbox',{name:'รวม Keep expense 1',exact:true})).not.toBeChecked();
+    release();await expect(page.getByText('กำลังคำนวณทุกช่วง…',{exact:true})).toHaveCount(0);
+    await expect(expenses.getByRole('checkbox',{name:/รวม Keep expense /})).toHaveCount(61);
+    await expect(expenses).toHaveAttribute('open','');await expect(exports).toHaveAttribute('open','');
+    await expenses.getByRole('checkbox',{name:'รวม Keep expense 1',exact:true}).check();
+    await expect(expenses.locator('summary')).toContainText('(61)');
+    await page.getByRole('checkbox',{name:/รวมรายจ่ายทั่วไป/}).uncheck();
+    await expect(expenses.locator('summary')).toContainText('(0)');await expect(expenses).toHaveAttribute('open','');
+    await page.getByRole('checkbox',{name:/รวมรายจ่ายทั่วไป/}).check();
+    await expect(expenses.locator('summary')).toContainText('(61)');
+    await expect(page.getByRole('button',{name:'Sort Descending',exact:true})).toHaveCount(0);
+    await expenses.locator('summary').click();await expect(expenses).not.toHaveAttribute('open','');
+    await expenses.locator('summary').click();await expect(expenses).toHaveAttribute('open','');
+    await page.screenshot({path:'output/branch-bonus-age/selection-stays-open.png',fullPage:true});
+  }finally{release();await context.close();}
+});

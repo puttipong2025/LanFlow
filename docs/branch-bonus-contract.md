@@ -1,5 +1,14 @@
 # Branch bonus implementation contract
 
+## Continuous data review — 2026-11-12 (Local follow-up)
+
+The user confirmed retaining manually opened disclosures when selecting/unselecting an expense or category, while keeping manual closing/reopening. The step-two review panels remain mounted using the last calculation's presentation. The strict key-matched preview still gates advancement/confirmation, and a status message identifies older totals while a new calculation is pending. Selection changes continue to use the existing debounce/abort flow; no stale result becomes a valid confirmation.
+
+The retained calculation also retains its input for source-page/difference requests. Current checkbox selections render from the editable input, while page requests use the input that produced the displayed fingerprint until the new calculation arrives. This avoids mixing a new selection's source-page fingerprint with the retained display. New fingerprints still invalidate cached extra pages, validate every newly fetched page and automatically reload an open expense disclosure. The same component preserves its local page limit, so loading more than 50 rows is not reset by each selection. Branch/period changes and explicit inventory review keep their existing ownership/reset boundaries.
+
+No Sort Descending button remains in draft or saved source disclosures. Expenses continue to sort globally by descending amount and stable source identity after every page is available. The existing load-details action retries incomplete/failed loads. No new persisted UI state, database migration, API or monetary formula is introduced.
+
+
 ## Verified REX age — 2026-11-12 (Local implementation)
 
 Forward migration `20261112010000_branch_bonus_verified_age.sql` adds `age` as the fourth metric to the existing calculator/review/batch validation without adding tables. New requests use the four-metric settings shape; `newBonusSettings` keeps every weight at zero and the trial preset becomes burden/loss/counts/age = 50/40/10/0. The user states Production has no requests, so this release adds no cross-version intent migration or multiple request parsers. Existing receipt/idempotency mechanisms and their regressions remain; new ambiguous requests retain their original identity for exact replay.
@@ -89,7 +98,7 @@ Difference details use a native disclosure closed by default, shown only after i
 ### Interaction update confirmed 2026-11-12
 
 - Next rechecks REX inventory, then waits for the current calculation inside the shared `ModalShell`. Success closes the loading dialog and advances one step automatically. Failure closes it and keeps the current step available for retry; changed or blocked inventory still returns to review. Repeated clicks share the same in-flight action.
-- Expense disclosures default to descending amount across the entire source set, including saved snapshot pages. On opening, remaining pages load with fingerprint validation before displaying the globally sorted first 50 rows; further disclosure pages are local slices of that same sorted set. `Sort Descending` returns to its first page and retries loading if necessary. Equal amounts use source identity as a stable tie-breaker. Partial/changed source pages never appear as a complete sorted list.
+- Expense disclosures default to descending amount across the entire source set, including saved snapshot pages. On opening, remaining pages load with fingerprint validation before displaying the globally sorted first 50 rows; further disclosure pages are local slices of that same sorted set. The `Sort Descending` button was removed in the continuous-review follow-up. Sorting remains automatic; failed/incomplete pages can retry through the existing load-details button. Equal amounts use source identity as a stable tie-breaker. Partial/changed source pages never appear as a complete sorted list.
 - Keep the existing source-loss warning text and calculation/confirmation rules unchanged. No database migration or monetary formula change is required.
 - Scan follow-up: source-page requests carry abort signals through draft and saved-result adapters. Changing the source fingerprint or unmounting aborts the previous owner; its late response/finally cannot overwrite the new request state. Validated pages are checkpointed for retry without exposing a partially sorted expense list. Sorting runs only after the complete expense set is available.
 

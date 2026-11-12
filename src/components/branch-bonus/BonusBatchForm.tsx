@@ -25,7 +25,7 @@ export function BonusBatchForm({ locationId, ownerId, saved, openSource }: {
   const [review,setReview]=useState<BonusReview|null>(null),[parts,setParts]=useState<BonusBatchPart[]>([]);
   const [step,setStep]=useState(1),[active,setActive]=useState("");
   const [loading,setLoading]=useState(false),[working,setWorking]=useState(false),[error,setError]=useState<string|null>(null);
-  const [calculation,setCalculation]=useState<{key:string; data:BonusBatchPreview}|null>(null),[previewing,setPreviewing]=useState(false);
+  const [calculation,setCalculation]=useState<{key:string; data:BonusBatchPreview; parts:BonusBatchPart[]}|null>(null),[previewing,setPreviewing]=useState(false);
   const [pending,setPending]=useState<BonusBatchIntent|null>(()=>readBonusBatchIntent(ownerId,locationId));
   const [blocked,setBlocked]=useState(false),[old,setOld]=useState<BonusDetail|null>(null);
   const [leave,setLeave]=useState<{proceed:()=>void}|null>(null);
@@ -34,7 +34,9 @@ export function BonusBatchForm({ locationId, ownerId, saved, openSource }: {
   const key=JSON.stringify(parts.map(p=>({key:p.key,input:p.input})));
   const preview=calculation?.key===key?calculation.data:null;
   const part=parts.find(p=>p.key===active),period=review?.periods.find(p=>p.key===active);
-  const current=preview?.periods.find(p=>p.key===active)?.preview??null;
+  // Keep review panels mounted; only a matching preview can advance or confirm.
+  const current=calculation?.data.periods.find(p=>p.key===active)?.preview??null;
+  const sourceInput=calculation?.parts.find(p=>p.key===active)?.input;
   const canConfirm=!!preview&&parts.length>0&&preview.periods.length===parts.length&&preview.periods.every(p=>p.preview.canConfirm);
 
   function applyReview(data:BonusReview){
@@ -70,7 +72,7 @@ export function BonusBatchForm({ locationId, ownerId, saved, openSource }: {
     });
     previewFlight.current={key,promise};
     void promise
-        .then(data=>{if(!controller.signal.aborted)setCalculation({key,data});})
+        .then(data=>{if(!controller.signal.aborted)setCalculation({key,data,parts});})
         .catch(caught=>{if(!controller.signal.aborted){previewFlight.current=null;setError(caught instanceof Error?caught.message:"คำนวณไม่สำเร็จ");}})
         .finally(()=>{if(!controller.signal.aborted)setPreviewing(false);});
     return()=>{previewFlight.current=null;controller.abort();};
@@ -98,7 +100,7 @@ export function BonusBatchForm({ locationId, ownerId, saved, openSource }: {
       if(!calculated){
         const request=previewFlight.current;
         const data=await (request?.key===key?request.promise:fetchBonus<BonusBatchPreview>({action:"previewBatch",locationId,review:latest.fingerprint,periods:parts.map(p=>({key:p.key,input:p.input}))}));
-        setCalculation({key,data});
+        setCalculation({key,data,parts});
         calculated=data;
       }
       if(step===3&&!calculated.periods.every(p=>p.preview.canConfirm)){setError("กรุณาตรวจเป้าและอัตราให้ครบทุกช่วงก่อนถัดไป");return;}
@@ -138,11 +140,12 @@ export function BonusBatchForm({ locationId, ownerId, saved, openSource }: {
       {step===1&&<><h3 className="text-balance text-lg font-semibold">ตรวจ REX ที่รอทำโบนัส</h3><button type="button" className={secondaryButton} onClick={()=>void reload()}>โหลด REX ใหม่</button>{review&&<BonusRequired review={review} openOld={id=>void openOld(id)} openSource={openSource}/>}</>}
       {review&&<div className="space-y-2 rounded-lg bg-sand p-4"><h3 className="text-balance font-semibold">ช่วงประเมินอัตโนมัติ · {review.periods.length} ช่วง</h3>{review.periods.map(p=><p key={p.key} className="text-pretty text-sm tabular-nums">{p.periodStart} ถึง {p.periodEnd} · {p.periodDays} วัน · REX {p.exportIds.length} ใบ · เป้านับเงิน {p.periodDays} ใบ</p>)}<p className="text-pretty text-xs text-ink/60">รวมทุกวันภายในแต่ละช่วงตามเวลาไทย ไม่รวมวันของโบนัสเดิม</p></div>}
       {(step===2||step===3)&&part&&period&&<><label className="block text-sm font-semibold">ช่วงที่กำลังตรวจ<select className="focus-ring mt-1 h-11 w-full rounded-md border border-black/10 bg-white px-3" value={active} onChange={e=>setActive(e.target.value)}>{review?.periods.map(p=><option key={p.key} value={p.key}>{p.periodStart} ถึง {p.periodEnd}</option>)}</select></label>
-        {step===2&&current&&<><BonusSources key={active} preview={current} input={part.input} change={change} load={(section,offset,signal)=>fetchBonus({action:"sources",locationId,input:part.input,section,offset},signal)}/><details className="rounded-lg border border-black/10 p-4"><summary className="focus-ring min-h-11 font-semibold">ตรวจน้ำหนักลดลงรายเที่ยว ({current.exports.length}) · อายุ ณ ตรวจสอบ</summary><BonusExports rows={current.exports} selected={part.input.exportIds}/></details><BonusChanges rows={current.changes} total={current.changeCount} fingerprint={current.sourceFingerprint} load={(offset,signal)=>fetchBonus({action:"sources",locationId,input:part.input,section:"changes",offset},signal)}/></>}
+        {step===2&&current&&sourceInput&&<><BonusSources key={active} preview={current} input={part.input} change={change} load={(section,offset,signal)=>fetchBonus({action:"sources",locationId,input:sourceInput,section,offset},signal)}/><details className="rounded-lg border border-black/10 p-4"><summary className="focus-ring min-h-11 font-semibold">ตรวจน้ำหนักลดลงรายเที่ยว ({current.exports.length}) · อายุ ณ ตรวจสอบ</summary><BonusExports rows={current.exports} selected={part.input.exportIds}/></details><BonusChanges rows={current.changes} total={current.changeCount} fingerprint={current.sourceFingerprint} load={(offset,signal)=>fetchBonus({action:"sources",locationId,input:sourceInput,section:"changes",offset},signal)}/></>}
         {step===3&&<BonusSettings key={active} input={part.input} change={change} preview={current}/>}
       </>}
       {step===4&&preview&&parts.map(p=>{const result=preview.periods.find(x=>x.key===p.key)?.preview;return result&&<section key={p.key} className="max-w-3xl space-y-4 rounded-lg border border-black/10 bg-white p-4"><BonusSummary preview={result} finalAmount={p.finalAmount??result.suggestedAmount}/><BonusDecimalField label={`ยอดโบนัสสุดท้าย ${result.periodStart} ถึง ${result.periodEnd} (บาท)`} value={p.finalAmount??result.suggestedAmount} change={finalAmount=>setParts(all=>all.map(x=>x.key===p.key?{...x,finalAmount}:x))}/>{result.issues.map(issue=><p key={issue} role="alert" className="text-pretty text-sm text-clay">{issue}</p>)}</section>;})}
       {previewing&&<p role="status" className="text-pretty text-sm">กำลังคำนวณทุกช่วง…</p>}
+      {current&&!preview&&<p role="status" className="text-pretty text-sm text-ink/60">ผลรวมที่แสดงเป็นผลก่อนหน้า รอคำนวณตามตัวเลือกใหม่ก่อนยืนยัน</p>}
       {step===3&&!parseBonusBatch(parts)&&<p role="alert" className="text-pretty text-sm text-clay">ตรวจอัตราและเป้าไม่เกินสองตำแหน่ง สัดส่วนเป็นจำนวนเต็ม และค่าต้องไม่ติดลบ</p>}
       {step===4&&!parseBonusBatch(parts)&&<p role="alert" className="text-pretty text-sm text-clay">ยอดสุดท้ายต้องเป็นตัวเลขระหว่าง 0 ถึง 9,999,999,999.99 บาท</p>}
       <div className="flex flex-wrap justify-between gap-3 border-t border-black/10 pt-4"><button type="button" className={secondaryButton} disabled={step===1} onClick={()=>setStep(n=>n-1)}>ย้อนกลับ</button>

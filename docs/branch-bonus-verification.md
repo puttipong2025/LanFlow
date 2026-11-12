@@ -1,5 +1,22 @@
 # Branch bonus verification and review
 
+## Continuous data review — 2026-11-12 (Local follow-up)
+
+The user confirmed option 1: retain manually opened review sections when checking/unchecking individual costs or cost groups, while allowing manual collapse/expand. Removed the `Sort Descending` button from the shared draft/saved source viewer; automatic descending sorting after loading all expense pages remains intact.
+
+Reproduced the bug in Chromium with 61 synthetic expenses, all pages loaded, two sections open and the next preview response held. A checkbox click disconnected the existing expense/REX DOM nodes before that response arrived. Trace: selection updates parts -> calculation key no longer matches -> strict preview becomes null -> the entire step-two fragment unmounts. This excludes native disclosure behaviour and incomplete pagination as the cause.
+
+`BonusBatchForm` now keeps the last completed calculation for presentation and preserves the input that produced its source fingerprint for paginated requests. Editable checkboxes still use the latest input. Only a key-matched calculation can advance or confirm; an explicit status explains when displayed totals are awaiting recalculation. Existing review refresh, branch/owner resets, abort handling and page fingerprint checks remain in force. Keeping the existing DOM avoids introducing controlled disclosure state or persistence.
+
+Verification:
+
+- Focused route/interaction **62 passed**, including a new held-preview case that checks retained panels, original-input pagination and waiting for the latest calculation before advancing. Existing global-sort, failed-page retry, empty-page and changed-fingerprint cases pass using the remaining load-more control.
+- Real browser/API/SQL **15 workflows passed**. The new regression checks DOM identity during a held request, 61 visible rows after recalculation, item/group selection in both directions, manual collapse/reopen, retained REX disclosure and absent Sort button. Screenshot `output/branch-bonus-age/selection-stays-open.png` was inspected.
+- Strict unused-locals/parameters typecheck, focused ESLint and `git diff --check` passed.
+- `npm.cmd run verify` passed: lint, typecheck, source-size/import guards, auth-outage check, **1,544 isolated tests / 2 existing skips**, production build, service-worker and bundle guards. Offline manifest remains **166 assets** and first-load JS **310.6 / 320 kB**.
+
+Scope: verification completed in Local after the separately completed age release. The user subsequently authorized `push main` on 2026-11-12 after a second Business/Route scan passed (62 focused tests, strict unused checks and ESLint). This release contains the reviewed UI, regression tests and documentation; no SQL/API/formula change or database migration is required. GitHub/Vercel use the existing main-push workflow; final release receipts are recorded in codingDO. Reproduction ledger and test artifacts remain ignored under `output/branch-bonus-age/`.
+
 ## Cloud database release — Verified age, 2026-11-12
 
 The user explicitly requested pushing main and Supabase DB push after implementation and a second Business/Route scan. Source commit `19bc3b5f35132b55fd04ccadcdf9cbe396ee8586` contains the verified age feature and the already-tested interaction/source/decimal changes. Remote main matched the starting checkout; production environment validation and staged secret scanning passed, and no ignored backup/environment file is committed.

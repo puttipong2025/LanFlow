@@ -53,12 +53,13 @@ function preview():BonusBatchPreview {
 }
 function batchHarness() {
   const state=runtime();let response=review, calculations=0;
+  const sent:any[]=[];
   let pending=deferred<BonusBatchPreview>();
   const dependencies:any={react:state.react,"react/jsx-runtime":jsxRuntime,
     "@/components/shared/ModalShell":{ModalShell:Modal},
     "@/components/shared/AlertDialog":{AlertDialog:()=>null},
     "@/lib/auth-fetch":{authFetch:async()=>Response.json(response),assertApiResponse:async()=>{},ApiResponseError:class extends Error {}},
-    "@/hooks/useBranchBonuses":{fetchBonus:()=>{calculations++;return pending.promise;}},
+    "@/hooks/useBranchBonuses":{fetchBonus:(body:unknown)=>{sent.push(body);calculations++;return pending.promise;}},
     "./bonus-display":{primaryButton:"",secondaryButton:""},
   };
   for(const name of ["BonusRequired","BonusSettings","BonusSources","BonusChanges","BonusSummary","BonusExports","BonusDecimalField"]) dependencies[`./${name}`]={[name]:()=>null};
@@ -67,7 +68,7 @@ function batchHarness() {
   });
   return {render:()=>state.render(()=>module.BonusBatchForm({locationId,ownerId:locationId,saved:()=>{}})),
     pending:()=>pending, retry:()=>{pending=deferred();}, changed:()=>{response={...review,fingerprint:"c".repeat(32)};},
-    calculations:()=>calculations,close:()=>state.close()};
+    calculations:()=>calculations,sent,close:()=>state.close()};
 }
 test("Next waits inside the existing modal, shares the calculation, then advances once",async()=>{
   const h=batchHarness();
@@ -106,6 +107,26 @@ test("changed REX inventory still returns to review instead of advancing",async(
   }finally{h.close();}
 });
 
+test("selection retains review panels and pages against their original input until the latest preview is ready",async()=>{
+  const h=batchHarness();
+  const sources=(tree:any)=>nodes(tree).find(n=>n.props.preview&&n.props.change&&n.props.load);
+  try{
+    h.render();await tick();let tree=h.render();h.render();
+    button(tree,"ตรวจสอบและถัดไป").props.onClick();await new Promise(resolve=>setTimeout(resolve,270));h.pending().resolve(preview());await tick();tree=h.render();
+    const panel=sources(tree);expect(panel).toBeTruthy();h.retry();
+    panel.props.change({...panel.props.input,excludedGroups:["expense"]});tree=h.render();
+    const retained=sources(tree);expect(retained).toBeTruthy();expect(retained.type).toBe(panel.type);
+    expect(retained.props.input.excludedGroups).toEqual(["expense"]);
+    void retained.props.load("expenses",50);expect(h.sent.at(-1).input.excludedGroups).toEqual([]);
+    expect(nodes(tree).some(n=>n.props.role==="status"&&String(n.props.children).includes("ผลก่อนหน้า"))).toBe(true);
+    button(tree,"ถัดไป").props.onClick();await tick();tree=h.render();
+    expect(nodes(tree).find(n=>n.props["aria-current"]==="step").props.children[0]).toBe(2);
+    await new Promise(resolve=>setTimeout(resolve,270));h.pending().resolve(preview());await tick();tree=h.render();
+    expect(nodes(tree).find(n=>n.props["aria-current"]==="step").props.children[0]).toBe(3);
+    expect(h.sent.filter(body=>body.action==="previewBatch").at(-1).periods[0].input.excludedGroups).toEqual(["expense"]);
+  }finally{h.close();}
+});
+
 const source=(amount:number):BonusSource=>({key:`expense:${amount}`,id:String(amount),kind:"expense",date:"2020-01-01",occurredAt:"2020-01-01",label:`Expense ${amount}`,amount,included:true});
 function sourceHarness(load:(section:string,offset:number,signal?:AbortSignal)=>Promise<any>) {
   const state=runtime();
@@ -124,7 +145,7 @@ test("expense sorting includes the largest source from the last page before show
     last.resolve({sourceFingerprint:"a",rows:[source(999)]});await tick();tree=h.render();
     const labels=nodes(tree).filter(n=>n.type==="label"&&n.props.className.includes("items-start"));
     expect(labels.map(n=>n.props.children.at(-1).props.children)).toEqual(["999","2","1"]);
-    button(tree,"Sort Descending").props.onClick();tree=h.render();expect(button(tree,"Sort Descending")).toBeTruthy();
+    expect(button(tree,"Sort Descending")).toBeUndefined();
   }finally{h.close();}
 });
 
@@ -153,7 +174,7 @@ test("retrying a failed expense page keeps validated progress instead of fetchin
   try{
     let tree=h.render();nodes(tree).find(n=>n.type==="details").props.onToggle({currentTarget:{open:true}});h.render();await tick();tree=h.render();
     expect(nodes(tree).some(n=>n.props.role==="alert")).toBe(true);
-    fail=false;button(tree,"Sort Descending").props.onClick();await tick();tree=h.render();
+    fail=false;button(tree,"โหลดรายละเอียดเพิ่ม").props.onClick();await tick();tree=h.render();
     expect(offsets).toEqual([1,2,2]);
     expect(nodes(tree).filter(n=>n.type==="label"&&n.props.className.includes("items-start"))).toHaveLength(3);
   }finally{h.close();}
@@ -165,7 +186,7 @@ test("changed fingerprints and empty pages never display a partial expense sort 
       let tree=h.render();nodes(tree).find(n=>n.type==="details").props.onToggle({currentTarget:{open:true}});h.render();await tick();tree=h.render();
       expect(nodes(tree).some(n=>n.props.role==="alert")).toBe(true);
       expect(nodes(tree).filter(n=>n.type==="label"&&n.props.className.includes("items-start"))).toHaveLength(0);
-      expect(button(tree,"Sort Descending").props.disabled).toBe(false);
+      expect(button(tree,"โหลดรายละเอียดเพิ่ม").props.disabled).toBe(false);
     }finally{h.close();}
   }
 });

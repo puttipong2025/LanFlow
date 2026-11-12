@@ -67,7 +67,6 @@ export function BonusSources({ preview, input, change, load, saved = false }: {
       return <details key={section} className="rounded-lg border border-black/10 bg-white p-3" onToggle={event=>{if(section==="expenses")setExpensesOpen(event.currentTarget.open);}}>
         <summary className="focus-ring cursor-pointer py-1 font-semibold">{label} <span className="tabular-nums">({bonusNumber(preview.selectedSourceCounts?.[section] ?? preview.sourceCounts[section], 0)})</span></summary>
         {section === "expenses" && <p className="mt-2 text-pretty text-xs text-ink/60">นับเฉพาะรายการที่เลือกคำนวณ รายการที่ยกเว้นยังเปิดดูและเลือกกลับได้</p>}
-        {section === "expenses" && <button type="button" className={secondaryButton} disabled={busy!==null} onClick={()=>{setExpenseLimit(50);if(sorting)void more(section);}}>Sort Descending</button>}
         {sorting && <p role="status" className="mt-3 text-sm text-ink/60">{busy === "expenses" ? "กำลังโหลดค่าใช้จ่ายทุกหน้าเพื่อเรียงจากมากไปน้อย…" : "ต้องโหลดค่าใช้จ่ายให้ครบก่อนแสดงลำดับจากมากไปน้อย"}</p>}
         <div className="mt-3 divide-y divide-black/5">
           {!sorting && (section==="expenses"?rows.slice(0,expenseLimit):rows).map(row => <label key={row.key} className="flex items-start gap-3 py-3 text-sm">
