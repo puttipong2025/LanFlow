@@ -13,6 +13,9 @@ const admin=createClient(target.url,target.serviceKey,{auth:{persistSession:fals
 const actor=crypto.randomUUID(),branch=crypto.randomUUID(),rex=Array.from({length:4},()=>crypto.randomUUID());
 const phone="08992"+String(parseInt(crypto.randomUUID().slice(0,6),16)%100000).padStart(5,"0"), password="Bonus-test-2026!";
 const label="Bonus E2E "+branch.slice(0,8), reference=rex.map((_,i)=>`REX-BONUS-${branch.slice(0,8)}-${i+1}`);
+// Dedicated dates isolate all-branch benchmarks from unrelated integration fixtures.
+const refBranch=crypto.randomUUID(),pendingBranch=crypto.randomUUID();
+const refName=`Reference browser B ${branch.slice(0,8)}`,pendingName=`Pending browser C ${branch.slice(0,8)}`;
 const scope=`'${branch}'`;
 
 test.beforeAll(async()=>{
@@ -27,17 +30,19 @@ test.beforeAll(async()=>{
   if(profile.error) throw profile.error;
   resetTestSql(`insert into public.locations(id,name,code) values('${branch}','${label}','BB${branch.slice(0,8)}');
     insert into public.user_locations(user_id,location_id,is_primary) values('${actor}','${branch}',true);`);
+  resetTestSql(`insert into public.locations(id,name,code) values('${refBranch}','${refName}','RB${refBranch.slice(0,7)}'),('${pendingBranch}','${pendingName}','PC${pendingBranch.slice(0,7)}');`);
   for(let i=0;i<4;i++) resetTestSql(`insert into public.rubber_exports(id,export_no,export_date,sequence_no,location_id,status,
     original_weight_total,paid_total,rubber_value_total,average_price,current_weight,weight_loss_percent,
     work_rate,other_operating_cost,work_total,expense_destination,created_by_user_id,created_by_name,created_by_phone,
     verified_by_user_id,verified_by_name,verified_at,age_cutoff_at,average_age_hours,oldest_age_hours,estimated_age_item_count,
     created_at,sold_out_at,sold_out_by_user_id,sold_out_by_name)
-    values('${rex[i]}','${reference[i]}','2020-01-12',${i+1},'${branch}','verified',${i===0?500000:i===3?100000:100},
+    values('${rex[i]}','${reference[i]}','2004-01-12',${i+1},'${branch}','verified',${i===0?500000:i===3?100000:100},
     1000,1000,10,${i===0?450000:i===2?100:i===3?99999:90},${i===2||i===3?0:10},0,0,0,'branch',
-    '${actor}','${label}','${phone}','${actor}','${label}','2020-01-14Z','2020-01-14Z',144,144,${i===0?1:0},'2020-01-11T17:30Z',
-    ${i===1?"null,null,null":`'2020-01-14Z','${actor}','${label}'`});`);
+    '${actor}','${label}','${phone}','${actor}','${label}','2004-01-14Z','2004-01-14Z',144,144,${i===0?1:0},'2004-01-11T17:30Z',
+    ${i===1?"null,null,null":`'2004-01-14Z','${actor}','${label}'`});`);
 });
 test.beforeEach(()=>{
+  resetTestSql(`delete from public.rubber_exports where location_id in ('${refBranch}','${pendingBranch}');`);
   resetTestSql(`delete from public.branch_bonuses where location_id=${scope};
     delete from private.branch_bonus_request_receipts where location_id=${scope};
     delete from private.branch_bonus_batches where location_id=${scope};
@@ -51,6 +56,7 @@ test.beforeEach(()=>{
     select public.set_rubber_export_sold_out('${rex[2]}',true);`);
 });
 test.afterAll(async()=>{
+  resetTestSql(`delete from public.rubber_exports where location_id in ('${refBranch}','${pendingBranch}');update public.locations set is_active=false where id in ('${refBranch}','${pendingBranch}');`);
   resetTestSql(`delete from public.branch_bonuses where location_id=${scope};
     delete from private.branch_bonus_request_receipts where location_id=${scope};
     delete from private.branch_bonus_batches where location_id=${scope};
@@ -98,9 +104,15 @@ async function settings(page:Page) {
   await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
   await expect(page.getByLabel('สัดส่วน น้ำหนักลดลง (%)',{exact:true})).toBeVisible();
 }
+function seedReference(hours=96) {
+  resetTestSql(`insert into public.rubber_exports select (jsonb_populate_record(null::public.rubber_exports,to_jsonb(e)||jsonb_build_object(
+    'id','${crypto.randomUUID()}','export_no','REF-${refBranch}','sequence_no',303,'location_id','${refBranch}',
+    'original_weight_total',600200,'current_weight',588196,'weight_loss_percent',2,'average_age_hours',${hours},'oldest_age_hours',${hours},'estimated_age_item_count',0))).*
+    from public.rubber_exports e where id='${rex[0]}';`);
+}
 async function fillSettings(page:Page,rate='0.02') {
   await page.getByLabel('สัดส่วน น้ำหนักลดลง (%)',{exact:true}).fill('100');
-  await page.getByLabel('เป้า น้ำหนักลดลง (%)',{exact:true}).fill('10');
+  await expect(page.getByLabel('เป้า น้ำหนักลดลง (%)',{exact:true})).toHaveAttribute('readonly','');
   await page.getByRole('heading',{name:'อัตราโบนัส',exact:true}).click();
   await page.getByLabel('อัตราโบนัสต่อกิโลกรัม (บาท)',{exact:true}).fill(rate);
   await page.getByRole('heading',{name:'อัตราโบนัส',exact:true}).click();
@@ -159,7 +171,7 @@ test('deleting during an older list refresh cannot restore the deleted bonus',as
     await page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true}).click();
     await expect(page.getByRole('heading',{name:'ผลคำขอยืนยันโบนัสทุกช่วง',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'กลับรายการโบนัส',exact:true}).click();
-    const remove=page.getByRole('button',{name:'ลบผล 2020-01-12',exact:true});await expect(remove).toBeEnabled();
+    const remove=page.getByRole('button',{name:'ลบผล 2004-01-12',exact:true});await expect(remove).toBeEnabled();
     await expect(page.getByRole('button',{name:'โหลดรายการโบนัสใหม่',exact:true})).toBeEnabled();
     let reads=0;
     await page.route(url=>url.pathname==='/api/lanflow/branch-bonuses'&&url.searchParams.get('view')==='list',async route=>{
@@ -273,9 +285,9 @@ test('settings, readonly count goal, and selected evidence fit narrow screens',a
 test('all periods keep independent settings and confirm atomically',async({browser})=>{
   test.setTimeout(90000);await ready();const next=crypto.randomUUID(),old=crypto.randomUUID();
   resetTestSql(`insert into public.branch_bonuses(id,location_id,period_start,period_end,input,request_fingerprint,snapshot,created_by_user_id,created_by_name)
-    values('${old}',${scope},'2020-01-15','2020-01-20','{"excludedKeys":[],"excludedGroups":[]}',repeat('a',32),'{"allSources":[],"observedChanges":[]}', '${actor}','${label}');
+    values('${old}',${scope},'2004-01-15','2004-01-20','{"excludedKeys":[],"excludedGroups":[]}',repeat('a',32),'{"allSources":[],"observedChanges":[]}', '${actor}','${label}');
     insert into public.rubber_exports select (jsonb_populate_record(null::public.rubber_exports,to_jsonb(e)||jsonb_build_object(
-      'id','${next}','export_no','REX-SPLIT-${next}','sequence_no',202,'created_at','2020-01-24T01:00Z'))).* from public.rubber_exports e where id='${rex[0]}';`);
+      'id','${next}','export_no','REX-SPLIT-${next}','sequence_no',202,'created_at','2004-01-24T01:00Z'))).* from public.rubber_exports e where id='${rex[0]}';`);
   const {page,context}=await open(browser);
   try{
     await settings(page);await fillSettings(page);
@@ -284,7 +296,7 @@ test('all periods keep independent settings and confirm atomically',async({brows
     await page.getByLabel('ช่วงที่กำลังตรวจ').selectOption('0');
     await expect(page.getByLabel('อัตราโบนัสต่อกิโลกรัม (บาท)',{exact:true})).toHaveValue('0.02');
     await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
-    const final=page.getByLabel('ยอดโบนัสสุดท้าย 2020-01-12 ถึง 2020-01-12 (บาท)',{exact:true});
+    const final=page.getByLabel('ยอดโบนัสสุดท้าย 2004-01-12 ถึง 2004-01-12 (บาท)',{exact:true});
     await final.fill(',');await final.press('Tab');
     await expect(final).toHaveAttribute('aria-invalid','true');
     await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeDisabled();
@@ -299,8 +311,8 @@ test('all periods keep independent settings and confirm atomically',async({brows
     await expect(page.getByRole('heading',{name:'ผลคำขอยืนยันโบนัสทุกช่วง',exact:true})).toBeVisible();
     await expect(page.getByRole('button',{name:/เปิดผล$/})).toHaveCount(2);
     expect(resetTestSql(`select count(*) from public.branch_bonuses where location_id=${scope}`)).toBe('3');
-    expect(Number(resetTestSql(`select snapshot->>'finalAmount' from public.branch_bonuses where location_id=${scope} and period_start='2020-01-12'`))).toBe(0);
-    expect(Number(resetTestSql(`select snapshot->>'finalAmount' from public.branch_bonuses where location_id=${scope} and period_start='2020-01-24'`))).toBeGreaterThan(0);
+    expect(Number(resetTestSql(`select snapshot->>'finalAmount' from public.branch_bonuses where location_id=${scope} and period_start='2004-01-12'`))).toBe(0);
+    expect(Number(resetTestSql(`select snapshot->>'finalAmount' from public.branch_bonuses where location_id=${scope} and period_start='2004-01-24'`))).toBeGreaterThan(0);
   }finally{await context.close();}
 });
 
@@ -309,7 +321,7 @@ test('an unfinished REX outside the first rendered page still blocks progress',a
   resetTestSql(`insert into public.rubber_exports select (jsonb_populate_record(null::public.rubber_exports,to_jsonb(e)||jsonb_build_object(
     'id',gen_random_uuid(),'export_no','REX-PAGE-'||n,'sequence_no',300+n))).* from public.rubber_exports e cross join generate_series(1,51) n where id='${rex[0]}';
     insert into public.rubber_exports select (jsonb_populate_record(null::public.rubber_exports,to_jsonb(e)||jsonb_build_object(
-    'id','${pending}','export_no','${pendingNo}','sequence_no',399,'created_at','2019-01-01T01:00Z','sold_out_at',null,'sold_out_by_user_id',null,'sold_out_by_name',null))).* from public.rubber_exports e where id='${rex[0]}';`);
+    'id','${pending}','export_no','${pendingNo}','sequence_no',399,'created_at','2003-01-01T01:00Z','sold_out_at',null,'sold_out_by_user_id',null,'sold_out_by_name',null))).* from public.rubber_exports e where id='${rex[0]}';`);
   const {page,context}=await open(browser);
   try{
     await page.getByRole('button',{name:'สร้างโบนัส',exact:true}).click();
@@ -327,7 +339,7 @@ test('a legacy pending request with old precision resolves its original receipt'
   const expected=resetTestSql(`select set_config('request.jwt.claim.sub','${actor}',false);
     create temp table legacy_pending as select '${JSON.stringify(input)}'::jsonb input,private.branch_bonus_calculate('${branch}','${JSON.stringify(input)}',clock_timestamp()) snapshot;
     insert into public.branch_bonuses(id,location_id,period_start,period_end,input,request_fingerprint,snapshot,created_by_user_id,created_by_name)
-      select '${id}',${scope},'2020-01-12','2020-01-12',input,repeat('a',32),snapshot||jsonb_build_object('finalAmount',snapshot->'suggestedAmount'),'${actor}','${label}' from legacy_pending;
+      select '${id}',${scope},'2004-01-12','2004-01-12',input,repeat('a',32),snapshot||jsonb_build_object('finalAmount',snapshot->'suggestedAmount'),'${actor}','${label}' from legacy_pending;
     insert into private.branch_bonus_exports values('${id}','${rex[0]}');
     insert into private.branch_bonus_request_receipts select '${id}','${actor}',${scope},md5(jsonb_build_object('input',input,'expected',snapshot->>'sourceFingerprint','final',null)::text),'${id}' from legacy_pending;
     select snapshot->>'sourceFingerprint' from legacy_pending;`).split('\n').at(-1)!;
@@ -352,7 +364,7 @@ test('changed financial sources return to review without saving a partial result
     await expect(confirm).toBeEnabled();
     const source=crypto.randomUUID();
     resetTestSql(`insert into public.income_expense(id,client_temp_id,local_bill_no,server_bill_no,sync_status,record_status,location_id,type,number,tx_date,title,cost,bill_option,created_by_user_id,created_by_name,created_by_phone)
-      values('${source}','${source}','${source}','${source}','synced','active',${scope},'expense','1','2020-01-12','Changed after review',100,'ค่าใช้จ่าย','${actor}','${label}','${phone}');`);
+      values('${source}','${source}','${source}','${source}','synced','active',${scope},'expense','1','2004-01-12','Changed after review',100,'ค่าใช้จ่าย','${actor}','${label}','${phone}');`);
     const rejected=page.waitForResponse(response=>response.url().endsWith('/api/lanflow/branch-bonuses')
       && response.request().postDataJSON()?.action==='confirmBatch'&&response.status()===409);
     await confirm.click();await rejected;
@@ -363,14 +375,14 @@ test('changed financial sources return to review without saving a partial result
 
 
 test('verified age uses days, estimated labels and upward scoring on mobile, then saves',async({browser})=>{
-  test.setTimeout(90000);await ready();const {page,context}=await open(browser,390);
+  test.setTimeout(90000);await ready();seedReference();const {page,context}=await open(browser,390);
   try{
     await settings(page);
     await page.getByRole('button',{name:'ใช้สัดส่วนทดลอง 50 / 40 / 10 / 0',exact:true}).click();
     await expect(page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true})).toHaveValue('0');
     for(const name of ['ภาระดำเนินงานต่อยอดซื้อ','น้ำหนักลดลง','จำนวนรายการนับเงิน'])await page.getByLabel(`สัดส่วน ${name} (%)`,{exact:true}).fill('0');
     await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('100');
-    const goal=page.getByLabel('เป้า อายุยาง (วัน)',{exact:true});await goal.fill('5');await goal.press('Tab');
+    const goal=page.getByLabel('เป้า อายุยาง (วัน)',{exact:true});await expect(goal).toHaveAttribute('readonly','');
     await expect(goal).toHaveValue('5.00');
     await expect(goal).toHaveAttribute('aria-invalid','false');
     await page.getByRole('button',{name:'0.02 บาท/กก.',exact:true}).click();
@@ -417,7 +429,7 @@ test('missing age warns before settings, blocks only when enabled, then permits 
     await page.getByRole('button',{name:'ตรวจสอบและถัดไป',exact:true}).click();
     await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
     await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('100');
-    await page.getByLabel('เป้า อายุยาง (วัน)',{exact:true}).fill('5');await page.getByRole('heading',{name:'อัตราโบนัส',exact:true}).click();
+    await expect(page.getByLabel('เป้า อายุยาง (วัน)',{exact:true})).toHaveAttribute('readonly','');await page.getByRole('heading',{name:'อัตราโบนัส',exact:true}).click();
     await page.getByRole('button',{name:'0.02 บาท/กก.',exact:true}).click();
     await expect(page.getByText('REX บางใบขาดอายุ ณ ตรวจสอบ กรุณาแก้ต้นทางหรือปรับสัดส่วนอายุยางเป็น 0%',{exact:true})).toBeVisible();
     await expect(page.getByRole('button',{name:'ถัดไป',exact:true})).toBeDisabled();
@@ -431,7 +443,7 @@ test('missing age warns before settings, blocks only when enabled, then permits 
 test('selection keeps review panels mounted and open while recalculating',async({browser})=>{
   test.setTimeout(90000);await ready();
   resetTestSql(`insert into public.income_expense(id,client_temp_id,local_bill_no,server_bill_no,sync_status,record_status,location_id,type,number,tx_date,title,cost,bill_option,created_by_user_id,created_by_name,created_by_phone,created_at)
-    select gen_random_uuid(),'KEEP-'||n,'KEEP-'||n,'KEEP-'||n,'synced','active',${scope},'expense',n::text,'2020-01-12','Keep expense '||n,n,'ค่าใช้จ่าย','${actor}','${label}','${phone}','2020-01-12Z' from generate_series(1,61)n;`);
+    select gen_random_uuid(),'KEEP-'||n,'KEEP-'||n,'KEEP-'||n,'synced','active',${scope},'expense',n::text,'2004-01-12','Keep expense '||n,n,'ค่าใช้จ่าย','${actor}','${label}','${phone}','2004-01-12Z' from generate_series(1,61)n;`);
   const {page,context}=await open(browser);let release=()=>{};
   try{
     await page.getByRole('button',{name:'สร้างโบนัส',exact:true}).click();
@@ -472,4 +484,54 @@ test('selection keeps review panels mounted and open while recalculating',async(
     await expenses.locator('summary').click();await expect(expenses).toHaveAttribute('open','');
     await page.screenshot({path:'output/branch-bonus-age/selection-stays-open.png',fullPage:true});
   }finally{release();await context.close();}
+});
+
+test('reference branches remain visible when disabled and change readonly targets without collapsing paged evidence',async({browser})=>{
+  test.setTimeout(90000);await ready();seedReference();
+  resetTestSql(`insert into public.rubber_exports(id,export_no,export_date,sequence_no,location_id,original_weight_total,paid_total,rubber_value_total,average_price,created_by_user_id,created_by_name,created_by_phone,created_at)
+    values('${crypto.randomUUID()}','PENDING-REF-${pendingBranch}','2004-01-12',304,'${pendingBranch}',100,1000,1000,10,'${actor}','${label}','${phone}','2004-01-12Z');
+    insert into public.income_expense(id,client_temp_id,local_bill_no,server_bill_no,sync_status,record_status,location_id,type,number,tx_date,title,cost,bill_option,created_by_user_id,created_by_name,created_by_phone,created_at)
+    select gen_random_uuid(),'REFCOST-'||n,'REFCOST-'||n,'REFCOST-'||n,'synced','active',${scope},'expense',n::text,'2004-01-12','Reference expense '||n,n,'ค่าใช้จ่าย','${actor}','${label}','${phone}','2004-01-12Z' from generate_series(1,61)n;`);
+  const {page,context}=await open(browser,390);
+  try{
+    await page.getByRole('button',{name:'สร้างโบนัส',exact:true}).click();await page.getByRole('button',{name:'ตรวจสอบและถัดไป',exact:true}).click();
+    const picker=page.getByRole('group',{name:'สาขาอ้างอิงสำหรับคำนวณเป้า',exact:true});
+    const other=picker.getByRole('checkbox',{name:`รวมสาขา ${refName} ในค่าเฉลี่ย`,exact:true});
+    const pending=picker.getByRole('checkbox',{name:`รวมสาขา ${pendingName} ในค่าเฉลี่ย`,exact:true});
+    await expect(other).toBeChecked();await expect(pending).toBeVisible();await expect(pending).toBeDisabled();await expect(pending).not.toBeChecked();
+    await expect(picker.getByText('มี REX ยังไม่เข้าประวัติ · ไม่รวมในค่าเฉลี่ย',{exact:true})).toBeVisible();
+    const expenses=page.locator('details').filter({has:page.locator('summary').filter({hasText:'รายการค่าใช้จ่าย'})});
+    await expenses.locator('summary').click();await expect(expenses.getByRole('checkbox',{name:/รวม Reference expense /})).toHaveCount(50);
+    await expenses.getByRole('button',{name:'โหลดรายละเอียดเพิ่ม',exact:true}).click();await expect(expenses.getByRole('checkbox',{name:/รวม Reference expense /})).toHaveCount(61);
+    const original=await expenses.elementHandle();await other.uncheck();await expect(page.getByText('กำลังคำนวณทุกช่วง…',{exact:true})).toHaveCount(0);
+    expect(await original!.evaluate(el=>el.isConnected)).toBe(true);await expect(expenses).toHaveAttribute('open','');await expect(expenses.getByRole('checkbox',{name:/รวม Reference expense /})).toHaveCount(61);
+    for(const width of [320,390]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);await page.screenshot({path:`output/branch-bonus-age/reference-${width}.png`,fullPage:true});}
+    await page.getByRole('button',{name:'ถัดไป',exact:true}).click();await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('100');
+    await expect(page.getByLabel('เป้า อายุยาง (วัน)',{exact:true})).toHaveValue('6.00');await expect(page.getByLabel('เป้า อายุยาง (วัน)',{exact:true})).toHaveAttribute('readonly','');
+    await page.getByRole('button',{name:'ย้อนกลับ',exact:true}).click();await expect(other).not.toBeChecked();await other.check();
+    await page.getByRole('button',{name:'ถัดไป',exact:true}).click();await expect(page.getByLabel('เป้า อายุยาง (วัน)',{exact:true})).toHaveValue('5.00');
+  }finally{await context.close();}
+});
+
+test('zero automatic age target explains the blocker and allows disabling age',async({browser})=>{
+  test.setTimeout(90000);await ready();const {page,context}=await open(browser,390);
+  try{
+    // SQL tests cover actual zero-age rows; this response gate isolates the UI escape path.
+    await page.route('**/api/lanflow/branch-bonuses',async route=>{
+      if(route.request().postDataJSON()?.action!=='previewBatch'){await route.continue();return;}
+      const response=await route.fetch(),data:BonusBatchPreview=await response.json();
+      for(const {preview} of data.periods){
+        preview.reference!.ageTarget=0;
+        if(route.request().postDataJSON().periods[0].input.metrics.age.weight>0){preview.canConfirm=false;preview.issues.push('เป้าอายุเฉลี่ยเป็น 0 วัน กรุณาปรับสัดส่วนอายุยางเป็น 0%');}
+      }
+      await route.fulfill({response,json:data});
+    });
+    await settings(page);await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('100');
+    await page.getByRole('button',{name:'0.02 บาท/กก.',exact:true}).click();
+    await expect(page.getByLabel('เป้า อายุยาง (วัน)',{exact:true})).toHaveValue('0.00');
+    await expect(page.getByText('เป้าอายุเฉลี่ยเป็น 0 วัน กรุณาปรับสัดส่วนอายุยางเป็น 0%',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'ถัดไป',exact:true})).toBeDisabled();
+    await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('0');await fillSettings(page);
+    await page.getByRole('button',{name:'ถัดไป',exact:true}).click();await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeEnabled();
+  }finally{await context.close();}
 });

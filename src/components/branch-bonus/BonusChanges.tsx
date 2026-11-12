@@ -4,29 +4,30 @@ import type { BonusChange } from "@/types/branch-bonus";
 import { cn } from "@/lib/cn";
 import { bonusNumber, secondaryButton } from "./bonus-display";
 
-export function BonusChanges({ rows, total, fingerprint, load, saved = false }: {
-  rows: BonusChange[]; total: number; fingerprint: string; saved?: boolean;
-  load: (offset: number, signal?: AbortSignal) => Promise<{ rows: BonusChange[]; sourceFingerprint: string }>;
+export function BonusChanges({ rows, total, fingerprint, pageFingerprint, load, saved = false }: {
+  rows: BonusChange[]; total: number; fingerprint: string; pageFingerprint?: string; saved?: boolean;
+  load: (offset: number, signal?: AbortSignal) => Promise<{ rows: BonusChange[]; sourceFingerprint: string; pageFingerprint?: string | null }>;
 }) {
+  const expectedFingerprint=pageFingerprint??fingerprint;
   const [extra, setExtra] = useState<{ fingerprint: string; rows: BonusChange[] }>({ fingerprint: "", rows: [] });
   const [loading, setLoading] = useState(false), [error, setError] = useState<string | null>(null);
-  const request = useRef<AbortController | null>(null), current = useRef(fingerprint); current.current = fingerprint;
-  const visible = [...rows, ...(extra.fingerprint === fingerprint ? extra.rows : [])];
+  const request = useRef<AbortController | null>(null), current = useRef(expectedFingerprint); current.current = expectedFingerprint;
+  const visible = [...rows, ...(extra.fingerprint === expectedFingerprint ? extra.rows : [])];
   useEffect(() => {
     setLoading(false); setError(null);
     return () => { request.current?.abort(); request.current = null; };
-  }, [fingerprint]);
+  }, [expectedFingerprint]);
   async function more() {
     if (request.current) return;
     const controller = new AbortController(); request.current = controller;
     setLoading(true); setError(null);
     try {
       const page = await load(visible.length, controller.signal);
-      if (controller.signal.aborted || current.current !== fingerprint) return;
-      if (page.sourceFingerprint !== fingerprint) throw new Error("ส่วนต่างเปลี่ยนแล้ว กรุณาคำนวณและตรวจยอดใหม่");
+      if (controller.signal.aborted || current.current !== expectedFingerprint) return;
+      if ((pageFingerprint ? page.pageFingerprint : page.sourceFingerprint) !== expectedFingerprint) throw new Error("ส่วนต่างเปลี่ยนแล้ว กรุณาคำนวณและตรวจยอดใหม่");
       if (!page.rows.length) throw new Error("โหลดส่วนต่างไม่ครบ กรุณาลองใหม่");
-      setExtra({ fingerprint, rows: [...(extra.fingerprint === fingerprint ? extra.rows : []), ...page.rows] });
-    } catch (caught) { if (!controller.signal.aborted && current.current === fingerprint) setError(caught instanceof Error ? caught.message : "โหลดส่วนต่างไม่ได้"); }
+      setExtra({ fingerprint: expectedFingerprint, rows: [...(extra.fingerprint === expectedFingerprint ? extra.rows : []), ...page.rows] });
+    } catch (caught) { if (!controller.signal.aborted && current.current === expectedFingerprint) setError(caught instanceof Error ? caught.message : "โหลดส่วนต่างไม่ได้"); }
     finally { if (request.current === controller) { request.current = null; setLoading(false); } }
   }
   return <details className="rounded-lg border border-black/10 p-4">

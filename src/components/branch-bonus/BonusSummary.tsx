@@ -1,4 +1,5 @@
 import type { BonusPreview } from "@/types/branch-bonus";
+import { BonusReferenceSummary } from "./BonusReferenceSummary";
 import { bonusNumber, metricLabels, metricHelp, metricUnits } from "./bonus-display";
 
 export function BonusSummary({ preview, finalAmount }: { preview: BonusPreview | null; finalAmount?: number | null }) {
@@ -8,6 +9,7 @@ export function BonusSummary({ preview, finalAmount }: { preview: BonusPreview |
   const calculated = preview.metrics.length > 0 && preview.metrics.every(m => m.actual !== null && m.adjustment !== null)
     && Math.round(preview.metrics.reduce((n, m) => n + m.weight, 0) * 100) === 10000 && preview.rate > 0 && preview.suggestedAmount<=9999999999.99;
   return <div className="max-w-3xl space-y-4">
+    {preview.reference&&<BonusReferenceSummary reference={preview.reference}/>}
     <div><h3 className="text-balance font-semibold">ช่วงประเมินอัตโนมัติ</h3><p className="mt-1 text-pretty text-sm tabular-nums">{preview.periodStart} ถึง {preview.periodEnd}</p><p className="text-pretty text-xs text-ink/60">วันสร้าง REX ตามเวลาไทย</p></div>
     <div><p className="text-pretty text-sm text-ink/60">น้ำหนักที่ใช้คิดโบนัส</p><p className="text-xl font-bold tabular-nums">{bonusNumber(preview.weight)} กก.</p><p className="text-pretty text-xs text-ink/60">น้ำหนักต้นทางก่อนลดของ REX ในช่วงนี้</p></div>
     <dl className="grid grid-cols-2 gap-3 text-sm tabular-nums"><div><dt className="text-pretty text-ink/60">น้ำหนักหลังลด</dt><dd>{bonusNumber(currentWeight)} กก.</dd></div><div><dt className="text-pretty text-ink/60">น้ำหนักที่ลดลง</dt><dd>{bonusNumber(currentWeight === null ? null : preview.weight - currentWeight)} กก.</dd></div></dl>

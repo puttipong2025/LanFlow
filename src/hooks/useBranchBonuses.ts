@@ -74,7 +74,7 @@ export function useBranchBonuses(locationId: string, ownerId: string, online: bo
     catch (caught) { setError(caught instanceof Error ? caught.message : "ลบไม่สำเร็จ กรุณาลองใหม่"); return false; }
     finally { flight.current = false; setWorking(false); }
   }
-  const sources = (input: BonusSettings, section: BonusSourceSection, offset: number, id?: string, signal?: AbortSignal) => fetchBonus<{ rows: BonusSource[]; sourceFingerprint: string }>({ action: "sources", locationId, input, section, offset, ...(id ? { id } : {}) },signal);
-  const changeSources = (input: BonusSettings, offset: number, id?: string, signal?: AbortSignal) => fetchBonus<{ rows: BonusChange[]; sourceFingerprint: string }>({ action: "sources", locationId, input, section: "changes", offset, ...(id ? { id } : {}) }, signal);
+  const sources = (input: BonusSettings, section: BonusSourceSection, offset: number, id?: string, signal?: AbortSignal) => fetchBonus<{ rows: BonusSource[]; sourceFingerprint: string; pageFingerprint?: string | null }>({ action: "sources", locationId, input, section, offset, ...(id ? { id } : {}) },signal);
+  const changeSources = (input: BonusSettings, offset: number, id?: string, signal?: AbortSignal) => fetchBonus<{ rows: BonusChange[]; sourceFingerprint: string; pageFingerprint?: string | null }>({ action: "sources", locationId, input, section: "changes", offset, ...(id ? { id } : {}) }, signal);
   return { list, loading, working, error, setError, pending, load, detail, retryLegacy, remove, sources, changeSources };
 }

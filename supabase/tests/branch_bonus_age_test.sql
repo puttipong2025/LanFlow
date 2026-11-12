@@ -76,7 +76,7 @@ select extensions.ok((public.preview_branch_bonus_batch('d0020000-0000-4000-8000
 select extensions.throws_like($$select public.preview_branch_bonus_batch('d0020000-0000-4000-8000-000000000001',(select r->>'fingerprint' from age_review),jsonb_set((select parts from age_parts),'{0,input,metrics,age,weight}','0.5'))$$,'%BONUS_INVALID%','direct RPC rejects fractional age weight');
 update age_parts set parts=(select jsonb_agg(p||jsonb_build_object('expected',public.preview_branch_bonus_batch('d0020000-0000-4000-8000-000000000001',(select r->>'fingerprint' from age_review),parts)->'periods'->0->'preview'->>'sourceFingerprint')) from jsonb_array_elements(parts) p);
 create temporary table age_result as select public.confirm_branch_bonus_batch('d0020000-0000-4000-8000-000000000001','d0090000-0000-4000-8000-000000000001',(select r->>'fingerprint' from age_review),(select parts from age_parts)) result;
-select extensions.is((select result->'results'->0->>'formulaVersion' from age_result),'branch-bonus-v3','confirmed snapshot retains formula version');
+select extensions.is((select result->'results'->0->>'formulaVersion' from age_result),'branch-bonus-v4','confirmed snapshot retains automatic-reference formula version');
 select extensions.is(public.confirm_branch_bonus_batch('d0020000-0000-4000-8000-000000000001','d0090000-0000-4000-8000-000000000001',(select r->>'fingerprint' from age_review),(select parts from age_parts)),(select result from age_result),'new identical request replays exact saved result');
 select extensions.is((select count(*) from private.branch_bonus_batches where location_id='d0020000-0000-4000-8000-000000000001'),1::bigint,'replay creates no duplicate batch');
 select * from extensions.finish();

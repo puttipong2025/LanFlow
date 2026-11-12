@@ -23,10 +23,16 @@ export type BonusMetric = {
   relative: number | null; adjustment: number | null;
   weightedAdjustment?: number | null;
 };
+export type BonusReferenceBranch = { id: string; name: string; hasPending: boolean; included: boolean };
+export type BonusReference = {
+  ageTarget: number | null; lossTarget: number; ageComplete: boolean;
+  weight: number; count: number; estimatedCount: number; branches: BonusReferenceBranch[];
+};
 export type BonusPreview = {
   requestVersion?: "batch-v1";
   periodStart: string; periodEnd: string; periodDays: number; asOf: string; formulaVersion: string;
   sourceFingerprint: string; complete: boolean; overlap: boolean; gaps: Array<{ kind: string; date: string }>;
+  pageFingerprint?: string; reference?: BonusReference;
   exports: BonusExport[]; expenses: BonusSource[]; purchases: BonusSource[]; counts: BonusSource[];
   sourceCounts: Record<BonusSourceSection, number>;
   selectedSourceCounts: Record<BonusSourceSection, number>;
@@ -56,6 +62,6 @@ export type BonusRequiredExport = BonusExport & {
 export type BonusPeriod = { key: string; exportIds: string[]; periodStart: string; periodEnd: string; periodDays: number };
 export type BonusReview = { rows: BonusRequiredExport[]; periods: BonusPeriod[]; requiredCount: number; blockedCount: number; fingerprint: string };
 export type BonusBatchPart = { key: string; input: BonusSettings; expected?: string; finalAmount?: number | null };
-export type BonusBatchPreview = { periods: Array<{ key: string; preview: BonusPreview }> };
+export type BonusBatchPreview = { periods: Array<{ key: string; preview: BonusPreview }>; referenceBranches?: BonusReferenceBranch[] };
 export type BonusBatchResult = { id: string; results: BonusDetail[]; deletedIds: string[] };
-export type BonusBatchIntent = { version: 1; id: string; ownerId: string; locationId: string; review: string; periods: BonusBatchPart[] };
+export type BonusBatchIntent = { version: 1; id: string; ownerId: string; locationId: string; review: string; periods: BonusBatchPart[]; referenceExcludedLocationIds?: string[] };

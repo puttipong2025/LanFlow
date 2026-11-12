@@ -106,4 +106,63 @@ test.describe.serial('branch bonus batch database contention and upgrade',()=>{
     const result=await save.done;await source.done;expect(result.code).not.toBe(0);expect(result.stderr).toContain('BONUS_SOURCE_CHANGED');
     expect(sql(db,'select count(*) from public.branch_bonuses')).toBe('0');expect(sql(db,'select count(*) from private.branch_bonus_batches')).toBe('0');
   });
+  function referenceFixture(){
+    const location=crypto.randomUUID(),exportId=crypto.randomUUID();
+    sql(db,`begin;${auth}delete from public.rubber_exports where location_id='${branch}' and id<>'${rex}';
+      insert into public.locations(id,name,code) values('${location}','Concurrent reference ${location}','R${location.slice(0,7)}');
+      insert into public.rubber_exports select (jsonb_populate_record(null::public.rubber_exports,to_jsonb(e)||jsonb_build_object(
+        'id','${exportId}','location_id','${location}','export_no','REF-${exportId}','sequence_no',105,'current_weight',original_weight_total*.98))).*
+        from public.rubber_exports e where id='${rex}';commit;`);
+    const cleanup=()=>sql(db,`begin;${auth}delete from public.branch_bonuses where location_id in ('${branch}','${location}');
+      delete from private.branch_bonus_batches;delete from public.rubber_exports where location_id='${location}';update public.locations set is_active=false where id='${location}';commit;`);
+    return {location,exportId,cleanup};
+  }
+  test('external history committed before the reference snapshot invalidates a waiting confirmation',async()=>{
+    const ref=referenceFixture();
+    try{
+      const payload=preview(),id=crypto.randomUUID(),holder=session();holder.send(`select pg_advisory_xact_lock(hashtextextended('${branch}',0));select 'HELD';`);await holder.wait('HELD');
+      const save=session();save.finish(confirm(id,payload)+'commit;');await blocked(id);
+      sql(db,`begin;${auth}select public.set_rubber_export_sold_out('${ref.exportId}',false);commit;`);holder.finish('commit;');
+      const result=await save.done;await holder.done;expect(result.code).not.toBe(0);expect(result.stderr).toContain('BONUS_SOURCE_CHANGED');
+      expect(sql(db,'select count(*) from public.branch_bonuses')).toBe('0');
+    }finally{ref.cleanup();}
+  });
+  test('two branches holding their own locks confirm against the shared snapshot without a lock cycle',async()=>{
+    const ref=referenceFixture();
+    try{
+      const first=preview();
+      const review=JSON.parse(sql(db,`begin;${auth}select public.review_branch_bonus('${ref.location}');rollback;`).split('\n').at(-1)!);
+      const settings=JSON.parse(input());settings.metrics.burden.weight=0;settings.metrics.counts.weight=0;settings.metrics.loss.weight=100;
+      const parts=[{key:review.periods[0].key,input:{...settings,exportIds:[ref.exportId]}}];
+      const result=JSON.parse(sql(db,`begin;${auth}select public.preview_branch_bonus_batch('${ref.location}','${review.fingerprint}','${JSON.stringify(parts)}');rollback;`).split('\n').at(-1)!);
+      expect(result.periods[0].preview.canConfirm,result.periods[0].preview.issues.join(", ")).toBe(true);
+      const second=parts.map(p=>({...p,expected:result.periods[0].preview.sourceFingerprint}));
+      const a=session(),b=session();a.send(`select pg_advisory_xact_lock(hashtextextended('${branch}',0));select 'A';`);
+      b.send(`select pg_advisory_xact_lock(hashtextextended('${ref.location}',0));select 'B';`);await Promise.all([a.wait('A'),b.wait('B')]);
+      a.finish(confirm(crypto.randomUUID(),first)+'commit;');
+      b.finish(`select public.confirm_branch_bonus_batch('${ref.location}','${crypto.randomUUID()}','${review.fingerprint}','${JSON.stringify(second)}');commit;`);
+      const outcomes=await Promise.all([a.done,b.done]);for(const outcome of outcomes)expect(outcome.code,outcome.stderr).toBe(0);
+      expect(sql(db,'select count(*) from public.branch_bonuses')).toBe('2');
+    }finally{ref.cleanup();}
+  });
+  test('an external commit after context capture cannot mix new reference data into the saved snapshot',async()=>{
+    const ref=referenceFixture(),holder=session();let released=false;
+    try{
+      const payload=preview(),id=crypto.randomUUID();
+      const originalTarget=JSON.parse(sql(db,`begin;${auth}select public.preview_branch_bonus_batch('${branch}','${payload.review}','${JSON.stringify(payload.periods)}');rollback;`).split('\n').at(-1)!).periods[0].preview.reference.lossTarget;
+      sql(db,`create function public.reference_snapshot_probe() returns trigger language plpgsql as $probe$ begin
+        if new.location_id='${branch}' then perform pg_advisory_xact_lock(923711);end if;return new;end $probe$;
+        create trigger reference_snapshot_probe before insert on public.branch_bonuses for each row execute function public.reference_snapshot_probe();`);
+      holder.send("select pg_advisory_xact_lock(923711);select 'PROBE';");await holder.wait('PROBE');
+      const save=session();save.finish(confirm(id,payload)+'commit;');await blocked(id);
+      sql(db,`begin;${auth}select public.set_rubber_export_sold_out('${ref.exportId}',false);
+        select public.adjust_rubber_export_weight(id,original_weight_total*.95,current_weight) from public.rubber_exports where id='${ref.exportId}';
+        select public.set_rubber_export_sold_out('${ref.exportId}',true);commit;`);
+      holder.finish('commit;');released=true;await holder.done;const result=await save.done;expect(result.code,result.stderr).toBe(0);
+      expect(Number(sql(db,`select (snapshot->'reference'->>'lossTarget')::numeric from public.branch_bonuses where location_id='${branch}'`))).toBe(originalTarget);
+    }finally{
+      if(!released){holder.finish('rollback;');await holder.done;}
+      sql(db,'drop trigger if exists reference_snapshot_probe on public.branch_bonuses;drop function if exists public.reference_snapshot_probe();');ref.cleanup();
+    }
+  });
 });

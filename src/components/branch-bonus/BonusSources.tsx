@@ -5,23 +5,24 @@ import { bonusNumber, costLabels, secondaryButton } from "./bonus-display";
 
 export function BonusSources({ preview, input, change, load, saved = false }: {
   preview: BonusPreview; input: BonusSettings; change?: (next: BonusSettings) => void; saved?: boolean;
-  load: (section: BonusSourceSection, offset: number, signal?: AbortSignal) => Promise<{ rows: BonusSource[]; sourceFingerprint: string }>;
+  load: (section: BonusSourceSection, offset: number, signal?: AbortSignal) => Promise<{ rows: BonusSource[]; sourceFingerprint: string; pageFingerprint?: string | null }>;
 }) {
+  const pageFingerprint=preview.pageFingerprint??preview.sourceFingerprint;
   const [extra, setExtra] = useState<{ fingerprint: string; rows: Partial<Record<BonusSourceSection, BonusSource[]>> }>({ fingerprint: "", rows: {} });
   const [busy, setBusy] = useState<BonusSourceSection | null>(null), [error, setError] = useState<string | null>(null);
   const [expensesOpen,setExpensesOpen] = useState(false), [expenseLimit,setExpenseLimit] = useState(50);
-  const request = useRef<AbortController|null>(null), current = useRef(preview.sourceFingerprint); current.current = preview.sourceFingerprint;
-  const extraRows = extra.fingerprint === preview.sourceFingerprint ? extra.rows : {};
+  const request = useRef<AbortController|null>(null), current = useRef(pageFingerprint); current.current = pageFingerprint;
+  const extraRows = extra.fingerprint === pageFingerprint ? extra.rows : {};
   const groups = Object.entries(costLabels);
   useEffect(()=>{
     setBusy(null);setError(null);
     return()=>{request.current?.abort();request.current=null;};
-  },[preview.sourceFingerprint]);
+  },[pageFingerprint]);
   useEffect(()=>{
     if(expensesOpen && preview.expenses.length + (extraRows.expenses?.length ?? 0) < preview.sourceCounts.expenses) void more("expenses");
     // Reload all pages when a changed calculation replaces the open expense list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[expensesOpen,preview.sourceFingerprint]);
+  },[expensesOpen,pageFingerprint]);
   function toggleGroup(kind: string) {
     change?.({ ...input, excludedGroups: input.excludedGroups.includes(kind) ? input.excludedGroups.filter(k => k !== kind) : [...input.excludedGroups, kind] });
   }
@@ -31,13 +32,13 @@ export function BonusSources({ preview, input, change, load, saved = false }: {
   async function more(section: BonusSourceSection) {
     if (request.current) return;
     const controller=new AbortController();request.current=controller;setBusy(section);setError(null);
-    const fingerprint = preview.sourceFingerprint;
+    const fingerprint = pageFingerprint;
     try {
       const loaded = [...(extraRows[section] ?? [])];
       do {
         const result = await load(section, preview[section].length + loaded.length, controller.signal);
         if (controller.signal.aborted || current.current !== fingerprint) return;
-        if (result.sourceFingerprint !== fingerprint) throw new Error("ข้อมูลเปลี่ยนแล้ว กรุณาคำนวณใหม่ก่อนตรวจรายการต่อ");
+        if ((preview.pageFingerprint ? result.pageFingerprint : result.sourceFingerprint) !== fingerprint) throw new Error("ข้อมูลเปลี่ยนแล้ว กรุณาคำนวณใหม่ก่อนตรวจรายการต่อ");
         if (!result.rows.length) throw new Error("โหลดรายการไม่ครบ กรุณาลองใหม่");
         loaded.push(...result.rows);
         setExtra({ fingerprint, rows: { ...extraRows, [section]: [...loaded] } });

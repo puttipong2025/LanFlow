@@ -1,7 +1,7 @@
 import { requireSystemManager } from "@/lib/server/auth";
 import { isUuid, isIsoTimestamp, isNonNegativeNumeric12Scale2, isNonNegativePostgresInteger } from "@/lib/validation/primitives";
 import { parseBonusSettings } from "@/lib/branch-bonus/input";
-import { parseBonusBatch } from "@/lib/branch-bonus/batch";
+import { parseBonusBatch, parseBonusReference } from "@/lib/branch-bonus/batch";
 import { bonusError, bonusResponse } from "@/lib/server/branch-bonus-response";
 
 export const dynamic = "force-dynamic";
@@ -47,10 +47,11 @@ export async function POST(request: Request) {
     if (body.action === "previewBatch" || body.action === "confirmBatch") {
       const confirming = body.action === "confirmBatch";
       const periods = parseBonusBatch(body.periods, confirming);
-      if (!periods || typeof body.review !== "string" || !/^[a-f0-9]{32}$/.test(body.review)
+      const excluded = body.referenceExcludedLocationIds === undefined ? undefined : parseBonusReference(body.referenceExcludedLocationIds, location);
+      if (!periods || excluded === null || typeof body.review !== "string" || !/^[a-f0-9]{32}$/.test(body.review)
         || (confirming && !isUuid(body.id))) return bonusResponse({ error: "ข้อมูลชุดประเมินไม่ถูกต้อง" }, 400);
       const { data, error } = await auth.supabase.rpc(confirming ? "confirm_branch_bonus_batch" : "preview_branch_bonus_batch", {
-        p_location: location, p_review: body.review, p_periods: periods, ...(confirming ? { p_id: body.id } : {}),
+        p_location: location, p_review: body.review, p_periods: excluded === undefined ? periods : { periods, excludedLocationIds: excluded }, ...(confirming ? { p_id: body.id } : {}),
       });
       return error ? bonusError(error) : bonusResponse(data);
     }

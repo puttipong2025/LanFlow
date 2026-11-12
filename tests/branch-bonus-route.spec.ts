@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { loadSourceModule } from "./helpers/load-source-module";
 import { newBonusSettings, parseBonusSettings } from "../src/lib/branch-bonus/input";
-import { parseBonusBatch } from "../src/lib/branch-bonus/batch";
+import { parseBonusBatch, parseBonusReference } from "../src/lib/branch-bonus/batch";
 import { canViewNavigationTab } from "../src/components/lanflow/NavigationTabs";
 import { isTabBlockedOffline } from "../src/lib/offline-module-policy";
 import type { Profile } from "../src/types";
@@ -163,21 +163,33 @@ test("age requests use the fourth metric with day precision and canonical disabl
   expect(h.calls[0].args).toMatchObject({p_periods:[{input:{metrics:{age:{weight:100,target:5.25}}}}]});
 });
 
-test("schema bootstrap applies age even when the batch RPC already exists or is rebuilt",()=>{
+test("schema bootstrap applies age and reference even when batch already exists or is rebuilt",()=>{
   for(const initialBatch of [true,false]){
-    let batch=initialBatch,age=false;const applied:string[]=[];
-    const files=["20261104016000_branch_bonus_batches.sql","20261112010000_branch_bonus_verified_age.sql","20261109010000_reject_null_income_expense_approval_decision.sql"];
+    let batch=initialBatch,age=false,reference=false;const applied:string[]=[];
+    const files=["20261104016000_branch_bonus_batches.sql","20261112010000_branch_bonus_verified_age.sql","20261112020000_branch_bonus_reference_targets.sql","20261109010000_reject_null_income_expense_approval_decision.sql"];
     const module=loadSourceModule<typeof import("./support/branch-bonus-test-schema")>("tests/support/branch-bonus-test-schema.ts",{
       "node:fs":{readdirSync:()=>files,readFileSync:(path:string)=>path},
       "node:child_process":{
-        execFileSync:(_name:string,args:string[])=>args.at(-1)!.includes("to_regprocedure")?batch?"batch":"":args.at(-1)!.includes("to_regclass")?"base":age?"t":"f",
-        spawnSync:(_name:string,_args:string[],options:{input:string})=>{applied.push(options.input);if(options.input.includes("batches.sql"))batch=true;else age=true;return {status:0};},
+        execFileSync:(_name:string,args:string[])=>args.at(-1)!.includes("branch_bonus_reference")?reference?"t":"f":args.at(-1)!.includes("to_regprocedure")?batch?"batch":"":args.at(-1)!.includes("to_regclass")?"base":age?"t":"f",
+        spawnSync:(_name:string,_args:string[],options:{input:string})=>{applied.push(options.input);if(options.input.includes("batches.sql"))batch=true;else if(options.input.includes("reference_targets"))reference=true;else age=true;return {status:0};},
       },
     });
     module.ensureBonusBatchSchema("disposable","age_test");
     expect(applied).toContain("supabase/migrations/20261112010000_branch_bonus_verified_age.sql");
     expect(applied).not.toContain("supabase/migrations/20261109010000_reject_null_income_expense_approval_decision.sql");
     module.ensureBonusBatchSchema("disposable","age_test");
-    expect(applied).toHaveLength(initialBatch?1:2);
+    expect(applied).toHaveLength(initialBatch?2:3);
   }
+});
+
+
+test("reference selection has one canonical batch scope and rejects malformed or own-branch exclusions",async()=>{
+  const other="b0020000-0000-4000-8000-0000000000AB";
+  expect(parseBonusReference([other],location)).toEqual([other.toLowerCase()]);
+  for(const value of [null,{},[location],[other,other.toLowerCase()],["bad"]])expect(parseBonusReference(value,location)).toBeNull();
+  const h=harness(),periods=[{key:"0",input:settings()}];
+  expect((await h.post({action:"previewBatch",locationId:location,review:"a".repeat(32),periods,referenceExcludedLocationIds:[other]})).status).toBe(200);
+  expect(h.calls[0]).toEqual({name:"preview_branch_bonus_batch",args:{p_location:location,p_review:"a".repeat(32),p_periods:{periods:parseBonusBatch(periods),excludedLocationIds:[other.toLowerCase()]}}});
+  expect((await h.post({action:"previewBatch",locationId:location,review:"a".repeat(32),periods,referenceExcludedLocationIds:[location]})).status).toBe(400);
+  expect(h.calls).toHaveLength(1);
 });

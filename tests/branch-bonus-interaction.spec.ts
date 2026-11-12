@@ -44,7 +44,7 @@ const Modal=()=>null;
 const locationId="b0060000-0000-4000-8000-000000000001";
 const review:BonusReview={fingerprint:"b".repeat(32),requiredCount:1,blockedCount:0,rows:[],periods:[{key:"0",exportIds:[locationId],periodStart:"2020-01-01",periodEnd:"2020-01-01",periodDays:1}]};
 function preview():BonusBatchPreview {
-  return {periods:[{key:"0",preview:{
+  return {referenceBranches:[{id:locationId,name:"Own",hasPending:false,included:true},{id:"b0060000-0000-4000-8000-000000000002",name:"Other",hasPending:false,included:true}],periods:[{key:"0",preview:{
     periodStart:"2020-01-01",periodEnd:"2020-01-01",periodDays:1,asOf:"2020-01-01T00:00Z",formulaVersion:"branch-bonus-v2",
     sourceFingerprint:"a",complete:true,overlap:false,gaps:[],exports:[],expenses:[],purchases:[],counts:[],
     sourceCounts:{expenses:0,purchases:0,counts:0},selectedSourceCounts:{expenses:0,purchases:0,counts:0},changes:[],changeCount:0,expenseGroups:[],
@@ -125,6 +125,30 @@ test("selection retains review panels and pages against their original input unt
     expect(nodes(tree).find(n=>n.props["aria-current"]==="step").props.children[0]).toBe(3);
     expect(h.sent.filter(body=>body.action==="previewBatch").at(-1).periods[0].input.excludedGroups).toEqual(["expense"]);
   }finally{h.close();}
+});
+
+test("reference selection invalidates the calculation key and reaches the batch request",async()=>{
+  const h=batchHarness();
+  try{
+    h.render();await tick();let tree=h.render();button(tree,"ตรวจสอบและถัดไป").props.onClick();
+    await new Promise(resolve=>setTimeout(resolve,270));h.pending().resolve(preview());await tick();tree=h.render();h.retry();
+    const picker=nodes(tree).find(n=>n.props.branches);expect(picker).toBeTruthy();
+    const other="b0060000-0000-4000-8000-000000000002";picker.props.change([other]);tree=h.render();
+    expect(nodes(tree).find(n=>n.props.branches).props.excluded).toEqual([other]);
+    expect(nodes(tree).some(n=>n.props.role==="status"&&String(n.props.children).includes("ผลก่อนหน้า"))).toBe(true);
+    await new Promise(resolve=>setTimeout(resolve,270));expect(h.sent.at(-1).referenceExcludedLocationIds).toEqual([other]);
+    h.pending().resolve(preview());await tick();
+  }finally{h.close();}
+});
+
+test("change pages validate their own fingerprint when the reference fingerprint differs",async()=>{
+  const state=runtime();const row:BonusChange={bonus_id:locationId,source_key:"expense:1",label:"Changed",old_amount:1,new_amount:2,unknown:false,old_included:true,period_start:"2020-01-01",period_end:"2020-01-01",old_date:"2020-01-01",new_date:"2020-01-01"};
+  const module=loadSourceModule<typeof import("../src/components/branch-bonus/BonusChanges")>("src/components/branch-bonus/BonusChanges.tsx",{react:state.react,"react/jsx-runtime":jsxRuntime});
+  const render=()=>state.render(()=>module.BonusChanges({rows:Array.from({length:50},(_,i)=>({...row,source_key:`expense:${i}`})),total:51,fingerprint:"reference",pageFingerprint:"financial",load:async()=>({rows:[{...row,source_key:"expense:last"}],sourceFingerprint:"another-reference",pageFingerprint:"financial"})}));
+  try{
+    button(render(),"ดูส่วนต่างเพิ่ม").props.onClick();await tick();const tree=render();
+    expect(button(tree,"ดูส่วนต่างเพิ่ม")).toBeUndefined();expect(nodes(tree).some(n=>n.props.role==="alert")).toBe(false);
+  }finally{state.close();}
 });
 
 const source=(amount:number):BonusSource=>({key:`expense:${amount}`,id:String(amount),kind:"expense",date:"2020-01-01",occurredAt:"2020-01-01",label:`Expense ${amount}`,amount,included:true});
@@ -235,7 +259,7 @@ function recoveryHarness(kind:"batch"|"legacy",status:number) {
     metrics:{burden:{weight:0,target:null},loss:{weight:100,target:10},counts:{weight:0,target:null},age:{weight:0,target:null}}};
   const id="b0070000-0000-4000-8000-000000000001";
   const intent=kind==="batch"
-    ? {version:1,id,ownerId:locationId,locationId,review:"b".repeat(32),periods:[{key:"0",input,expected:"a".repeat(32),finalAmount:null}]}
+    ? {version:1,id,ownerId:locationId,locationId,referenceExcludedLocationIds:["b0060000-0000-4000-8000-000000000002"],review:"b".repeat(32),periods:[{key:"0",input,expected:"a".repeat(32),finalAmount:null}]}
     : {id,ownerId:locationId,locationId,input,expected:"a".repeat(32),finalAmount:null};
   const storageKey=kind==="batch"?`lanflow:bonus-batch:${locationId}:${locationId}`:`lanflow:bonus-intent:${locationId}:${locationId}`;
   storage.set(storageKey,JSON.stringify(intent));
@@ -270,6 +294,7 @@ for(const kind of ["batch","legacy"] as const){
       expect(h.pending()).toBe(before);
       h.succeed();await h.retry();expect(h.pending()).toBeUndefined();
       expect(h.sent.map(body=>body.id)).toEqual([h.id,h.id]);
+      if(kind==="batch")expect(h.sent.map(body=>body.referenceExcludedLocationIds)).toEqual([["b0060000-0000-4000-8000-000000000002"],["b0060000-0000-4000-8000-000000000002"]]);
     }finally{h.close();}
   });
   for(const status of [400,409])test(`${kind} recovery still clears a definitive HTTP ${status} rejection`,async()=>{

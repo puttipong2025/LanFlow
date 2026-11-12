@@ -2,6 +2,12 @@ import { isJsonObject, isUuid } from "@/lib/validation/primitives";
 import { BONUS_METRICS, type BonusBatchIntent, type BonusBatchPart } from "@/types/branch-bonus";
 import { parseBonusSettings } from "./input";
 
+export function parseBonusReference(value: unknown, location: string): string[] | null {
+  if (!Array.isArray(value) || value.length > 5000 || !value.every(isUuid)) return null;
+  const ids = value.map(id => id.toLowerCase());
+  return new Set(ids).size === ids.length && !ids.includes(location.toLowerCase()) ? ids.sort() : null;
+}
+
 export function parseBonusBatch(value: unknown, confirmation = false): BonusBatchPart[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > 100) return null;
   const result: BonusBatchPart[] = [];
@@ -31,6 +37,7 @@ export function readBonusBatchIntent(owner: string, location: string): BonusBatc
     const raw = JSON.parse(window.localStorage.getItem(storageKey(owner, location)) ?? "null");
     return isJsonObject(raw) && raw.version === 1 && raw.ownerId === owner && raw.locationId === location && isUuid(raw.id)
       && typeof raw.review === "string" && /^[a-f0-9]{32}$/.test(raw.review) && parseBonusBatch(raw.periods, true)
+      && (raw.referenceExcludedLocationIds === undefined || parseBonusReference(raw.referenceExcludedLocationIds, location))
       ? raw as BonusBatchIntent : null;
   } catch { return null; }
 }
