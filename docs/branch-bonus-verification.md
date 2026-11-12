@@ -1,5 +1,20 @@
 # Branch bonus verification and review
 
+## Cloud database release — Verified age, 2026-11-12
+
+The user explicitly requested pushing main and Supabase DB push after implementation and a second Business/Route scan. Source commit `19bc3b5f35132b55fd04ccadcdf9cbe396ee8586` contains the verified age feature and the already-tested interaction/source/decimal changes. Remote main matched the starting checkout; production environment validation and staged secret scanning passed, and no ignored backup/environment file is committed.
+
+The linked project was independently verified as **LanFlow**, ref `psxwhhwjmolqperxrlzj`, region ap-south-1, matching production configuration. Dry-run selected exactly `20261112010000_branch_bonus_verified_age.sql`; no seed, reset, migration repair or other migration was applied. Production saved bonuses, batch receipts and legacy receipts were all zero at the consistent pre-release snapshot.
+
+Before applying the migration, exported a consistent custom archive of `public/private/auth/storage/supabase_migrations` to ignored `output/production-backups/branch-bonus-age-20261112/pre.dump`; **28,786,619 bytes**, SHA-256 `73965d78e1d3fea956b53010c183d188b096c7382b26b9c84e83b534c5c94691`. `pg_restore --list` validated the archive. The snapshot and backup took several minutes; a separate bounded connection probe succeeded, and read-only lock inspection found no blocking database lock. No destructive action or Cloud restart was used.
+
+`supabase db push --linked --yes` successfully applied the single forward migration. Post-dry-run reports **Remote database is up to date**. Existing migration history is unchanged and the three installed bonus function definitions match Local exactly. Catalog checks passed for v3 calculation, age review/batch support, security-definer/search_path, RLS, authenticated preview, anonymous confirm denial and private calculator denial. An existing manager's authenticated SQL role preview returned v3 with age metric/official age; an ordinary admin was rejected, and anonymous REST RPC returned 401, confirming PostgREST resolves the signature. These are read-only checks, not a production HTTP manager sign-in or a confirmation/payment.
+
+Pre/post hash comparison covered **154 existing public/private/auth/storage tables**. **152 matched exactly**. Live differences were limited to `private.rubber_bill_issuers` and `public.history_cleanup_runs`. Row-level comparison against the archive found the issuer table retained all 105 rows with only one `last_seen_at` heartbeat changed; cleanup history had four added rows, no removed rows and 17 existing rows with `error_message` changes. The application/cleanup remained live during backup/release; no claim is made that those volatile tables stayed byte-identical. No business/Auth/Storage table changed, and no bonus was created by verification. Detailed before/after and live-field receipts stay ignored beside the archive.
+
+The matching client/API is released through Git push to main after database verification. This section records the database receipt; GitHub CI and Vercel outcomes are attached to the pushed head and recorded in codingDO `10_Daily/2026-11-12.md`. No separate Vercel CLI deployment is required.
+
+
 ## Verified age bonus — 2026-11-12 (Local only)
 
 All four implementation phases in codingDO `10_Daily/2026-11-12.md` were executed. New migration `20261112010000_branch_bonus_verified_age.sql` adds the fourth `age` metric using existing verified REX age snapshots. Formula `branch-bonus-v3` weights official hours by original weight and compares unrounded weighted hours against owner-entered days. Older-than-target is better; tier thresholds and the bonus base remain unchanged. Age estimates remain included/labelled; missing age blocks only an enabled age metric; zero actual hours remains valid. Preset is 50/40/10/0, with no new tables or request-version migration machinery.
