@@ -1,4 +1,4 @@
-export const BONUS_METRICS = ["burden", "loss", "counts"] as const;
+export const BONUS_METRICS = ["burden", "loss", "counts", "age"] as const;
 export type BonusMetricKey = typeof BONUS_METRICS[number];
 export type BonusSettings = {
   exportIds: string[];
@@ -10,6 +10,7 @@ export type BonusSettings = {
 export type BonusExport = {
   id: string; exportNo: string; createdAt: string;
   originalWeight: number; currentWeight: number | null; lossPercent: number | null;
+  averageAgeHours?: number | null; ageCutoffAt?: string | null; estimatedAgeItemCount?: number | null;
   ready?: boolean; bonusId?: string | null;
 };
 export type BonusSource = {
@@ -20,6 +21,7 @@ export type BonusSourceSection = "expenses" | "purchases" | "counts";
 export type BonusMetric = {
   key: BonusMetricKey; weight: number; target: number | null; actual: number | null;
   relative: number | null; adjustment: number | null;
+  weightedAdjustment?: number | null;
 };
 export type BonusPreview = {
   requestVersion?: "batch-v1";
@@ -32,6 +34,7 @@ export type BonusPreview = {
   expenseGroups: Array<{ kind: string; amount: number; includedAmount: number }>;
   weight: number; expenseTotal: number; purchaseTotal: number; countTotal: number;
   burdenActual: number | null; countActual: number | null; lossActual: number; metrics: BonusMetric[];
+  ageActual?: number | null; ageEstimatedExportCount?: number;
   rate: number; base: number; adjustment: number; suggestedAmount: number;
   scenarios: Array<{ rate: number; base: number; adjustmentAmount: number; amount: number }>;
   canConfirm: boolean; issues: string[];

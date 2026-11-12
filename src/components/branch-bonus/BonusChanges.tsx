@@ -1,27 +1,33 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { BonusChange } from "@/types/branch-bonus";
 import { cn } from "@/lib/cn";
 import { bonusNumber, secondaryButton } from "./bonus-display";
 
 export function BonusChanges({ rows, total, fingerprint, load, saved = false }: {
   rows: BonusChange[]; total: number; fingerprint: string; saved?: boolean;
-  load: (offset: number) => Promise<{ rows: BonusChange[]; sourceFingerprint: string }>;
+  load: (offset: number, signal?: AbortSignal) => Promise<{ rows: BonusChange[]; sourceFingerprint: string }>;
 }) {
   const [extra, setExtra] = useState<{ fingerprint: string; rows: BonusChange[] }>({ fingerprint: "", rows: [] });
   const [loading, setLoading] = useState(false), [error, setError] = useState<string | null>(null);
-  const flight = useRef(false), current = useRef(fingerprint); current.current = fingerprint;
+  const request = useRef<AbortController | null>(null), current = useRef(fingerprint); current.current = fingerprint;
   const visible = [...rows, ...(extra.fingerprint === fingerprint ? extra.rows : [])];
+  useEffect(() => {
+    setLoading(false); setError(null);
+    return () => { request.current?.abort(); request.current = null; };
+  }, [fingerprint]);
   async function more() {
-    if (flight.current) return;
-    flight.current = true; setLoading(true); setError(null);
+    if (request.current) return;
+    const controller = new AbortController(); request.current = controller;
+    setLoading(true); setError(null);
     try {
-      const page = await load(visible.length);
-      if (current.current !== fingerprint) return;
+      const page = await load(visible.length, controller.signal);
+      if (controller.signal.aborted || current.current !== fingerprint) return;
       if (page.sourceFingerprint !== fingerprint) throw new Error("ส่วนต่างเปลี่ยนแล้ว กรุณาคำนวณและตรวจยอดใหม่");
+      if (!page.rows.length) throw new Error("โหลดส่วนต่างไม่ครบ กรุณาลองใหม่");
       setExtra({ fingerprint, rows: [...(extra.fingerprint === fingerprint ? extra.rows : []), ...page.rows] });
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "โหลดส่วนต่างไม่ได้"); }
-    finally { flight.current = false; setLoading(false); }
+    } catch (caught) { if (!controller.signal.aborted && current.current === fingerprint) setError(caught instanceof Error ? caught.message : "โหลดส่วนต่างไม่ได้"); }
+    finally { if (request.current === controller) { request.current = null; setLoading(false); } }
   }
   return <details className="rounded-lg border border-black/10 p-4">
     <summary className="focus-ring cursor-pointer font-semibold">ข้อมูลที่เปลี่ยนจากโบนัสเดิม <span className="tabular-nums">({total})</span></summary>

@@ -54,7 +54,8 @@ export function useBranchBonuses(locationId: string, ownerId: string, online: bo
       const saved = await fetchBonus<BonusDetail>({ ...intent, action: "confirm" });
       clearBonusIntent(ownerId, locationId); setPending(null); return saved;
     } catch (caught) {
-      if (caught instanceof ApiResponseError && caught.status >= 400 && caught.status < 500) {
+      // Temporary auth/transport failures cannot disprove an earlier committed request.
+      if (caught instanceof ApiResponseError && (caught.status === 400 || caught.status === 409)) {
         clearBonusIntent(ownerId, locationId); setPending(null);
       }
       setError(caught instanceof Error ? caught.message : "ยังไม่ทราบผลยืนยัน กรุณาลองคำขอเดิมอีกครั้ง"); return null;
@@ -63,11 +64,17 @@ export function useBranchBonuses(locationId: string, ownerId: string, online: bo
   async function remove(id: string) {
     if (flight.current || !online) return false;
     flight.current = true; setWorking(true); setError(null);
-    try { await fetchBonus({ action: "delete", locationId, id }); return true; }
+    try {
+      await fetchBonus({ action: "delete", locationId, id });
+      controller.current?.abort(); controller.current = null; loadFlight.current = null;
+      setLoading(null);
+      setList(page => ({ ...page, rows: page.rows.filter(row => row.id !== id) }));
+      return true;
+    }
     catch (caught) { setError(caught instanceof Error ? caught.message : "ลบไม่สำเร็จ กรุณาลองใหม่"); return false; }
     finally { flight.current = false; setWorking(false); }
   }
-  const sources = (input: BonusSettings, section: BonusSourceSection, offset: number, id?: string) => fetchBonus<{ rows: BonusSource[]; sourceFingerprint: string }>({ action: "sources", locationId, input, section, offset, ...(id ? { id } : {}) });
-  const changeSources = (input: BonusSettings, offset: number, id?: string) => fetchBonus<{ rows: BonusChange[]; sourceFingerprint: string }>({ action: "sources", locationId, input, section: "changes", offset, ...(id ? { id } : {}) });
+  const sources = (input: BonusSettings, section: BonusSourceSection, offset: number, id?: string, signal?: AbortSignal) => fetchBonus<{ rows: BonusSource[]; sourceFingerprint: string }>({ action: "sources", locationId, input, section, offset, ...(id ? { id } : {}) },signal);
+  const changeSources = (input: BonusSettings, offset: number, id?: string, signal?: AbortSignal) => fetchBonus<{ rows: BonusChange[]; sourceFingerprint: string }>({ action: "sources", locationId, input, section: "changes", offset, ...(id ? { id } : {}) }, signal);
   return { list, loading, working, error, setError, pending, load, detail, retryLegacy, remove, sources, changeSources };
 }

@@ -7,6 +7,7 @@ export default defineConfig({
     '**/actionable-badge-scope.spec.ts',
     '**/branch-badge-status.spec.ts',
     '**/branch-bonus-route.spec.ts',
+    '**/branch-bonus-interaction.spec.ts',
     '**/bill-device-reset-route.spec.ts',
     '**/income-expense-fifth-scan.spec.ts',
     '**/income-expense-fourth-scan.spec.ts',

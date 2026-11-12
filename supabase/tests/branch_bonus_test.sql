@@ -111,7 +111,7 @@ set constraints all immediate;
 create temporary table bonus_input as select jsonb_build_object(
  'exportIds',jsonb_build_array('b0030000-0000-4000-8000-000000000001'),'excludedKeys','[]'::jsonb,'excludedGroups','[]'::jsonb,
  'rate',.02,'metrics',jsonb_build_object('burden',jsonb_build_object('weight',50,'target',5),
- 'loss',jsonb_build_object('weight',40,'target',10),'counts',jsonb_build_object('weight',10,'target',10))) input;
+ 'loss',jsonb_build_object('weight',40,'target',10),'counts',jsonb_build_object('weight',10,'target',10),'age',jsonb_build_object('weight',0,'target',null))) input;
 grant select,update on bonus_input to authenticated;
 select set_config('request.jwt.claim.sub','b0010000-0000-4000-8000-000000000001',true);
 select set_config('request.jwt.claims','{"sub":"b0010000-0000-4000-8000-000000000001","role":"authenticated"}',true);
@@ -133,8 +133,8 @@ select extensions.is(jsonb_array_length(public.get_branch_bonus_candidates('b002
 select extensions.throws_like($$select public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{exportIds}','["b0030000-0000-4000-8000-000000000102"]'))$$,'%BONUS_SOURCE_CHANGED%','active REX cannot be selected by direct RPC');
 select extensions.throws_like($$select public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{exportIds}','["b0030000-0000-4000-8000-000000000101"]'))$$,'%BONUS_SOURCE_CHANGED%','zero loss is unready');
 select extensions.throws_like($$select public.preview_branch_bonus('b0020000-0000-4000-8000-000000000002',(select input from bonus_input))$$,'%BONUS_SOURCE_CHANGED%','REX must belong to chosen branch');
-select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{metrics}','{"burden":{"weight":0,"target":0},"loss":{"weight":100,"target":12},"counts":{"weight":0,"target":null}}'))->>'suggestedAmount')::numeric,10000::numeric,'zero-weight sides skip target division');
-select extensions.is(jsonb_array_length(public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":12},"counts":{"weight":0}}'))->'metrics'),1,'disabled metrics are absent from results');
+select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{metrics}','{"burden":{"weight":0,"target":0},"loss":{"weight":100,"target":12},"counts":{"weight":0,"target":null},"age":{"weight":0,"target":null}}'))->>'suggestedAmount')::numeric,10000::numeric,'zero-weight sides skip target division');
+select extensions.is(jsonb_array_length(public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":12},"counts":{"weight":0},"age":{"weight":0,"target":null}}'))->'metrics'),1,'disabled metrics are absent from results');
 select extensions.ok(not (public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{metrics,loss,weight}','39'))->>'canConfirm')::boolean,'sum must be exactly 100');
 select extensions.throws_like($$select public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{metrics,loss}','{}'))$$,'%BONUS_INVALID%','missing metric weight cannot bypass validation with SQL null');
 select extensions.throws_like($$select public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',(select input-'rate' from bonus_input))$$,'%BONUS_INVALID%','missing rate is rejected in DB');
@@ -157,10 +157,10 @@ select extensions.is(:'three_day_target'::integer,3,'Jan12 through Jan14 is thre
 select extensions.is((private.branch_bonus_present('{"periodStart":"2020-01-12","periodEnd":"2020-01-12","formulaVersion":"branch-bonus-v1","metrics":[{"key":"counts","target":10,"weight":100}],"allSources":[]}'::jsonb)->'metrics'->0->>'target')::integer,10,'presenting an old saved snapshot retains its original manual target');
 set local role authenticated;
 select extensions.ok(not (public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set(jsonb_set((select input from bonus_input),'{exportIds}','["b0030000-0000-4000-8000-000000000103"]'),'{rate}','1000'))->>'canConfirm')::boolean,'oversized suggested bonus cannot exceed supported money precision');
-select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set(jsonb_set((select input from bonus_input),'{exportIds}','["b0030000-0000-4000-8000-000000000100"]'),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":0.001},"counts":{"weight":0}}'))->>'lossActual')::numeric,.001::numeric,'raw positive loss remains eligible although stored/displayed percent rounds to zero');
+select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set(jsonb_set((select input from bonus_input),'{exportIds}','["b0030000-0000-4000-8000-000000000100"]'),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":0.001},"counts":{"weight":0},"age":{"weight":0,"target":null}}'))->>'lossActual')::numeric,.001::numeric,'raw positive loss remains eligible although stored/displayed percent rounds to zero');
 select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{excludedGroups}','["expense"]'))->>'expenseTotal')::numeric,0::numeric,'whole source category can be excluded');
 select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set((select input from bonus_input),'{excludedKeys}','["expense:b0050000-0000-4000-8000-000000000001"]'))->>'expenseTotal')::numeric,10::numeric,'individual source can be excluded independently');
-select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set(jsonb_set((select input from bonus_input),'{exportIds}',jsonb_build_array('b0030000-0000-4000-8000-'||lpad(n::text,12,'0'))),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":10},"counts":{"weight":0}}'))->>'adjustment')::numeric,expected::numeric,'tier boundary REX '||n)
+select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',jsonb_set(jsonb_set((select input from bonus_input),'{exportIds}',jsonb_build_array('b0030000-0000-4000-8000-'||lpad(n::text,12,'0'))),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":10},"counts":{"weight":0},"age":{"weight":0,"target":null}}'))->>'adjustment')::numeric,expected::numeric,'tier boundary REX '||n)
 from (values (1,-20),(7,10),(8,-10),(9,20),(10,0),(11,0)) cases(n,expected);
 select extensions.throws_like($$select public.confirm_branch_bonus('b0020000-0000-4000-8000-000000000001','b0070000-0000-4000-8000-000000000001',(select input from bonus_input),repeat('0',32))$$,'%BONUS_SOURCE_CHANGED%','stale preview cannot confirm');
 select extensions.lives_ok($$select public.set_rubber_export_sold_out('b0030000-0000-4000-8000-000000000002',false)$$,'preview does not lock unselected REX');
@@ -211,7 +211,7 @@ select (jsonb_populate_record(null::public.rubber_exports,to_jsonb(e)||jsonb_bui
  'created_at','2020-01-20T01:00:00Z','verified_at','2020-01-21T01:00:00Z','age_cutoff_at','2020-01-21T01:00:00Z','sold_out_at','2020-01-21T01:00:00Z'))).*
 from public.rubber_exports e where id='b0030000-0000-4000-8000-000000000004';
 create temp table bonus_ack_input as select jsonb_set(jsonb_set(input,'{exportIds}','["b0030000-0000-4000-8000-000000000201"]'),
- '{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":10},"counts":{"weight":0}}') input from bonus_input;
+ '{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":10},"counts":{"weight":0},"age":{"weight":0,"target":null}}') input from bonus_input;
 insert into public.income_expense select (jsonb_populate_record(null::public.income_expense,to_jsonb(e)||jsonb_build_object(
  'id','b0050000-0000-4000-8000-000000009001','client_temp_id','BN-LATE','local_bill_no','BN-LATE','server_bill_no','BN-LATE',
  'number','201','title','Late bonus expense','cost',5,'created_at',clock_timestamp()))).*
@@ -244,7 +244,7 @@ select extensions.ok((public.get_branch_bonus_changes('b0020000-0000-4000-8000-0
 select extensions.lives_ok($$select public.delete_branch_bonus('b0020000-0000-4000-8000-000000000001','b0070000-0000-4000-8000-000000000001')$$,'delete bonus releases memberships');
 select extensions.lives_ok($$select public.set_rubber_export_sold_out('b0030000-0000-4000-8000-000000000001',false)$$,'selected REX can leave history after deletion');
 select extensions.throws_like($$select public.confirm_branch_bonus('b0020000-0000-4000-8000-000000000001','b0070000-0000-4000-8000-000000000001',(select input from bonus_input),repeat('a',32))$$,'%BONUS_CONFLICT%','deleted confirmation identity cannot resurrect old bonus');
-update bonus_input set input=jsonb_set(jsonb_set(jsonb_set(input,'{exportIds}','["b0030000-0000-4000-8000-000000000003"]'),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":10},"counts":{"weight":0}}'),'{excludedGroups}','["expense"]');
+update bonus_input set input=jsonb_set(jsonb_set(jsonb_set(input,'{exportIds}','["b0030000-0000-4000-8000-000000000003"]'),'{metrics}','{"burden":{"weight":0},"loss":{"weight":100,"target":10},"counts":{"weight":0},"age":{"weight":0,"target":null}}'),'{excludedGroups}','["expense"]');
 select extensions.lives_ok($$select pg_temp.seed_legacy_bonus('b0020000-0000-4000-8000-000000000001','b0070000-0000-4000-8000-000000000003',(select input from bonus_input),public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',(select input from bonus_input))->>'sourceFingerprint',0)$$,'pre-upgrade zero manual snapshot remains supported');
 reset role;
 update public.income_expense set tx_date='2020-01-20' where id='b0050000-0000-4000-8000-000000000002';
@@ -310,11 +310,11 @@ insert into public.cash_counts
 select (jsonb_populate_record(null::public.cash_counts,to_jsonb(c)||jsonb_build_object(
  'id','b0060000-0000-4000-8000-'||lpad(n::text,12,'0'),'session_id','b0080000-0000-4000-8000-'||lpad(n::text,12,'0'),'count_no','CNT-BONUS-'||n))).*
 from public.cash_counts c cross join generate_series(13,51) n where c.id='b0060000-0000-4000-8000-000000000001';
-update bonus_input set input=jsonb_set(jsonb_set(input,'{exportIds}','["b0030000-0000-4000-8000-000000000004"]'),'{metrics}','{"burden":{"weight":0},"loss":{"weight":0},"counts":{"weight":100,"target":50}}');
+update bonus_input set input=jsonb_set(jsonb_set(input,'{exportIds}','["b0030000-0000-4000-8000-000000000004"]'),'{metrics}','{"burden":{"weight":0},"loss":{"weight":0},"counts":{"weight":100,"target":50},"age":{"weight":0,"target":null}}');
 select extensions.is((public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',(select input from bonus_input))->>'countActual')::integer,51,'all 51 counts contribute even though an unrelated cost source was purged');
 select extensions.is(jsonb_array_length(public.get_branch_bonus_source_page('b0020000-0000-4000-8000-000000000001',(select input from bonus_input),'counts',50)->'rows'),1,'count detail page 2 has the 51st record');
 update public.rubber_bills set record_status='deleted' where id='b0040000-0000-4000-8000-000000000001';
-update bonus_input set input=jsonb_set(input,'{metrics}','{"burden":{"weight":100,"target":5},"loss":{"weight":0},"counts":{"weight":0}}');
+update bonus_input set input=jsonb_set(input,'{metrics}','{"burden":{"weight":100,"target":5},"loss":{"weight":0},"counts":{"weight":0},"age":{"weight":0,"target":null}}');
 select extensions.is(public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',(select input from bonus_input))->'burdenActual','null'::jsonb,'zero purchase denominator is unavailable, never zero percent');
 select extensions.ok(not (public.preview_branch_bonus('b0020000-0000-4000-8000-000000000001',(select input from bonus_input))->>'canConfirm')::boolean,'active burden cannot confirm with zero purchases');
 reset role;

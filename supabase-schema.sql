@@ -1109,7 +1109,7 @@ begin
     seen:=array_append(seen,part->>'key');
     if jsonb_typeof(i->'rate') is distinct from 'number' or (i->>'rate')::numeric<>round((i->>'rate')::numeric,2) then
       raise exception 'BONUS_INVALID: อัตราต่อกิโลกรัมใช้ทศนิยมไม่เกิน 2 ตำแหน่ง'; end if;
-    foreach k in array array['burden','loss','counts'] loop
+    foreach k in array array['burden','loss','counts','age'] loop
       if jsonb_typeof(i->'metrics'->k->'weight') is distinct from 'number' then raise exception 'BONUS_INVALID: สัดส่วนไม่ถูกต้อง'; end if;
       w:=(i->'metrics'->k->>'weight')::numeric;
       if w<>trunc(w) then raise exception 'BONUS_INVALID: สัดส่วนต้องเป็นจำนวนเต็ม'; end if;
@@ -1136,6 +1136,7 @@ CREATE OR REPLACE FUNCTION "private"."branch_bonus_calculate"("p_location" "uuid
     AS $$
 declare ids uuid[]; a date; b date; cutoff timestamptz; exports jsonb; sources jsonb; gaps jsonb; changes jsonb;
   expenses numeric; purchases numeric; counts numeric; original numeric; loss numeric;
+  age_weighted_hours numeric; age_days numeric; age_complete boolean; age_estimated integer;
   rate numeric; weights numeric:=0; adjustment numeric:=0; metrics jsonb:='[]'; issues jsonb:='[]';
   k text; w numeric; target numeric; actual numeric; relative numeric; tier numeric;
   base numeric; suggested numeric; fp text; overlap boolean; all_complete boolean; burden_complete boolean; count_complete boolean;
@@ -1164,10 +1165,16 @@ begin
   end if;
   select min((created_at at time zone 'Asia/Bangkok')::date),max((created_at at time zone 'Asia/Bangkok')::date),
     sum(original_weight_total),sum(original_weight_total-current_weight),
+    sum(original_weight_total*average_age_hours),
+    bool_and(average_age_hours is not null and average_age_hours>=0 and average_age_hours<>'NaN'::numeric
+      and age_cutoff_at is not null and estimated_age_item_count is not null and estimated_age_item_count>=0),
+    count(*) filter(where estimated_age_item_count>0),
     jsonb_agg(jsonb_build_object('id',id,'exportNo',export_no,'createdAt',created_at,
       'originalWeight',original_weight_total,'currentWeight',current_weight,
+      'averageAgeHours',average_age_hours,'ageCutoffAt',age_cutoff_at,'estimatedAgeItemCount',estimated_age_item_count,
       'lossPercent',(original_weight_total-current_weight)/original_weight_total*100) order by id)
-    into a,b,original,loss,exports from public.rubber_exports where id=any(ids);
+    into a,b,original,loss,age_weighted_hours,age_complete,age_estimated,exports from public.rubber_exports where id=any(ids);
+  age_days:=case when age_complete then age_weighted_hours/original/24 end;
   if b>(p_as_of at time zone 'Asia/Bangkok')::date then raise exception 'BONUS_INVALID: REX อยู่ในอนาคต'; end if;
   cutoff:=least(p_as_of, (b+1)::timestamp at time zone 'Asia/Bangkok');
   select exists(select 1 from public.branch_bonuses x where x.location_id=p_location
@@ -1195,7 +1202,7 @@ begin
   burden_complete:=not exists(select 1 from jsonb_array_elements(gaps) g where g->>'kind'<>'count'
     and (g->>'kind'='purchase' or not p_input->'excludedGroups' ? (g->>'kind')));
   count_complete:=not exists(select 1 from jsonb_array_elements(gaps) g where g->>'kind'='count');
-  foreach k in array array['burden','loss','counts'] loop
+  foreach k in array array['burden','loss','counts','age'] loop
     if jsonb_typeof(p_input->'metrics'->k) is distinct from 'object' or jsonb_typeof(p_input->'metrics'->k->'weight') is distinct from 'number' then
       raise exception 'BONUS_INVALID: สัดส่วนไม่ถูกต้อง';
     end if;
@@ -1207,20 +1214,22 @@ begin
     if k='counts' then target:=(b-a+1);
     elsif jsonb_typeof(p_input->'metrics'->k->'target')='number' then target:=(p_input->'metrics'->k->>'target')::numeric; end if;
     actual:=case k when 'burden' then case when purchases>0 then expenses/purchases*100 end
-      when 'loss' then loss/original*100 else counts end;
+      when 'loss' then loss/original*100 when 'age' then age_days else counts end;
     if (k='burden' and not burden_complete) or (k='counts' and not count_complete) then actual:=null; end if;
     relative:=null; tier:=null;
     if target is null or target<=0 then
-      issues:=issues||jsonb_build_array('กรุณากำหนดเป้าที่ถูกต้องสำหรับ '||case k when 'burden' then 'ภาระดำเนินงาน' when 'loss' then 'น้ำหนักลดลง' else 'จำนวนรายการนับเงิน' end);
+      issues:=issues||jsonb_build_array('กรุณากำหนดเป้าที่ถูกต้องสำหรับ '||case k when 'burden' then 'ภาระดำเนินงาน' when 'loss' then 'น้ำหนักลดลง' when 'age' then 'อายุยาง' else 'จำนวนรายการนับเงิน' end);
     elsif actual is null then
-      issues:=issues||jsonb_build_array(case when k='burden' and purchases=0 then 'ยอดซื้อเป็นศูนย์ จึงคำนวณภาระดำเนินงานไม่ได้' else 'ข้อมูลต้นทางไม่ครบ จึงประเมินด้านนี้ไม่ได้' end);
+      issues:=issues||jsonb_build_array(case when k='burden' and purchases=0 then 'ยอดซื้อเป็นศูนย์ จึงคำนวณภาระดำเนินงานไม่ได้' when k='age' then 'REX บางใบขาดอายุ ณ ตรวจสอบ กรุณาแก้ต้นทางหรือปรับสัดส่วนอายุยางเป็น 0%' else 'ข้อมูลต้นทางไม่ครบ จึงประเมินด้านนี้ไม่ได้' end);
     else
-      relative:=case k when 'counts' then (actual-target)/target*100 else (target-actual)/target*100 end;
+      -- Compare the weighted hours directly; do not round days before tier selection.
+      relative:=case when k='age' then (age_weighted_hours-target*24*original)/(target*24*original)*100
+        when k='counts' then (actual-target)/target*100 else (target-actual)/target*100 end;
       tier:=case when relative>=20 then 20 when relative>=5 then 10 when relative<=-20 then -20 when relative<=-5 then -10 else 0 end;
       adjustment:=adjustment+tier*w/100;
     end if;
     metrics:=metrics||jsonb_build_array(jsonb_build_object('key',k,'weight',w,'target',target,'actual',actual,
-      'relative',relative,'adjustment',tier));
+      'relative',relative,'adjustment',tier,'weightedAdjustment',tier*w/100));
   end loop;
   if weights<>100 then issues:=issues||jsonb_build_array('สัดส่วนรวมต้องเท่ากับ 100%'); end if;
   if overlap then issues:=issues||jsonb_build_array('ช่วงวันที่ซ้อนกับผลโบนัสที่ยืนยันแล้ว'); end if;
@@ -1228,12 +1237,13 @@ begin
   if suggested>9999999999.99 then issues:=issues||jsonb_build_array('ยอดโบนัสเกินขอบเขตที่ระบบรองรับ กรุณาลดอัตราต่อกิโลกรัม'); end if;
   select coalesce(jsonb_agg(to_jsonb(c) order by c.bonus_id,c.source_key),'[]') into changes from private.branch_bonus_changes(p_location) c;
   fp:=md5(jsonb_build_object('sources',sources,'exports',exports,'gaps',gaps,'changes',changes,'input',p_input,
-    'start',a,'end',b,'formula','branch-bonus-v2')::text);
-  return jsonb_build_object('periodStart',a,'periodEnd',b,'periodDays',b-a+1,'asOf',cutoff,'formulaVersion','branch-bonus-v2',
+    'start',a,'end',b,'formula','branch-bonus-v3')::text);
+  return jsonb_build_object('periodStart',a,'periodEnd',b,'periodDays',b-a+1,'asOf',cutoff,'formulaVersion','branch-bonus-v3',
     'exports',exports,'allSources',sources,'observedChanges',changes,'overlap',overlap,'gaps',gaps,'complete',all_complete,'sourceFingerprint',fp,
     'weight',original,'expenseTotal',expenses,'purchaseTotal',purchases,'countTotal',counts,
     'burdenActual',case when purchases>0 and burden_complete then expenses/purchases*100 end,
     'countActual',case when count_complete then counts end,
+    'ageActual',age_days,'ageEstimatedExportCount',age_estimated,
     'lossActual',loss/original*100,'metrics',metrics,'rate',rate,'base',base,'adjustment',adjustment,
     'suggestedAmount',suggested,'issues',issues,'canConfirm',jsonb_array_length(issues)=0,
     'scenarios',case when weights=100 and not exists(select 1 from jsonb_array_elements(metrics) m where m->>'adjustment' is null)
@@ -1365,6 +1375,7 @@ begin
     where e.location_id=p_location and not exists(select 1 from private.branch_bonus_exports x where x.export_id=e.id)
   ) select coalesce(jsonb_agg(jsonb_build_object('id',id,'exportNo',export_no,'createdAt',created_at,
     'originalWeight',original_weight_total,'currentWeight',current_weight,
+    'averageAgeHours',average_age_hours,'ageCutoffAt',age_cutoff_at,'estimatedAgeItemCount',estimated_age_item_count,
     'lossPercent',case when original_weight_total>0 then (original_weight_total-current_weight)/original_weight_total*100 end,
     'history',history,'bonusId',old_bonus,'windowKey',window_key,
     'kind',case when self_receipt then 'self' when old_bonus is not null then 'leftover' else 'required' end,

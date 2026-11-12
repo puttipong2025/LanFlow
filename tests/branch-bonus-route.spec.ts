@@ -8,7 +8,7 @@ import type { Profile } from "../src/types";
 
 const location = "b0020000-0000-4000-8000-000000000001", id = "b0070000-0000-4000-8000-000000000001";
 const settings = () => ({ ...newBonusSettings(), exportIds: ["b0030000-0000-4000-8000-000000000001"], rate: .02,
-  metrics: { burden: { weight: 0, target: 0 }, loss: { weight: 100, target: 10 }, counts: { weight: 0, target: null } } });
+  metrics: { burden: { weight: 0, target: 0 }, loss: { weight: 100, target: 10 }, counts: { weight: 0, target: null }, age: { weight: 0, target: null } } });
 function harness(options: { status?: number; error?: string; transport?: boolean; authThrows?: boolean } = {}) {
   const calls: Array<{ name: string; args: unknown }> = [];
   const route = loadSourceModule<typeof import("../src/app/api/lanflow/branch-bonuses/route")>("src/app/api/lanflow/branch-bonuses/route.ts", {
@@ -149,4 +149,35 @@ test("batch limits cover the whole request, not just each period",()=>{
   expect(parseBonusBatch([{key:"0",input:large},{key:"1",input:settings()}])).toBeNull();
   expect(parseBonusBatch(Array.from({length:101},(_,n)=>({key:String(n),input:settings()})))).toBeNull();
   expect(parseBonusBatch([{key:"0",input:{...settings(),rate:.025}}])).toBeNull();
+});
+
+test("age requests use the fourth metric with day precision and canonical disabled targets",async()=>{
+  const input={...settings(),metrics:{...settings().metrics,loss:{weight:0,target:null},age:{weight:100,target:5.25}}};
+  expect(parseBonusBatch([{key:"0",input}])?.[0].input.metrics.age).toEqual({weight:100,target:5.25});
+  for(const age of [{weight:.5,target:5},{weight:100,target:5.001},{weight:100,target:Infinity}]){
+    expect(parseBonusBatch([{key:"0",input:{...input,metrics:{...input.metrics,age}}}])).toBeNull();
+  }
+  expect(parseBonusSettings({...input,metrics:{...input.metrics,age:{weight:0,target:"unfinished"}}})?.metrics.age.target).toBeNull();
+  const h=harness();await h.post({action:"previewBatch",locationId:location,review:"a".repeat(32),periods:[{key:"0",input}]});
+  expect(h.calls[0].name).toBe("preview_branch_bonus_batch");
+  expect(h.calls[0].args).toMatchObject({p_periods:[{input:{metrics:{age:{weight:100,target:5.25}}}}]});
+});
+
+test("schema bootstrap applies age even when the batch RPC already exists or is rebuilt",()=>{
+  for(const initialBatch of [true,false]){
+    let batch=initialBatch,age=false;const applied:string[]=[];
+    const files=["20261104016000_branch_bonus_batches.sql","20261112010000_branch_bonus_verified_age.sql","20261109010000_reject_null_income_expense_approval_decision.sql"];
+    const module=loadSourceModule<typeof import("./support/branch-bonus-test-schema")>("tests/support/branch-bonus-test-schema.ts",{
+      "node:fs":{readdirSync:()=>files,readFileSync:(path:string)=>path},
+      "node:child_process":{
+        execFileSync:(_name:string,args:string[])=>args.at(-1)!.includes("to_regprocedure")?batch?"batch":"":args.at(-1)!.includes("to_regclass")?"base":age?"t":"f",
+        spawnSync:(_name:string,_args:string[],options:{input:string})=>{applied.push(options.input);if(options.input.includes("batches.sql"))batch=true;else age=true;return {status:0};},
+      },
+    });
+    module.ensureBonusBatchSchema("disposable","age_test");
+    expect(applied).toContain("supabase/migrations/20261112010000_branch_bonus_verified_age.sql");
+    expect(applied).not.toContain("supabase/migrations/20261109010000_reject_null_income_expense_approval_decision.sql");
+    module.ensureBonusBatchSchema("disposable","age_test");
+    expect(applied).toHaveLength(initialBatch?1:2);
+  }
 });

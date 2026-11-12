@@ -1,8 +1,11 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { createBrowserClient } from "@supabase/ssr";
+import type { BonusBatchPreview } from "../src/types/branch-bonus";
 import { resetTestEnvironment, resetTestSql } from "./support/bill-device-reset-target";
 import { selectAppLocation } from "./helpers/select-app-location";
+import { ensureBonusBatchSchema } from "./support/branch-bonus-test-schema";
+import { RESET_TEST_CONTAINER } from "./support/bill-device-reset-target";
 import { installThresholdAlertHandler } from "./helpers/dismiss-threshold-alert";
 
 const target=resetTestEnvironment();
@@ -14,6 +17,7 @@ const scope=`'${branch}'`;
 
 test.beforeAll(async()=>{
   test.setTimeout(60_000);
+  ensureBonusBatchSchema(RESET_TEST_CONTAINER,"postgres");
   const version=crypto.randomUUID();
   const user=await admin.auth.admin.createUser({id:actor,phone:"+66"+phone.slice(1),password,phone_confirm:true,
     user_metadata:{name:label,lanflow_password_copy_version:version},app_metadata:{lanflow_role:"admin"}});
@@ -30,7 +34,7 @@ test.beforeAll(async()=>{
     created_at,sold_out_at,sold_out_by_user_id,sold_out_by_name)
     values('${rex[i]}','${reference[i]}','2020-01-12',${i+1},'${branch}','verified',${i===0?500000:i===3?100000:100},
     1000,1000,10,${i===0?450000:i===2?100:i===3?99999:90},${i===2||i===3?0:10},0,0,0,'branch',
-    '${actor}','${label}','${phone}','${actor}','${label}','2020-01-14Z','2020-01-14Z',0,0,0,'2020-01-11T17:30Z',
+    '${actor}','${label}','${phone}','${actor}','${label}','2020-01-14Z','2020-01-14Z',144,144,${i===0?1:0},'2020-01-11T17:30Z',
     ${i===1?"null,null,null":`'2020-01-14Z','${actor}','${label}'`});`);
 });
 test.beforeEach(()=>{
@@ -146,19 +150,55 @@ test('real batch calculation disables duplicate confirmation and locks saved his
     await expect(page.getByRole('button',{name:'สร้างโบนัส',exact:true})).toBeVisible();
   } finally {await context.close();}
 });
+test('deleting during an older list refresh cannot restore the deleted bonus',async({browser})=>{
+  test.setTimeout(90000);await ready();const {page,context}=await open(browser);
+  let release:()=>void=()=>{},captured:()=>void=()=>{};
+  const held=new Promise<void>(resolve=>{release=resolve;}),snapshot=new Promise<void>(resolve=>{captured=resolve;});
+  try{
+    await settings(page);await fillSettings(page);await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
+    await page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true}).click();
+    await expect(page.getByRole('heading',{name:'ผลคำขอยืนยันโบนัสทุกช่วง',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'กลับรายการโบนัส',exact:true}).click();
+    const remove=page.getByRole('button',{name:'ลบผล 2020-01-12',exact:true});await expect(remove).toBeEnabled();
+    await expect(page.getByRole('button',{name:'โหลดรายการโบนัสใหม่',exact:true})).toBeEnabled();
+    let reads=0;
+    await page.route(url=>url.pathname==='/api/lanflow/branch-bonuses'&&url.searchParams.get('view')==='list',async route=>{
+      reads++;if(reads===1){const response=await route.fetch();captured();await held;await route.fulfill({response}).catch(()=>{});}
+      else await route.continue();
+    });
+    await page.getByRole('button',{name:'โหลดรายการโบนัสใหม่',exact:true}).click();await snapshot;
+    await remove.click();await page.getByRole('alertdialog').getByRole('button',{name:'ลบผลโบนัส',exact:true}).click();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    expect(resetTestSql(`select count(*) from public.branch_bonuses where location_id=${scope}`)).toBe('0');release();
+    await expect(remove).toHaveCount(0);await expect(page.getByRole('button',{name:'สร้างโบนัส',exact:true})).toBeEnabled();
+    expect(reads).toBe(2);expect(resetTestSql(`select count(*) from public.branch_bonuses where location_id=${scope}`)).toBe('0');
+  }finally{release();await context.close();}
+});
 test('a lost response recovers the same complete batch after reloading',async({browser})=>{
   test.setTimeout(90000);await ready();const {page,context}=await open(browser);
   try {
     await settings(page);await fillSettings(page);await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
     const ids:string[]=[];
-    await page.route('**/api/lanflow/branch-bonuses',async route=>{const body=route.request().postDataJSON();if(body?.action==='confirmBatch'){ids.push(body.id);if(ids.length===1){await route.fetch();await route.abort('failed');return;}}await route.continue();});
+    const temporaryStatuses=[429,401,403,408];
+    await page.route('**/api/lanflow/branch-bonuses',async route=>{const body=route.request().postDataJSON();if(body?.action==='confirmBatch'){
+      ids.push(body.id);if(ids.length===1){await route.fetch();await route.abort('failed');return;}
+      const status=temporaryStatuses[ids.length-2];if(status){await route.fulfill({status,contentType:'application/json',body:JSON.stringify({error:'Temporary retry failure'})});return;}
+    }await route.continue();});
     await page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true}).click();
     await expect(page.getByRole('button',{name:'ตรวจผลคำขอเดิมทั้งชุด',exact:true})).toBeVisible();
     page.once('dialog',dialog=>void dialog.accept());await page.reload();await page.getByRole('button',{name:'โบนัสสาขา',exact:true}).click();
     await page.getByRole('button',{name:'สร้างโบนัส',exact:true}).click();
-    await page.getByRole('button',{name:'ตรวจผลคำขอเดิมทั้งชุด',exact:true}).click();
+    const retry=page.getByRole('button',{name:'ตรวจผลคำขอเดิมทั้งชุด',exact:true});
+    const key=`lanflow:bonus-batch:${actor}:${branch}`;
+    const pending=await page.evaluate(key=>localStorage.getItem(key),key);expect(pending).not.toBeNull();
+    for(const status of temporaryStatuses){
+      const rejected=page.waitForResponse(response=>response.url().endsWith('/api/lanflow/branch-bonuses')&&response.status()===status);
+      await retry.click();await rejected;await expect(retry).toBeEnabled();
+      expect(await page.evaluate(key=>localStorage.getItem(key),key)).toBe(pending);
+    }
+    await retry.click();
     await expect(page.getByRole('heading',{name:'ผลคำขอยืนยันโบนัสทุกช่วง',exact:true})).toBeVisible();
-    expect(ids).toHaveLength(2);expect(ids[0]).toBe(ids[1]);
+    expect(ids).toHaveLength(temporaryStatuses.length+2);expect(new Set(ids).size).toBe(1);
     expect(resetTestSql(`select count(*) from public.branch_bonuses where location_id=${scope}`)).toBe('1');
   } finally {await context.close();}
 });
@@ -244,7 +284,17 @@ test('all periods keep independent settings and confirm atomically',async({brows
     await page.getByLabel('ช่วงที่กำลังตรวจ').selectOption('0');
     await expect(page.getByLabel('อัตราโบนัสต่อกิโลกรัม (บาท)',{exact:true})).toHaveValue('0.02');
     await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
-    await page.getByLabel('ยอดโบนัสสุดท้าย 2020-01-12 ถึง 2020-01-12 (บาท)',{exact:true}).fill('0');
+    const final=page.getByLabel('ยอดโบนัสสุดท้าย 2020-01-12 ถึง 2020-01-12 (บาท)',{exact:true});
+    await final.fill(',');await final.press('Tab');
+    await expect(final).toHaveAttribute('aria-invalid','true');
+    await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeDisabled();
+    await final.focus();await final.press('Tab');
+    await expect(final).toHaveValue(',');await expect(final).toHaveAttribute('aria-invalid','true');
+    await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeDisabled();
+    expect(resetTestSql(`select count(*) from public.branch_bonuses where location_id=${scope}`)).toBe('1');
+    await final.fill('1,234.56');await final.press('Tab');await expect(final).toHaveValue('1234.56');
+    await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeEnabled();
+    await final.fill('0');
     await page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true}).click();
     await expect(page.getByRole('heading',{name:'ผลคำขอยืนยันโบนัสทุกช่วง',exact:true})).toBeVisible();
     await expect(page.getByRole('button',{name:/เปิดผล$/})).toHaveCount(2);
@@ -273,7 +323,7 @@ test('an unfinished REX outside the first rendered page still blocks progress',a
 test('a legacy pending request with old precision resolves its original receipt',async({browser})=>{
   await ready();const id=crypto.randomUUID();
   const input={exportIds:[rex[0]],excludedKeys:[],excludedGroups:[],rate:.0125,
-    metrics:{burden:{weight:0,target:null},loss:{weight:12.5,target:10},counts:{weight:87.5,target:1}}};
+    metrics:{burden:{weight:0,target:null},loss:{weight:12.5,target:10},counts:{weight:87.5,target:1},age:{weight:0,target:null}}};
   const expected=resetTestSql(`select set_config('request.jwt.claim.sub','${actor}',false);
     create temp table legacy_pending as select '${JSON.stringify(input)}'::jsonb input,private.branch_bonus_calculate('${branch}','${JSON.stringify(input)}',clock_timestamp()) snapshot;
     insert into public.branch_bonuses(id,location_id,period_start,period_end,input,request_fingerprint,snapshot,created_by_user_id,created_by_name)
@@ -296,11 +346,83 @@ test('changed financial sources return to review without saving a partial result
   await ready();const {page,context}=await open(browser);
   try{
     await settings(page);await fillSettings(page);await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
+    // Next can still be waiting for the shared debounced preview when click resolves.
+    // Change the source only after the final preview is displayed and confirmable.
+    const confirm=page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true});
+    await expect(confirm).toBeEnabled();
     const source=crypto.randomUUID();
     resetTestSql(`insert into public.income_expense(id,client_temp_id,local_bill_no,server_bill_no,sync_status,record_status,location_id,type,number,tx_date,title,cost,bill_option,created_by_user_id,created_by_name,created_by_phone)
       values('${source}','${source}','${source}','${source}','synced','active',${scope},'expense','1','2020-01-12','Changed after review',100,'ค่าใช้จ่าย','${actor}','${label}','${phone}');`);
-    await page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true}).click();
+    const rejected=page.waitForResponse(response=>response.url().endsWith('/api/lanflow/branch-bonuses')
+      && response.request().postDataJSON()?.action==='confirmBatch'&&response.status()===409);
+    await confirm.click();await rejected;
     await expect(page.getByRole('heading',{name:'ตรวจ REX ที่รอทำโบนัส',exact:true})).toBeVisible();
     expect(resetTestSql(`select count(*) from public.branch_bonuses where location_id=${scope}`)).toBe('0');
+  }finally{await context.close();}
+});
+
+
+test('verified age uses days, estimated labels and upward scoring on mobile, then saves',async({browser})=>{
+  test.setTimeout(90000);await ready();const {page,context}=await open(browser,390);
+  try{
+    await settings(page);
+    await page.getByRole('button',{name:'ใช้สัดส่วนทดลอง 50 / 40 / 10 / 0',exact:true}).click();
+    await expect(page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true})).toHaveValue('0');
+    for(const name of ['ภาระดำเนินงานต่อยอดซื้อ','น้ำหนักลดลง','จำนวนรายการนับเงิน'])await page.getByLabel(`สัดส่วน ${name} (%)`,{exact:true}).fill('0');
+    await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('100');
+    const goal=page.getByLabel('เป้า อายุยาง (วัน)',{exact:true});await goal.fill('5');await goal.press('Tab');
+    await expect(goal).toHaveValue('5.00');
+    await expect(goal).toHaveAttribute('aria-invalid','false');
+    await page.getByRole('button',{name:'0.02 บาท/กก.',exact:true}).click();
+    await expect(page.getByText('อายุประมาณ · 1 REX',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
+    await expect(page.getByText('จริง 6.00 / เป้า 5.00 วัน',{exact:true})).toBeVisible();
+    await expect(page.getByText('ปรับด้านนี้ 20.00%',{exact:true})).toBeVisible();
+    await expect(page.getByText('หลังถ่วงสัดส่วน 20.00%',{exact:true})).toBeVisible();
+    await page.getByText('รายละเอียดคะแนนอายุยาง',{exact:true}).click();
+    await expect(page.getByText('อายุเฉลี่ย 6.000000 วัน · ผลต่างเทียบเป้า 20.000000%',{exact:true})).toBeVisible();
+    for(const width of [320,390]){
+      await page.setViewportSize({width,height:900});
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+      await page.screenshot({path:`output/branch-bonus-age/age-${width}.png`,fullPage:true});
+    }
+    await page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true}).click();
+    await expect(page.getByRole('heading',{name:'ผลคำขอยืนยันโบนัสทุกช่วง',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:/เปิดผล$/}).click();
+    await expect(page.getByText('จริง 6.00 / เป้า 5.00 วัน',{exact:true})).toBeVisible();
+    const proof=JSON.parse(resetTestSql(`select snapshot->'metrics' from public.branch_bonuses where location_id=${scope}`));
+    expect(proof.find((m:{key:string})=>m.key==='age')).toMatchObject({actual:6,target:5,adjustment:20,weightedAdjustment:20});
+  }finally{await context.close();}
+});
+
+test('missing age warns before settings, blocks only when enabled, then permits age zero',async({browser})=>{
+  test.setTimeout(90000);await ready();const {page,context}=await open(browser);
+  try{
+    await page.route('**/api/lanflow/branch-bonuses*',async route=>{
+      const request=route.request(),url=new URL(request.url());
+      if(request.method()==='GET'&&url.searchParams.get('view')==='review'){
+        const response=await route.fetch(),data=await response.json();data.rows[0].averageAgeHours=null;
+        await route.fulfill({response,json:data});return;
+      }
+      if(request.method()==='POST'&&request.postDataJSON()?.action==='previewBatch'){
+        const response=await route.fetch(),data:BonusBatchPreview=await response.json();
+        for(const {preview} of data.periods){preview.ageActual=null;preview.exports[0].averageAgeHours=null;
+          if(request.postDataJSON().periods[0].input.metrics.age.weight>0){preview.canConfirm=false;preview.issues.push('REX บางใบขาดอายุ ณ ตรวจสอบ กรุณาแก้ต้นทางหรือปรับสัดส่วนอายุยางเป็น 0%');}}
+        await route.fulfill({response,json:data});return;
+      }
+      await route.continue();
+    });
+    await page.getByRole('button',{name:'สร้างโบนัส',exact:true}).click();
+    await expect(page.getByText('บาง REX ขาดอายุ ณ ตรวจสอบ ยังไปตั้งค่าได้ แต่ต้องแก้ต้นทางหรือปรับสัดส่วนอายุยางเป็น 0% ก่อนยืนยัน',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'ตรวจสอบและถัดไป',exact:true}).click();
+    await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
+    await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('100');
+    await page.getByLabel('เป้า อายุยาง (วัน)',{exact:true}).fill('5');await page.getByRole('heading',{name:'อัตราโบนัส',exact:true}).click();
+    await page.getByRole('button',{name:'0.02 บาท/กก.',exact:true}).click();
+    await expect(page.getByText('REX บางใบขาดอายุ ณ ตรวจสอบ กรุณาแก้ต้นทางหรือปรับสัดส่วนอายุยางเป็น 0%',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'ถัดไป',exact:true})).toBeDisabled();
+    await page.getByLabel('สัดส่วน อายุยาง (%)',{exact:true}).fill('0');await fillSettings(page);
+    await page.getByRole('button',{name:'ถัดไป',exact:true}).click();
+    await expect(page.getByRole('button',{name:'ยืนยันโบนัสทุกช่วง',exact:true})).toBeEnabled();
   }finally{await context.close();}
 });

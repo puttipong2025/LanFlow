@@ -11,7 +11,7 @@ const args = (db: string) => ["exec", "-i", container, "psql", "-X", "-q", "-At"
 const sql = (db: string, query: string) => execFileSync("docker", [...args(db), "-c", query], { encoding: "utf8", windowsHide: true }).trim();
 let db: string;
 const input = () => JSON.stringify({ ...newBonusSettings(), exportIds: [rex], rate: .02,
-  metrics: { burden: { weight: 50, target: 5 }, loss: { weight: 40, target: 10 }, counts: { weight: 10, target: 10 } } });
+  metrics: { burden: { weight: 50, target: 5 }, loss: { weight: 40, target: 10 }, counts: { weight: 10, target: 10 }, age: { weight: 0, target: null } } });
 function preview(){
   const review=JSON.parse(sql(db,`begin;${auth} select public.review_branch_bonus('${branch}');rollback;`).split('\n').at(-1)!);
   const periods=[{key:review.periods[0].key,input:JSON.parse(input())}];

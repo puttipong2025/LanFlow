@@ -3,7 +3,7 @@ import { BONUS_METRICS, type BonusSettings } from "@/types/branch-bonus";
 
 export function newBonusSettings(): BonusSettings {
   return { exportIds: [], excludedKeys: [], excludedGroups: [], rate: 0,
-    metrics: { burden: { weight: 0, target: null }, loss: { weight: 0, target: null }, counts: { weight: 0, target: null } } };
+    metrics: { burden: { weight: 0, target: null }, loss: { weight: 0, target: null }, counts: { weight: 0, target: null }, age: { weight: 0, target: null } } };
 }
 
 export function parseBonusSettings(value: unknown): BonusSettings | null {

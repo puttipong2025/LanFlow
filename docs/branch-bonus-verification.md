@@ -1,5 +1,25 @@
 # Branch bonus verification and review
 
+## Verified age bonus — 2026-11-12 (Local only)
+
+All four implementation phases in codingDO `10_Daily/2026-11-12.md` were executed. New migration `20261112010000_branch_bonus_verified_age.sql` adds the fourth `age` metric using existing verified REX age snapshots. Formula `branch-bonus-v3` weights official hours by original weight and compares unrounded weighted hours against owner-entered days. Older-than-target is better; tier thresholds and the bonus base remain unchanged. Age estimates remain included/labelled; missing age blocks only an enabled age metric; zero actual hours remains valid. Preset is 50/40/10/0, with no new tables or request-version migration machinery.
+
+Verification performed against the actual current checkout (including the pre-existing bonus interaction/source/decimal work):
+
+- Dedicated database SQL: original bonus **96**, atomic batch **27**, new verified age **36** assertions, all passed (**159 total**). The missing-age fixture alters only a synthetic row/constraint within its rolled-back test transaction; no production guard was loosened by the migration.
+- Focused route/interaction **61 passed**, including new four-metric wire validation and bootstrap migration tests. The helper now applies age when batch RPC already exists or is rebuilt, instead of assuming a function's existence proves schema currency.
+- Disposable clone contention/upgrade **5 passed**, retaining same-request replay, mandatory inventory and history-lock races.
+- Real browser/API/SQL **14 workflows passed**, including age 6.00 days/target 5.00 -> +20% before weighting, estimate disclosure, saved age metrics, missing-age UI warning and age=0 escape, source sorting, branch/duplicate/reload and ambiguous-response recovery. Missing-age browser responses are deliberately mocked for UI handling; the real SQL missing-data behavior is covered by the separate SQL test. Images at ignored `output/branch-bonus-age/age-320.png` and `age-390.png` were inspected; neither viewport overflows.
+- `npm.cmd run verify` passed: lint, typecheck, source-size/import guards, auth-outage check, **1,543 isolated tests / 2 existing skips**, production build, offline manifest **166 assets**, service-worker and bundle guards. Initial first-load **310.6 / 320 kB**. No broad verification was repeated after this successful gate; subsequent edits were documentation/schema export only.
+- Local DB lint returned no errors; catalog ACL checks confirmed manager RPC execution remains available to authenticated callers while anon cannot confirm and authenticated cannot execute the private calculator.
+
+Before Local application, backed up `public/private` to ignored `output/branch-bonus-age/local-before.dump` (**22,888,019 bytes**, SHA-256 `005d4324851cd288c67880ef8b6444550e27b015db5063850f9a11f356e8dc53`). Applied only the age migration and its Local migration-history record. Counts and sorted row hashes across **117 existing public/private tables** matched exactly before/after; `local-before.json`, `local-after.json` and `local-migration-receipt.json` retain the proof without exposing business rows. Other unrelated pending migrations were not applied. `supabase-schema.sql` was refreshed from an actual full Local CLI dump; whitespace-only dump changes were normalized, leaving the three changed bonus functions and no unrelated table/ACL changes. The narrower schema-filtered dump was rejected because it would omit extensions/publication metadata.
+
+Scrutinize traced settings -> canonical parsers -> manager route -> shared SQL calculator -> batch preflight -> transaction/receipt -> saved presenter/detail. No unresolved finding remained in the verified-age path. Reproduced and corrected two implementation/test-helper issues: optional aria-invalid becoming undefined instead of false, and a bare timestamp comparison accidentally reselecting the batch migration. The SQL corruption fixture first failed on pending deferred events; flushing test constraints before its test-only DDL resolved it. Full ledger and diagnostic scripts remain ignored under `output/branch-bonus-age/`.
+
+Release boundary: Local only, **no Cloud migration, commit, push or deploy**. Production request emptiness is the user's statement, not a Production database audit. Rollout requires a coordinated pause of new bonus creation while applying the migration and matching four-metric API/client; old three-metric clients are not a supported write path. Existing saved snapshots are not rewritten, and new-request duplicate/retry/receipt behavior is retained. See `docs/branch-bonus-contract.md` and ADR 0107.
+
+
 Work began after explicit user authorization. The latest follow-up plan is codingDO `10_Daily/2026-11-04.md`; `2026-11-03` records the original implementation. Tests use synthetic data and dedicated/disposable databases; source app data must not be reset. The Local-only boundary in the historical sections below describes implementation work before the separate 2026-11-04 request to push `main` and Supabase DB push.
 
 ## Cloud database release — 2026-11-04

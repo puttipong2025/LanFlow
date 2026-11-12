@@ -35,7 +35,7 @@ values('c0040000-0000-4000-8000-000000000002','BATCH-CROSS','BATCH-CROSS','BATCH
  'c0030000-0000-4000-8000-000000000002','REX-BATCH-2','2020-01-25Z',0,false,
  'c0010000-0000-4000-8000-000000000001','Batch manager','0899030201','2020-01-25Z');
 create temporary table batch_input as select jsonb_build_object('exportIds','[]'::jsonb,'excludedKeys','[]'::jsonb,'excludedGroups','[]'::jsonb,'rate',.02,
- 'metrics','{"burden":{"weight":0,"target":null},"loss":{"weight":100,"target":10},"counts":{"weight":0,"target":null}}'::jsonb) input;
+ 'metrics','{"burden":{"weight":0,"target":null},"loss":{"weight":100,"target":10},"counts":{"weight":0,"target":null},"age":{"weight":0,"target":null}}'::jsonb) input;
 -- Simulate an already committed old result, before the new inventory policy.
 insert into public.branch_bonuses(id,location_id,period_start,period_end,input,request_fingerprint,snapshot,created_by_user_id,created_by_name)
 select 'c0070000-0000-4000-8000-000000000001','c0020000-0000-4000-8000-000000000001','2020-01-14','2020-01-20',input,repeat('a',32),

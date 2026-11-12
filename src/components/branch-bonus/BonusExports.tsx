@@ -22,6 +22,7 @@ export function BonusExports({ rows, selected }: {
             <div><dt className="text-ink/60">หลังลด</dt><dd className="font-semibold">{bonusNumber(row.currentWeight)} กก.</dd></div>
             <div className="col-span-2 sm:col-span-1"><dt className="text-ink/60">ลดลงจริง</dt><dd>{bonusNumber(row.currentWeight === null ? null : row.originalWeight - row.currentWeight)} กก.</dd></div>
           </dl>
+          {"averageAgeHours" in row && <div className="mt-3 space-y-1 text-sm"><p className="text-pretty tabular-nums">อายุ ณ ตรวจสอบ {bonusNumber(row.averageAgeHours == null ? null : row.averageAgeHours / 24)} วัน{row.estimatedAgeItemCount != null && row.estimatedAgeItemCount > 0 ? " · อายุประมาณ" : ""}</p>{row.ageCutoffAt && <p className="text-pretty text-xs text-ink/60">ตรวจสอบ {formatBangkokDateTime(row.ageCutoffAt)} · ถ่วงด้วยน้ำหนักก่อนลด</p>}{(row.averageAgeHours == null || !row.ageCutoffAt || row.estimatedAgeItemCount == null) && <p className="text-pretty text-sm text-clay">ขาดอายุ ณ ตรวจสอบ · แก้ต้นทางหรือปรับสัดส่วนอายุยางเป็น 0%</p>}</div>}
           {!ready && <p className="mt-2 text-pretty text-sm text-clay">ข้อมูลไม่พร้อม — อาจยังไม่ได้บันทึกน้ำหนักลดลง</p>}
           {row.bonusId && <p className="mt-2 text-pretty text-xs text-ink/60">มีผลโบนัสที่ผูกอยู่แล้ว ช่วงซ้อนจะยืนยันซ้ำไม่ได้</p>}
         </div>
