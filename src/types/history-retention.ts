@@ -20,6 +20,12 @@ export type HistoryCleanupSummary = {
   completedAt: string | null;
 };
 
+export type SchedulerCleanupSummary = {
+  checkedAt: string;
+  deletedCount: number;
+  errorCode: string | null;
+};
+
 export type HistoryRetentionOverview = {
   currentDays: number;
   requestedDays: number;
@@ -29,7 +35,8 @@ export type HistoryRetentionOverview = {
   totalEligible: number | null;
   groups: HistoryRetentionGroup[];
   lastCleanup: HistoryCleanupSummary | null;
+  schedulerCleanup?: SchedulerCleanupSummary | null;
 };
 
 export type HistoryCleanupStatus = Pick<HistoryRetentionOverview,
-  "currentDays" | "cutoffDate" | "updatedAt" | "lastCleanup">;
+  "currentDays" | "cutoffDate" | "updatedAt" | "lastCleanup" | "schedulerCleanup">;

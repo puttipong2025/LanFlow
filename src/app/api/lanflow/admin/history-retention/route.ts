@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
+import { readBoundedUtf8Body } from "@/lib/server/bounded-utf8-body";
 import { validRetentionDate, validRetentionOverview, validRetentionReceipt,
-  validRetentionStatus, validRetentionTimestamp } from "@/lib/server/history-retention-response";
+  validRetentionStatus } from "@/lib/server/history-retention-response";
+import { isIsoTimestamp } from "@/lib/validation/primitives";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
 const RELOAD_MESSAGE = "ระบบเก็บประวัติมีการอัปเดต กรุณาโหลดหน้าเว็บใหม่";
+const MAX_RETENTION_BODY_BYTES = 4 * 1024;
 
 function errorResponse(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status, headers: NO_STORE_HEADERS });
@@ -53,17 +56,17 @@ async function getHistoryRetention(request: NextRequest) {
 async function updateHistoryRetention(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
-  const body = await request.json().catch(() => null) as {
-    action?: unknown;
-    retentionDays?: unknown;
-    expectedUpdatedAt?: unknown;
-    requestId?: unknown;
-    cutoffDate?: unknown;
-  } | null;
+  const input = await readBoundedUtf8Body(request, MAX_RETENTION_BODY_BYTES);
+  if (input.status === "too_large") return errorResponse("คำขอตั้งค่าประวัติมีขนาดใหญ่เกินไป", 413);
+  if (input.status !== "ok") return errorResponse("คำขอไม่ถูกต้อง");
+  let body: { action?: unknown; retentionDays?: unknown; expectedUpdatedAt?: unknown;
+    requestId?: unknown; cutoffDate?: unknown } | null;
+  try { body = JSON.parse(input.text); }
+  catch { return errorResponse("คำขอไม่ถูกต้อง"); }
   if (body?.action === "cleanup") {
     if (typeof body.requestId !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)
-      || !validRetentionTimestamp(body.expectedUpdatedAt) || !validRetentionDate(body.cutoffDate)) {
+      || !isIsoTimestamp(body.expectedUpdatedAt) || !validRetentionDate(body.cutoffDate)) {
       return errorResponse("คำขอล้างประวัติไม่ถูกต้อง");
     }
     const { data, error } = await result.supabase.rpc("request_history_retention_cleanup", {
@@ -86,7 +89,7 @@ async function updateHistoryRetention(request: NextRequest) {
     if (error) return retentionError(error.message, error.code);
     return retentionResponse(data, validRetentionOverview, 200, request.nextUrl.searchParams.get("counts") === "nullable");
   }
-  if (body?.action !== "save" || !validRetentionTimestamp(body.expectedUpdatedAt)) {
+  if (body?.action !== "save" || !isIsoTimestamp(body.expectedUpdatedAt)) {
     return errorResponse("คำขอไม่ถูกต้อง");
   }
   // A previously opened dialog must not commit a change its old UI cannot read.

@@ -1,15 +1,11 @@
+import { isIsoTimestamp } from "@/lib/validation/primitives";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function validRetentionDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
     && !value.startsWith("0000") && Number.isFinite(Date.parse(value))
     && new Date(value).toISOString().slice(0, 10) === value;
-}
-
-export function validRetentionTimestamp(value: unknown): value is string {
-  return typeof value === "string" && validRetentionDate(value.slice(0, 10))
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -29,7 +25,7 @@ function counts(value: unknown) {
 }
 
 function nullableTimestamp(value: unknown) {
-  return value === null || validRetentionTimestamp(value);
+  return value === null || isIsoTimestamp(value);
 }
 
 function cleanupSummary(value: unknown) {
@@ -39,14 +35,18 @@ function cleanupSummary(value: unknown) {
     && days(value.retentionDays) && validRetentionDate(value.cutoffDate)
     && counts(value.deletedCounts) && counts(value.remainingCounts) && count(value.batches)
     && nullableTimestamp(value.countsAsOf) && nullableTimestamp(value.completedAt)
-    && validRetentionTimestamp(value.startedAt)
+    && isIsoTimestamp(value.startedAt)
     && (value.hasMore === null || typeof value.hasMore === "boolean")
     && (value.errorMessage === null || typeof value.errorMessage === "string"));
 }
 
 export function validRetentionStatus(value: unknown) {
-  return record(value) && days(value.currentDays) && validRetentionDate(value.cutoffDate)
-    && validRetentionTimestamp(value.updatedAt) && cleanupSummary(value.lastCleanup);
+  if (!record(value) || !days(value.currentDays) || !validRetentionDate(value.cutoffDate)
+    || !isIsoTimestamp(value.updatedAt) || !cleanupSummary(value.lastCleanup)) return false;
+  const scheduler = value.schedulerCleanup;
+  return scheduler === undefined || scheduler === null || (record(scheduler)
+    && isIsoTimestamp(scheduler.checkedAt) && count(scheduler.deletedCount)
+    && (scheduler.errorCode === null || (typeof scheduler.errorCode === "string" && /^[A-Z0-9]{5}$/.test(scheduler.errorCode))));
 }
 
 export function validRetentionOverview(value: unknown) {

@@ -1,8 +1,13 @@
-import { isIsoTimestamp, isJsonObject, isSafePositiveInteger, isUuid } from "@/lib/validation/primitives";
+import { isIsoTimestamp, isJsonObject, isPostgresText, isSafePositiveInteger, isUuid, sameUuid } from "@/lib/validation/primitives";
 import { isRubberBillNumbering } from "./numbering-contract";
 
+function isBoundedQueueText(value: unknown, maxCharacters: number): value is string {
+  return typeof value === "string" && value.length <= maxCharacters * 2 && isPostgresText(value)
+    && (value.length <= maxCharacters || Array.from(value).length <= maxCharacters);
+}
+
 export function isConfirmedRubberManagerResult(value: unknown, action: "approve" | "cancel", target: string) {
-  if (!isJsonObject(value) || value.requestId !== target) return false;
+  if (!isJsonObject(value) || !sameUuid(value.requestId, target)) return false;
   if (action === "cancel") return value.status === "cancelled";
   const sync = value.syncResult;
   return value.status === "approved" && isUuid(value.billId) && typeof value.operation === "string"
@@ -67,8 +72,8 @@ export interface RubberQueueRow {
 export function isRubberQueueRow(value: unknown): value is RubberQueueRow {
   if (!isJsonObject(value)) return false;
   return isUuid(value.commandId) && isUuid(value.actorUserId) && isUuid(value.locationId)
-    && typeof value.clientTempId === "string" && value.clientTempId.length > 0 && value.clientTempId.length <= 512
-    && (value.reference === undefined || (typeof value.reference === "string" && value.reference.length <= 128))
+    && isBoundedQueueText(value.clientTempId, 512) && value.clientTempId.length > 0
+    && (value.reference === undefined || isBoundedQueueText(value.reference, 128))
     && typeof value.action === "string" && ["create", "update", "delete", "approve", "cancel"].includes(value.action)
     && ((value.action !== "approve" && value.action !== "cancel")
       || (value.clientTempId.startsWith("request:") && isUuid(value.clientTempId.slice("request:".length))))
@@ -82,11 +87,11 @@ export function isRubberQueueRow(value: unknown): value is RubberQueueRow {
     && (value.state !== "done" || validTerminalResult(value));
 }
 
-export function isRubberQueueSubmission(value: unknown): value is Record<string, unknown> {
+export function isRubberQueueSubmission(value: unknown): value is Record<string, unknown> & { commandId: string } {
   if (isJsonObject(value) && value.billNumbering !== undefined && !isRubberBillNumbering(value.billNumbering)) return false;
   if (!isJsonObject(value) || value.centralQueue !== true || value.localContextPending !== undefined || value.contractVersion !== 2 || !isUuid(value.commandId)
     || value.idempotencyKey !== value.commandId || !isUuid(value.locationId) || !isUuid(value.actorUserId)
-    || typeof value.clientTempId !== "string" || value.clientTempId.length < 1 || value.clientTempId.length > 512) return false;
+    || !isBoundedQueueText(value.clientTempId, 512) || !value.clientTempId) return false;
   if (value.queueAction === "approve" || value.queueAction === "cancel") {
     return value.operation === "update" && isUuid(value.targetRequestId)
       && value.clientTempId === `request:${value.targetRequestId}`;

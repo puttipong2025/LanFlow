@@ -4,7 +4,7 @@ import { isIsoTimestamp, isJsonObject, isSafePositiveInteger, isUuid } from "@/l
 import { isRubberQueueDraft, isRubberQueueRow, isRubberQueueSubmission } from "@/lib/rubber-bills/central-queue-contract";
 import { processRubberQueueImmediately } from "@/lib/server/rubber-queue-immediate";
 import { readBoundedUtf8Body } from "@/lib/server/bounded-utf8-body";
-import { isPostgresText } from "@/lib/validation/primitives";
+import { isPostgresText, sameUuid } from "@/lib/validation/primitives";
 
 const headers = { "Cache-Control": "private, no-store, max-age=0" };
 const failure = (status = 503) => NextResponse.json({ errorMessage: "ยังยืนยันสถานะคิวซิงก์ไม่ได้ กรุณาลองใหม่" }, { status, headers });
@@ -12,7 +12,6 @@ const rejectNumbering = (payload: Record<string, unknown>, status = 400) => Next
   errorCode: "NUMBERING_REJECTED", commandId: payload.commandId, clientTempId: payload.clientTempId, operation: payload.operation,
   errorMessage: "เลขบิลไม่ตรงกับทะเบียน กรุณาตรวจสอบกับผู้ดูแลก่อนลองใหม่",
 }, { status, headers });
-const sameUuid = (left: unknown, right: unknown) => isUuid(left) && isUuid(right) && left.toLowerCase() === right.toLowerCase();
 
 async function boundedJson(request: Request) {
   try {
@@ -75,7 +74,15 @@ export async function POST(request: Request) {
       return failure(400);
     }
     if (!sameUuid(payload.actorUserId, auth.auth.sub)) return failure(403);
-    const { data, error } = await auth.supabase.rpc(payload.billNumbering ? "submit_numbered_rubber_queue" : "submit_rubber_queue", { payload });
+    const commandId = payload.commandId.toLowerCase();
+    const managerTarget = (payload.queueAction === "approve" || payload.queueAction === "cancel")
+      && isUuid(payload.targetRequestId) ? payload.targetRequestId.toLowerCase() : null;
+    const clientTempId = managerTarget ? `request:${managerTarget}` : payload.clientTempId;
+    // The database compares the idempotency key with the canonical UUID text.
+    const { data, error } = await auth.supabase.rpc(payload.billNumbering ? "submit_numbered_rubber_queue" : "submit_rubber_queue", {
+      payload: { ...payload, commandId, idempotencyKey: commandId, clientTempId,
+        ...(managerTarget ? { targetRequestId: managerTarget } : {}) },
+    });
     if (payload.billNumbering && error && ["INVALID_BILL_NUMBER", "BILL_NUMBER_CHANGED"].includes(error.message)) {
       return rejectNumbering(payload, error.message === "BILL_NUMBER_CHANGED" ? 409 : 400);
     }
@@ -89,7 +96,7 @@ export async function POST(request: Request) {
     if (error) return failure(error.message.startsWith("FORBIDDEN") ? 403
       : ["COMMAND_MISMATCH", "REQUEST_CHANGED", "INVALID_COMMAND"].includes(error.message) ? 409 : 503);
     if (!isRubberQueueRow(data) || !sameUuid(data.commandId, payload.commandId) || !sameUuid(data.actorUserId, auth.auth.sub)
-      || !sameUuid(data.locationId, payload.locationId) || data.clientTempId !== payload.clientTempId
+      || !sameUuid(data.locationId, payload.locationId) || data.clientTempId !== clientTempId
       || data.action !== (payload.queueAction ?? payload.operation)) return failure();
     let receipt = data;
     try {

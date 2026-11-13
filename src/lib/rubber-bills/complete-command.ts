@@ -2,11 +2,12 @@ import { getSyncDb, SYNC_QUEUE_STORE, RUBBER_BILL_RECEIPT_STORE, RUBBER_BILL_REC
 import { isSameSyncEvent } from "@/lib/sync-event-comparison";
 import type { SyncEvent } from "@/lib/idb-queue";
 import { removeSyncEventIfCurrent } from "@/lib/idb-queue";
+import { sameUuid } from "@/lib/validation/primitives";
 
 export function acknowledgeRubberCommand(event: SyncEvent, result: Record<string, unknown>) {
   if (event.payload.queueAction === "approve" && result.status === "approved" && result.operation === "delete") {
-    if (typeof result.billId !== "string" || result.commandId !== event.payload.commandId
-      || result.requestId !== event.payload.targetRequestId) return Promise.resolve(false);
+    if (typeof result.billId !== "string" || !sameUuid(result.commandId, event.payload.commandId)
+      || !sameUuid(result.requestId, event.payload.targetRequestId)) return Promise.resolve(false);
     return completeRubberCommand(event, true, result.billId);
   }
   return event.payload.background

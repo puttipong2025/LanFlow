@@ -48,7 +48,7 @@ npx playwright test tests/history-retention-contract.spec.ts tests/history-reten
 npm run verify
 ```
 
-The first two scripts deliberately require the isolated `lanflow-retention-verification-20260903` container with networking disabled and Cron paused. Restore the checkpoint before repeating the backlog benchmark; a previously drained database is not a valid volume fixture. Local baseline setup and detailed run receipts are in `output/history-retention-background/` and the explicitly requested Obsidian Daily plan.
+The first two scripts reproduce this historical result using the isolated `lanflow-retention-verification-20260903` container with networking disabled, Cron paused, and the original combined worker. Restore the checkpoint before repeating the backlog benchmark. For the split workers introduced by ADR-0112, use the current pgTAP and Playwright suites. Local baseline setup and detailed run receipts are in `output/history-retention-background/` and the Obsidian Daily plan.
 
 ## Scrutinize findings resolved
 

@@ -19,6 +19,7 @@ select extensions.throws_ok($$select public.get_history_cleanup_status()$$, 'P00
 reset role;
 
 -- More than one batch, including an old but still-running Scheduler entry.
+delete from private.scheduler_history_cleanup_status;
 insert into cron.job_run_details(runid, jobid, status, start_time, end_time, username)
 select -620000-g, 0, 'succeeded', now()-interval '20 days', now()-interval '20 days', 'postgres'
 from generate_series(1,1005) g;
@@ -49,8 +50,12 @@ select public.request_history_retention_cleanup('63000000-0000-4000-8000-0000000
 reset role;
 select extensions.is((select count(*) from public.history_cleanup_runs where status='running'), 1::bigint, 'same or concurrent-style requests share one active job');
 select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 1005::bigint, 'enqueue has no deletion side effect');
+insert into public.history_cleanup_runs(retention_days,cutoff_date,status,completed_at)
+select 15,current_date-20,'succeeded',now()-interval '20 days' from generate_series(1,1005);
 select private.cleanup_history_retention(1000);
-select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 5::bigint, 'first batch is bounded');
+select extensions.is((select count(*) from public.history_cleanup_runs where completed_at=now()-interval '20 days'), 5::bigint, 'first app batch is bounded');
+select extensions.is(private.cleanup_scheduler_history(1000), 999, 'scheduler scans a bounded window including the protected running row');
+select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 6::bigint, 'first scheduler batch leaves six rows');
 select extensions.is((select status from public.history_cleanup_runs where request_id='63000000-0000-4000-8000-000000000001'), 'running', 'job remains active between batches');
 select extensions.is((select batches from public.history_cleanup_runs where status='running'), 1, 'committed batches are counted');
 select extensions.ok(current_setting('app.history_retention_cleanup',true) is distinct from 'on', 'cleanup bypass flag does not leak to caller');
@@ -60,9 +65,10 @@ set local role authenticated;
 select public.save_history_retention_settings(30, (select updated_at from public.history_retention_settings where singleton));
 reset role;
 select private.cleanup_history_retention(1000);
-select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 5::bigint, 'next batch honors the newly increased retention');
+select private.cleanup_scheduler_history(1000);
+select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 6::bigint, 'next batch honors the newly increased retention');
 select extensions.is((select status from public.history_cleanup_runs where request_id='63000000-0000-4000-8000-000000000001'), 'succeeded', 'changed policy completes the existing job without deleting protected rows');
-select extensions.is((select (deleted_counts->>'scheduler_run_history')::int from public.history_cleanup_runs where request_id='63000000-0000-4000-8000-000000000001'), 1000, 'prior committed deletion totals are preserved');
+select extensions.is((select (deleted_counts->>'cleanup_run_history')::int from public.history_cleanup_runs where request_id='63000000-0000-4000-8000-000000000001'), 1000, 'prior committed deletion totals are preserved');
 select extensions.is((select count(*) from cron.job_run_details where runid=-629999), 1::bigint, 'running scheduler history is never deleted');
 select extensions.is((private.cleanup_history_retention(1000)->>'reason'), 'no_work', 'idle tick creates no cleanup job');
 
@@ -74,10 +80,12 @@ create function pg_temp.fail_cleanup() returns trigger language plpgsql as $$beg
 create trigger retention_test_failure before update on public.history_cleanup_runs
 for each row when (new.status <> 'failed' and new.batches > old.batches) execute function pg_temp.fail_cleanup();
 select extensions.is(private.cleanup_history_retention(1000)->>'status', 'failed', 'failed batch is recorded');
-select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 5::bigint, 'failed batch rolls back all deletions');
+select extensions.is((select count(*) from public.history_cleanup_runs where completed_at=now()-interval '20 days'), 5::bigint, 'failed app batch rolls back app deletions');
 select extensions.ok(exists(select 1 from public.history_cleanup_runs where status='failed' and error_message like '%P0001%'), 'failure exposes a safe diagnostic code');
 drop trigger retention_test_failure on public.history_cleanup_runs;
 select private.cleanup_history_retention(1000);
+select private.cleanup_scheduler_history(1000);
+select extensions.is((select count(*) from public.history_cleanup_runs where completed_at=now()-interval '20 days'), 0::bigint, 'automatic app cleanup retries expired history');
 select extensions.is((select count(*) from cron.job_run_details where runid between -621005 and -620001), 0::bigint, 'automatic worker retries expired work after the failure is removed');
 select extensions.is((select count(*) from cron.job_run_details where runid=-629999), 1::bigint, 'retry still preserves running history');
 select extensions.is((select count(*) from cron.job_run_details where runid=-619000), 1::bigint, 'exact Bangkok midnight cutoff is kept');

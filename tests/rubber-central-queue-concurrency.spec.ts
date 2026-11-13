@@ -3,9 +3,24 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
-const worker = () => execute("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", "select private.process_rubber_queue(20)"], { windowsHide: true });
+const databaseContainer = process.env.LANFLOW_RUBBER_TEST_CONTAINER ?? "supabase_db_webapp";
+if (!/^supabase_db_(webapp|lanflow-retention-split-test)$/.test(databaseContainer)) throw new Error("Use an isolated Local test database");
+const worker = () => execute("docker", ["exec", databaseContainer, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", "select private.process_rubber_queue(20)"], { windowsHide: true });
 
-const sql = (statement: string) => execFileSync("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", statement], { encoding: "utf8" }).trim();
+const sql = (statement: string) => execFileSync("docker", ["exec", databaseContainer, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", statement], { encoding: "utf8" }).trim();
+
+test("fallback checks the queue once when empty and drains work until the first empty result", () => {
+  const tick = sql("select command from cron.job where jobname='rubber-central-queue'")
+    .replaceAll("private.process_rubber_queue(1)", "pg_temp.test_rubber_attempt()");
+  for (const jobs of [0, 2]) {
+    const result = sql(`create temporary table test_rubber_tick(calls int, jobs int);
+      insert into test_rubber_tick values(0,${jobs});
+      create function pg_temp.test_rubber_attempt() returns int language sql as
+        $$ update pg_temp.test_rubber_tick set calls=calls+1 returning (calls<=jobs)::int $$;
+      ${tick} select calls from pg_temp.test_rubber_tick;`);
+    expect(result.split("\n").at(-1)).toBe(String(jobs + 1));
+  }
+});
 
 test("one-job attempts reach an independent fifth branch behind four locked branches", async () => {
   test.setTimeout(35_000);
@@ -30,7 +45,7 @@ test("one-job attempts reach an independent fifth branch behind four locked bran
       select set_config('request.jwt.claim.sub','${actor}',true);
       ${branches.map((_, i) => `select public.submit_rubber_queue('${payload(i)}'::jsonb);`).join('\n')}
       update private.rubber_queue_jobs set next_attempt_at=clock_timestamp()+interval '1 hour' where location_id in (${branchIds});commit;`);
-    holder = execute('docker', ['exec', 'supabase_db_webapp', 'psql', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-c',
+    holder = execute('docker', ['exec', databaseContainer, 'psql', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-c',
       `begin;set application_name='${tag}';${branches.slice(0, 4).map(branch => `select pg_advisory_xact_lock(hashtextextended('${branch}',0));`).join('')}select pg_sleep(30);rollback;`], { windowsHide: true }).catch(() => {});
     await expect.poll(() => sql(`select count(*) from pg_stat_activity where application_name='${tag}' and wait_event='PgSleep'`)).toBe('1');
     sql(`update private.rubber_queue_jobs set next_attempt_at='2000-01-01' where location_id in (${branches.slice(0, 4).map(branch => `'${branch}'`).join(',')})`);
@@ -85,10 +100,10 @@ test(`${driver} attempt deadline lets an independent bill finish before a slow b
     const started = performance.now();
     sql(`update private.rubber_queue_jobs set next_attempt_at=clock_timestamp()+case when command_id='${commands[1]}' then interval '1 millisecond' else interval '0' end where location_id='${branch}';` + (driver === 'manual' ? command : ''));
     if (driver === 'cron') await expect.poll(() => sql(`select state from private.rubber_queue_jobs where command_id='${commands[1]}'`),
-      { timeout: 8_000, intervals: [100, 250, 500] }).toBe('done');
+      { timeout: 36_000, intervals: [100, 250, 500] }).toBe('done');
     const elapsedMs = performance.now() - started;
     console.info(JSON.stringify({ scenario: 'slow-independent', driver, elapsedMs }));
-    expect(elapsedMs).toBeLessThan(driver === 'manual' ? 3_000 : 5_000);
+    expect(elapsedMs).toBeLessThan(driver === 'manual' ? 3_000 : 36_000);
     expect(sql(`select state from private.rubber_queue_jobs where command_id='${commands[1]}'`)).toBe('done');
     expect(sql(`select state from private.rubber_queue_jobs where command_id='${commands[0]}'`)).toBe('retry_wait');
     expect(sql(`select error_code from private.rubber_queue_jobs where command_id='${commands[0]}'`)).toBe('ATTEMPT_TIMEOUT');
@@ -120,7 +135,7 @@ test(`connection kill ${blockedIndex === 0 ? "early" : "late"} with ${committedA
   const tag = `rubber-kill-${branch}`;
   let holder: Promise<unknown> | undefined, processing: Promise<unknown> | undefined;
   const cronWasActive = sql("select active from cron.job where jobname='rubber-central-queue'") === 't';
-  const executeSql = (statement: string) => execute("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", statement], { windowsHide: true });
+  const executeSql = (statement: string) => execute("docker", ["exec", databaseContainer, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", statement], { windowsHide: true });
   try {
     if (committedAttempts) sql("select cron.alter_job(jobid,active:=false) from cron.job where jobname='rubber-central-queue'");
     sql(`begin;insert into auth.users(id,aud,role) values('${actor}','authenticated','authenticated');
@@ -200,9 +215,9 @@ test("concurrent workers and a report transaction cannot duplicate effects or cr
       commit;`);
     // Zero-price bills or their pending approvals still block reports after the
     // queue handoff, so no possible report/worker ordering may create a report.
-    const report = execute("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c",
+    const report = execute("docker", ["exec", databaseContainer, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c",
       `select set_config('request.jwt.claim.sub','${actor}',false);select public.create_report_batch('${branch}');`], { windowsHide: true });
-    const authenticatedSql = (statement: string) => execute("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c",
+    const authenticatedSql = (statement: string) => execute("docker", ["exec", databaseContainer, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c",
       `select set_config('request.jwt.claim.sub','${actor}',false);${statement}`], { windowsHide: true });
     const replay = authenticatedSql(`select public.submit_rubber_queue('${payloads[0]}'::jsonb)`);
     const retry = authenticatedSql(`select public.manage_rubber_queue('${ids[0]}',1,'retry')`);
@@ -239,7 +254,8 @@ test("concurrent workers and a report transaction cannot duplicate effects or cr
 });
 
 test("scheduled database worker completes an admitted command with no browser or HTTP requests", async () => {
-  test.setTimeout(35_000);
+  test.setTimeout(45_000);
+  expect(sql("select schedule from cron.job where jobname='rubber-central-queue' and active")).toBe("30 seconds");
   const branch = crypto.randomUUID(), actor = crypto.randomUUID(), bill = crypto.randomUUID(), command = crypto.randomUUID();
   const payload = JSON.stringify({ centralQueue: true, contractVersion: 2, operation: "delete", commandId: command,
     idempotencyKey: command, locationId: branch, clientTempId: bill, expectedCommandGeneration: 0,
@@ -258,7 +274,7 @@ test("scheduled database worker completes an admitted command with no browser or
       select public.submit_rubber_queue('${payload}'::jsonb);commit;`);
     // Only observational SQL from here: no HTTP/browser/manual worker invocation.
     await expect.poll(() => sql(`select state from private.rubber_queue_jobs where command_id='${command}'`),
-      { timeout: 20_000, intervals: [500, 1_000, 2_000] }).toBe("done");
+      { timeout: 38_000, intervals: [500, 1_000, 2_000] }).toBe("done");
     expect(sql(`select result->>'status' from private.rubber_queue_jobs where command_id='${command}'`)).toBe("pending_approval");
     expect(sql(`select requested_by_user_id from public.rubber_bill_approval_requests where location_id='${branch}'`)).toBe(actor);
     expect(sql(`select count(*) from private.rubber_queue_execution where command_id='${command}'`)).toBe("0");

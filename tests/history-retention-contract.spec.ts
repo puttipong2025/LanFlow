@@ -116,25 +116,44 @@ test("history retention rejects timezone offsets PostgreSQL cannot parse", async
 
 test("real cron finishes an accepted job after the initiating browser context closes", async ({ browser }) => {
   test.setTimeout(90000);
-  expect(new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").hostname).toBe("127.0.0.1");
-  const localSql = (query: string) => execFileSync("docker", ["exec", "supabase_db_webapp", "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", query], { encoding: "utf8" }).trim();
+  const origin = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").origin;
+  const container = origin === "http://127.0.0.1:55461" ? "supabase_db_lanflow-retention-split-test" : "supabase_db_webapp";
+  expect(["http://127.0.0.1:55421", "http://127.0.0.1:55461"]).toContain(origin);
+  const localSql = (query: string) => execFileSync("docker", ["exec", container, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", "-c", query], { encoding: "utf8" }).trim();
+  // Reserve real run IDs from the extension's sequence, which its owner controls.
+  const [expiredSchedulerRun, freshSchedulerRun] = execFileSync("docker", ["exec", container, "psql",
+    "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "supabase_admin", "-d", "postgres", "-c",
+    "select nextval('cron.runid_seq'), nextval('cron.runid_seq')"], { encoding: "utf8" }).trim().split("|").map(BigInt);
   const starter = await contextFor("super_admin", browser);
   const observer = await contextFor("super_admin", browser);
+  const expiredAppRun = randomUUID();
   try {
-    localSql("insert into cron.job_run_details(runid,status,start_time,end_time,username) values (-990001,'succeeded',now()-interval '20 days',now()-interval '20 days','postgres'),(-990002,'succeeded',now(),now(),'postgres')");
+    localSql(`insert into public.history_cleanup_runs(id,retention_days,cutoff_date,status,completed_at)
+      values ('${expiredAppRun}',15,current_date-400,'succeeded',now()-interval '400 days');
+      insert into cron.job_run_details(runid,status,start_time,end_time,username)
+      values (${expiredSchedulerRun},'succeeded',now()-interval '400 days',now()-interval '400 days','postgres'),
+             (${freshSchedulerRun},'succeeded',now(),now(),'postgres')`);
     const overview = await (await starter.request.get("/api/lanflow/admin/history-retention?counts=nullable")).json() as { updatedAt: string; cutoffDate: string };
     const response = await starter.request.post("/api/lanflow/admin/history-retention?counts=nullable", {
       data: { action: "cleanup", requestId: randomUUID(), expectedUpdatedAt: overview.updatedAt, cutoffDate: overview.cutoffDate },
     });
     expect(response.status()).toBe(202);
     await starter.close();
-    // No manual worker call: only the installed scheduler may remove the old fixture.
-    await expect.poll(() => Number(localSql("select count(*) from cron.job_run_details where runid=-990001")), { timeout: 70000, intervals: [1000, 2000] }).toBe(0);
-    expect(Number(localSql("select count(*) from cron.job_run_details where runid=-990002"))).toBe(1);
-    const status = await (await observer.request.get("/api/lanflow/admin/history-retention?counts=nullable&view=status")).json() as { lastCleanup: { status: string } };
-    expect(status.lastCleanup.status).toBe("succeeded");
+    // Both installed jobs work independently after the originating context closes.
+    await expect.poll(async () => {
+      const fixturesRemoved = localSql(`select (not exists(select 1 from cron.job_run_details where runid=${expiredSchedulerRun})
+        and not exists(select 1 from public.history_cleanup_runs where id='${expiredAppRun}'))::text`);
+      if (fixturesRemoved !== "true") return false;
+      const status = await observer.request.get("/api/lanflow/admin/history-retention?counts=nullable&view=status");
+      if (!status.ok()) return false;
+      const data = await status.json();
+      return data.lastCleanup?.status === "succeeded" && data.schedulerCleanup?.errorCode === null;
+    },
+    { timeout: 70000, intervals: [1000, 2000] }).toBe(true);
+    expect(Number(localSql(`select count(*) from cron.job_run_details where runid=${freshSchedulerRun}`))).toBe(1);
   } finally {
-    localSql("delete from cron.job_run_details where runid in (-990001,-990002)");
+    localSql(`delete from cron.job_run_details where runid in (${expiredSchedulerRun},${freshSchedulerRun});
+      delete from public.history_cleanup_runs where id='${expiredAppRun}'`);
     await Promise.all([starter.close(), observer.close()]);
   }
 });

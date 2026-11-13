@@ -189,3 +189,35 @@ test("an older open save dialog cannot mutate policy before reloading the new cl
   expect(response.status).toBe(503);
   expect(calls).toBe(0);
 });
+
+test("an oversized streamed retention request cannot reach the RPC", async () => {
+  let calls = 0;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/admin/history-retention/route")>(
+    "src/app/api/lanflow/admin/history-retention/route.ts", {
+      "@/lib/server/auth": { requireSystemManager: async () => ({ ok: true,
+        supabase: { rpc: async () => { calls++; return { data: overview, error: null }; } } }) },
+    });
+  const body = new ReadableStream({ start(controller) {
+    controller.enqueue(Buffer.from(JSON.stringify({ action: "preview", retentionDays: 30, padding: "ก".repeat(2048) })));
+    controller.close();
+  } });
+  const request = new NextRequest("http://localhost/api/lanflow/admin/history-retention?counts=nullable", {
+    method: "POST", body, duplex: "half",
+  });
+  const response = await route.POST(request);
+  expect([response.status, calls]).toEqual([413, 0]);
+});
+
+test("retention rejects noncanonical policy version timestamps before RPC", async () => {
+  let calls = 0;
+  const route = loadSourceModule<typeof import("../src/app/api/lanflow/admin/history-retention/route")>(
+    "src/app/api/lanflow/admin/history-retention/route.ts", {
+      "@/lib/server/auth": { requireSystemManager: async () => ({ ok: true,
+        supabase: { rpc: async () => { calls++; return { data: overview, error: null }; } } }) },
+    });
+  const request = new NextRequest("http://localhost/api/lanflow/admin/history-retention?counts=nullable", {
+    method: "POST", body: JSON.stringify({ action: "save", retentionDays: 30, expectedUpdatedAt: "2026-10-29T24:00:00Z" }),
+  });
+  expect((await route.POST(request)).status).toBe(400);
+  expect(calls).toBe(0);
+});

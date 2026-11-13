@@ -22,6 +22,23 @@ async function openSettings(page: Page) {
 test.describe("background history retention UI", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test("completed app cleanup and a scheduler failure display independently", async ({ page }) => {
+    const state: HistoryRetentionOverview = { ...initial(), schedulerCleanup: {
+      checkedAt: "2026-09-03T01:10:00Z", deletedCount: 0, errorCode: "57014",
+    }, lastCleanup: { id: "job-1", source: "manual", status: "succeeded", retentionDays: 15,
+      cutoffDate: "2026-08-20", deletedCounts: { dashboard_money_events: 2, scheduler_run_history: 1005 },
+      remainingCounts: {}, countsAsOf: null, batches: 1, hasMore: false, errorMessage: null,
+      startedAt: "2026-09-03T01:00:00Z", completedAt: "2026-09-03T01:05:00Z" } };
+    await page.route(/\/api\/lanflow\/admin\/history-retention(?:\?.*)?$/, route => route.fulfill({ json: state }));
+    await openSettings(page);
+    await expect(page.getByText("ลบแล้ว 2 รายการ · 1 ชุด")).toBeVisible();
+    await expect(page.getByText("รอบล่าสุดไม่สำเร็จ ระบบจะลองใหม่")).toBeVisible();
+    await page.getByRole("button", { name: "ล้างประวัติที่หมดอายุตอนนี้", exact: true }).click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toContainText("เข้าเกณฑ์ลบ 0 รายการ");
+    await expect(dialog).not.toContainText("1,005");
+  });
+
   test("unknown scheduler counts keep settings and cleanup confirmation usable", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", error => pageErrors.push(error.message));

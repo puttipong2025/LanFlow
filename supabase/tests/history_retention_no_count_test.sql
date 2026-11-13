@@ -13,8 +13,8 @@ end $$;
 
 insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_features)
 values ('64000000-0000-4000-8000-000000000001','0896400001','retention scan manager','admin',true,true);
-insert into cron.job_run_details(runid,status,start_time,end_time,username)
-values (-640001,'succeeded',now()-interval '400 days',now()-interval '400 days','postgres');
+insert into public.history_cleanup_runs(retention_days,cutoff_date,status,completed_at)
+values (15,current_date-400,'succeeded',now()-interval '400 days');
 select set_config('request.jwt.claim.sub','64000000-0000-4000-8000-000000000001',true);
 set local role authenticated;
 select extensions.lives_ok($q$
@@ -30,7 +30,7 @@ where request_id='64000000-0000-4000-8000-000000000002';
 
 select extensions.is(private.cleanup_history_retention(1000)->>'status','succeeded',
   'worker can make progress even when full preview counting would time out');
-select extensions.ok(not exists(select 1 from cron.job_run_details where runid=-640001),
+select extensions.ok(not exists(select 1 from public.history_cleanup_runs where completed_at=now()-interval '400 days'),
   'the real worker deletes the expired terminal fixture');
 select extensions.ok(not exists(select 1 from public.history_cleanup_runs where status='failed'
   and started_at >= transaction_timestamp()),'preview timeout does not create a failed batch');

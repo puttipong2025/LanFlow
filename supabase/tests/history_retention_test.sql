@@ -132,12 +132,10 @@ do $cleanup$
 declare
   v_result jsonb;
   v_max_batches integer := greatest(20,
-    ceil(((select coalesce(sum(eligible_count),0) from private.history_retention_preview_rows(1))
-      + (select count(*) from cron.job_run_details where status in ('succeeded','failed')
-        and start_time < (select private.history_retention_cutoff_date(1)::timestamp at time zone 'Asia/Bangkok')))::numeric / 1000)::integer + 2);
+    ceil((select coalesce(sum(eligible_count),0) from private.history_retention_preview_rows(1)
+      where group_key <> 'scheduler_run_history')::numeric / 1000)::integer + 2);
 begin
-  -- A long-lived Local database can contain more than 20,000 cron rows. Bound
-  -- the test by its actual fixture/history size instead of assuming a fresh DB.
+  -- Bound the test by the app history this worker owns.
   for v_attempt in 1..v_max_batches loop
     v_result := private.cleanup_history_retention(1000);
     exit when not coalesce((v_result ->> 'hasMore')::boolean, true);

@@ -8,6 +8,10 @@ export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+export function sameUuid(left: unknown, right: unknown): boolean {
+  return isUuid(left) && isUuid(right) && left.toLowerCase() === right.toLowerCase();
+}
+
 export function isUuidV1ToV8(value: unknown): value is string {
   return typeof value === "string" && UUID_V1_TO_V8_PATTERN.test(value);
 }

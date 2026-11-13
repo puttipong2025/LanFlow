@@ -25,13 +25,13 @@ IndexedDB version 7 fences older uploaders from locally staged envelopes (ADR 00
 
 ## Timing and recovery
 
-- A database cron tick runs every 10 seconds, processes at most 20 jobs and considers at most 80 candidates. Due jobs are interleaved by branch; locked branches use try-lock and are skipped.
-- Each attempt's business effect, terminal receipt, proposal cleanup and blocker handoff share one transaction. No committed running claim exists. Killing the transaction rolls back the whole attempt; next due tick can retry it. Cron enforces an 8-second statement timeout and 2-second dependency lock timeout; report preflight uses a 250 ms lock timeout. A query cancellation inside a job rolls back that job, records `ATTEMPT_TIMEOUT` and backs off. The tick stops taking new work after its 7-second budget; a connection kill outside the job boundary still rolls back the outer tick safely.
+- Durable admission can start processing immediately. The database Cron fallback runs every 30 seconds, starts at most 20 attempts per tick and stops calling the worker after the first check that finds no claimable due work. Due jobs are interleaved by branch; locked branches use try-lock and are skipped.
+- Each attempt commits its business effect, terminal receipt, proposal cleanup and blocker handoff together. An interrupted attempt rolls back and can be retried by a later tick. Cron applies a 2-second statement timeout and 250 ms lock timeout per attempt. A cancellation caught inside a job records `ATTEMPT_TIMEOUT` and backs off. The tick starts no new attempt after its 7-second budget. Previously committed attempts survive a later failure.
 - Infrastructure failures back off from 5 seconds to a maximum 300 seconds. Rights/cash pauses check again after 30 seconds. Invalid create drafts wait for correction; they never disappear because a network response is uncertain.
 - Owner upload/reconciliation rounds use the existing 30-second coordinator; one round considers at most 20 commands and interleaves branches. A failing branch is deferred for that round. Reconnect/unlock also wakes the coordinator. Each upload has a 15-second transport timeout and each session probe an 8-second timeout.
 - The selected branch queue polls every 10 seconds while online. A central revision change invalidates its normal feed/counts even without a sender in that browser. Hidden-tab timer throttling can delay refresh. Offline UI states explicitly identify cached/local information.
 - The existing all-branch actionable badge RPC includes central work for authorized branches without another per-branch polling loop. Work already represented by an unpriced/pending-approval badge is not counted again; other module counts retain their existing rules.
-- Local targets under an idle reachable system: Server completion normally within two 10-second ticks; selected shared view within a further polling interval. These are diagnostic targets, not measured Cloud SLOs or browser/physical-printer guarantees.
+- An idle reachable system should start an eligible fallback attempt by the next 30-second tick. Completion depends on retries and contention. The selected shared view refreshes at its own polling interval.
 
 ## Diagnose safely
 

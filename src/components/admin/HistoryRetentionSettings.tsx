@@ -77,7 +77,7 @@ export function HistoryRetentionSettings() {
     setPreview(null);
   }, []);
 
-  const load = useCallback(async (resetDraft = true, quiet = false) => {
+  const load = useCallback(async (resetDraft = true, quiet = false, latestStatus?: HistoryCleanupStatus) => {
     const ticket = ++version.current;
     if (!quiet) { setLoading(true); setError(null); }
     try {
@@ -92,7 +92,8 @@ export function HistoryRetentionSettings() {
         if (quiet) {
           setPollError(message);
           // Rearm status polling even when the follow-up full refresh failed.
-          setOverview((previous) => previous ? { ...previous } : previous);
+          setOverview((previous) => previous && { ...previous,
+            schedulerCleanup: latestStatus ? latestStatus.schedulerCleanup : previous.schedulerCleanup });
         } else setError(message);
       }
     } finally {
@@ -124,9 +125,9 @@ export function HistoryRetentionSettings() {
         const policyChanged = data.updatedAt !== overview.updatedAt || data.cutoffDate !== overview.cutoffDate;
         const jobFinished = overview.lastCleanup?.status === "running" && data.lastCleanup?.status !== "running";
         if (policyChanged || jobFinished) {
-          await load(false, true);
+          await load(false, true, data);
         } else {
-          const next = { ...overview, lastCleanup: data.lastCleanup };
+          const next = { ...overview, lastCleanup: data.lastCleanup, schedulerCleanup: data.schedulerCleanup };
           currentOverview.current = next;
           setOverview(next);
         }
@@ -216,6 +217,12 @@ export function HistoryRetentionSettings() {
 
   const shown = preview ?? overview;
   const dirty = days !== overview.currentDays;
+  const scheduler = overview.schedulerCleanup;
+  const splitCleanup = scheduler !== undefined;
+  const confirmationGroups = dialog?.data.groups.filter(group => dialog.kind !== "cleanup"
+    || dialog.data.schedulerCleanup === undefined || group.key !== "scheduler_run_history") ?? [];
+  const confirmationTotal = confirmationGroups.some(group => group.eligibleCount === null) ? null
+    : confirmationGroups.reduce((sum, group) => sum + (group.eligibleCount ?? 0), 0);
   return <div className="space-y-5">
     <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -246,21 +253,28 @@ export function HistoryRetentionSettings() {
     <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
       <div className="flex flex-wrap items-end justify-between gap-2"><div><h3 className="text-balance font-bold text-ink">ข้อมูลที่ได้รับผลกระทบ</h3><p className="text-pretty text-sm tabular-nums text-ink/60">เก็บตั้งแต่วันที่ {formatDate(shown.cutoffDate)} · เข้าเกณฑ์ลบ {formatCount(shown.totalEligible)} รายการ</p></div>{preview && <span className="rounded bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">ตัวอย่างก่อนบันทึก</span>}</div>
       {shown.totalEligible === null && <p role="status" className="mt-2 text-pretty text-sm text-ink/60">จำนวนบางกลุ่มยังไม่พร้อม ระบบยังล้างตามจำนวนวันที่เก็บได้</p>}
-      <div className="mt-3 overflow-x-auto" role="region" aria-label="ผลกระทบและความคืบหน้าแยกกลุ่ม" tabIndex={0}><table className="w-full min-w-[42rem] text-left text-sm"><thead><tr className="border-b border-black/10 text-ink/60"><th className="p-3">กลุ่มข้อมูล</th><th className="p-3 text-right">เข้าเกณฑ์ลบ</th><th className="p-3">วันที่เก่าสุด</th>{!preview && overview.lastCleanup && <><th className="p-3 text-right">ลบแล้วในงานล่าสุด</th><th className="p-3 text-right">ค้างในงานล่าสุด ≈</th></>}</tr></thead><tbody className="divide-y divide-black/5">{shown.groups.map((group) => { const copy = GROUP_LABELS[group.key] ?? { label: group.key, detail: "ประวัติชั่วคราว" }; return <tr key={group.key}><td className="p-3"><p className="font-semibold text-ink">{copy.label}</p><p className="text-pretty text-xs text-ink/55">{copy.detail}</p></td><td className="p-3 text-right font-semibold tabular-nums">{formatCount(group.eligibleCount)}</td><td className="p-3 tabular-nums">{formatDate(group.oldestDate)}</td>{!preview && overview.lastCleanup && <><td className="p-3 text-right tabular-nums">{(overview.lastCleanup.deletedCounts[group.key] ?? 0).toLocaleString("th-TH")}</td><td className="p-3 text-right tabular-nums">{!overview.lastCleanup.countsAsOf && overview.lastCleanup.hasMore ? "—" : (overview.lastCleanup.remainingCounts[group.key] ?? 0).toLocaleString("th-TH")}</td></>}</tr>; })}</tbody></table></div>
+      <div className="mt-3 overflow-x-auto" role="region" aria-label="ผลกระทบและความคืบหน้าแยกกลุ่ม" tabIndex={0}><table className="w-full min-w-[42rem] text-left text-sm"><thead><tr className="border-b border-black/10 text-ink/60"><th className="p-3">กลุ่มข้อมูล</th><th className="p-3 text-right">เข้าเกณฑ์ลบ</th><th className="p-3">วันที่เก่าสุด</th>{!preview && overview.lastCleanup && <><th className="p-3 text-right">ลบแล้วในงานล่าสุด</th><th className="p-3 text-right">ค้างในงานล่าสุด ≈</th></>}</tr></thead><tbody className="divide-y divide-black/5">{shown.groups.map((group) => { const copy = GROUP_LABELS[group.key] ?? { label: group.key, detail: "ประวัติชั่วคราว" }; return <tr key={group.key}><td className="p-3"><p className="font-semibold text-ink">{copy.label}</p><p className="text-pretty text-xs text-ink/55">{copy.detail}</p></td><td className="p-3 text-right font-semibold tabular-nums">{formatCount(group.eligibleCount)}</td><td className="p-3 tabular-nums">{formatDate(group.oldestDate)}</td>{!preview && overview.lastCleanup && <><td className="p-3 text-right tabular-nums">{splitCleanup && group.key === "scheduler_run_history" ? "—" : formatCount(overview.lastCleanup.deletedCounts[group.key] ?? 0)}</td><td className="p-3 text-right tabular-nums">{(splitCleanup && group.key === "scheduler_run_history") || (!overview.lastCleanup.countsAsOf && overview.lastCleanup.hasMore) ? "—" : (overview.lastCleanup.remainingCounts[group.key] ?? 0).toLocaleString("th-TH")}</td></>}</tr>; })}</tbody></table></div>
     </section>
 
     <section className="grid gap-4 lg:grid-cols-2">
       <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4"><h3 className="flex items-center gap-2 text-balance font-bold text-emerald-900"><ShieldCheck size={18} />ไม่ลบและไม่กระทบ</h3><ul className="mt-3 list-disc space-y-1.5 ps-5 text-sm text-emerald-950/80"><li>บิลยางและรับ–จ่ายสถานะ <code>deleted</code> รวมเลขเอกสารและ revision</li><li>Dashboard ยอดรับ–จ่ายสะสม ยอดซื้อยาง และยอดสต็อก</li><li>ข้อมูลธุรกิจ รายงาน Payroll Slip และ relation lock</li><li>หลักฐานลบ RPT, REX, Cash Count และ WEX แบบถาวร</li><li>Auth audit, Realtime message และ platform log ที่ผู้ให้บริการจัดการ</li></ul></div>
       <div className="rounded-md border border-black/10 bg-white p-4">
-        <h3 className="flex items-center gap-2 text-balance font-bold text-ink"><CheckCircle2 size={18} className="text-leaf" />สถานะงานล้างประวัติ</h3>
+        <h3 className="flex items-center gap-2 text-balance font-bold text-ink"><CheckCircle2 size={18} className="text-leaf" />{splitCleanup ? "สถานะล้างประวัติของแอป" : "สถานะงานล้างประวัติ"}</h3>
         <p className="mt-2 text-pretty text-sm text-ink/60">ระบบตรวจทุกนาทีและล้างทีละชุด ปิดหน้าเว็บได้โดยงานไม่หยุด</p>
         {overview.lastCleanup ? <div className="mt-3 space-y-1 text-sm tabular-nums" role="status">
           <p>งานล่าสุด: <strong>{overview.lastCleanup.status === "succeeded" ? "สำเร็จ" : overview.lastCleanup.status === "failed" ? "ไม่สำเร็จ — ระบบจะลองใหม่ในรอบถัดไป" : overview.lastCleanup.batches === 0 ? "รับงานแล้ว — รอรอบล้าง" : "กำลังล้างเป็นชุด"}</strong></p>
-          <p>ลบแล้ว {Object.values(overview.lastCleanup.deletedCounts).reduce((sum, value) => sum + value, 0).toLocaleString("th-TH")} รายการ · {overview.lastCleanup.batches.toLocaleString("th-TH")} ชุด</p>
+          <p>ลบแล้ว {Object.entries(overview.lastCleanup.deletedCounts).reduce((sum, [key, value]) => sum + (splitCleanup && key === "scheduler_run_history" ? 0 : value), 0).toLocaleString("th-TH")} รายการ · {overview.lastCleanup.batches.toLocaleString("th-TH")} ชุด</p>
           <p>ยังมีรายการรอล้าง: {overview.lastCleanup.batches === 0 && !overview.lastCleanup.countsAsOf && overview.lastCleanup.hasMore ? "รอตรวจ" : overview.lastCleanup.hasMore ? "มี" : "ไม่มี"}</p>
           <p className="text-pretty text-xs text-ink/60">จำนวนค้าง ≈ แสดงเมื่อมีผลตรวจต้นงาน; — หมายถึงยังไม่มีผลนับ คอลัมน์เข้าเกณฑ์ลบเป็นผลตรวจล่าสุด กดตรวจข้อมูลล่าสุดเพื่อคำนวณใหม่</p>
           {overview.lastCleanup.errorMessage && <p className="text-pretty text-rose-700">{overview.lastCleanup.errorMessage}</p>}
         </div> : <p className="mt-3 text-pretty text-sm text-ink/60">ยังไม่มีประวัติงานล้าง</p>}
+        {splitCleanup && <div className="mt-4 border-t border-black/10 pt-3 text-sm" role="status">
+          <h4 className="font-semibold text-ink">ล้างประวัติรันงานอัตโนมัติ</h4>
+          <p className="mt-1 text-ink/60">ระบบทยอยล้างแยกจากประวัติของแอปตามจำนวนวันที่เก็บ</p>
+          <p className="mt-1">{!scheduler ? "รอรอบแรก" : scheduler.errorCode ? "รอบล่าสุดไม่สำเร็จ ระบบจะลองใหม่"
+            : scheduler.deletedCount > 0 ? `รอบล่าสุดล้าง ${formatCount(scheduler.deletedCount)} รายการ` : "รอบล่าสุดไม่มีรายการถูกล้าง"}</p>
+          {scheduler && <p className="mt-1 tabular-nums text-ink/60">ตรวจล่าสุด {new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(scheduler.checkedAt))}</p>}
+        </div>}
         {pollError && <p role="alert" className="mt-3 text-pretty text-sm text-rose-700">{pollError} {overview.lastCleanup ? "งานที่รับไว้ยังอยู่บน Server" : "กรุณาลองตรวจข้อมูลล่าสุดอีกครั้ง"}</p>}
         {dirty && <p className="mt-3 text-pretty text-sm text-ink/60">บันทึกจำนวนวันหรือคืนค่าเดิมก่อนสั่งล้าง</p>}
         <div className="mt-4 flex flex-wrap gap-2">
@@ -273,14 +287,14 @@ export function HistoryRetentionSettings() {
     </section>
     <AlertDialog open={dialog !== null} title={dialog?.kind === "cleanup" ? "ยืนยันล้างประวัติที่หมดอายุ?" : "ยืนยันเปลี่ยนระยะเก็บประวัติ?"}
       description={dialog?.kind === "cleanup"
-        ? `ใช้ค่าที่บันทึกแล้ว ${dialog.data.currentDays} วัน เก็บตั้งแต่ ${formatDate(dialog.data.cutoffDate)} ลบเฉพาะประวัตินอกช่วง ไม่ลบข้อมูลธุรกิจหรือยอดสะสม การลบถาวรไม่สามารถย้อนกลับด้วยการเพิ่มจำนวนวัน`
+        ? `ใช้ค่าที่บันทึกแล้ว ${dialog.data.currentDays} วัน เก็บตั้งแต่ ${formatDate(dialog.data.cutoffDate)} ${dialog.data.schedulerCleanup === undefined ? "ลบเฉพาะประวัตินอกช่วง" : "ล้างประวัติของแอปนอกช่วง ส่วนประวัติรันงานอัตโนมัติล้างแยกตามรอบ"} ไม่ลบข้อมูลธุรกิจหรือยอดสะสม การลบถาวรไม่สามารถย้อนกลับด้วยการเพิ่มจำนวนวัน`
         : `เปลี่ยนเป็น ${dialog?.data.requestedDays ?? days} วัน มีผลกับรอบล้างถัดไป การเพิ่มวันไม่คืนประวัติที่ลบแล้ว`}
       confirmLabel={dialog?.kind === "cleanup" ? "ยืนยันเริ่มล้าง" : "ยืนยันเปลี่ยนค่า"} busy={working}
       onCancel={() => { setDialog(null); setError(null); }} onConfirm={() => void confirmAction()}>
       {dialog && <div className="mt-3 max-h-56 overflow-y-auto text-sm">
-        <p className="font-semibold tabular-nums">เข้าเกณฑ์ลบ {formatCount(dialog.data.totalEligible)} รายการ</p>
-        {dialog.data.totalEligible === null && <p className="mt-1 text-pretty text-ink/60">จำนวนบางกลุ่มยังไม่พร้อม ระบบจะตรวจเกณฑ์ก่อนล้างแต่ละรอบ</p>}
-        <ul className="mt-2 space-y-1">{dialog.data.groups.map((group) => <li key={group.key} className="flex justify-between gap-3">
+        <p className="font-semibold tabular-nums">เข้าเกณฑ์ลบ {formatCount(confirmationTotal)} รายการ</p>
+        {confirmationTotal === null && <p className="mt-1 text-pretty text-ink/60">จำนวนบางกลุ่มยังไม่พร้อม ระบบจะตรวจเกณฑ์ก่อนล้างแต่ละรอบ</p>}
+        <ul className="mt-2 space-y-1">{confirmationGroups.map((group) => <li key={group.key} className="flex justify-between gap-3">
           <span>{GROUP_LABELS[group.key]?.label ?? group.key}</span><span className="shrink-0 tabular-nums">{formatCount(group.eligibleCount)}</span>
         </li>)}</ul>
       </div>}

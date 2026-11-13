@@ -35,6 +35,16 @@ test("a changed manager request returns an identity-bound admission rejection", 
   });
 });
 
+test("manager admission sends a canonical request UUID and receipt namespace to PostgreSQL", async () => {
+  const targetRequestId = owner.toUpperCase();
+  const manager = { ...payload, operation: "update", queueAction: "approve",
+    targetRequestId, clientTempId: `request:${targetRequestId}` };
+  const handlers = route({ ...accepted, action: "approve", clientTempId: `request:${owner}` });
+  const response = await handlers.POST(post(manager));
+  expect(response.status).toBe(202);
+  expect(handlers.args[0]).toEqual({ payload: expect.objectContaining({ targetRequestId: owner, clientTempId: `request:${owner}` }) });
+});
+
 test("numbering validation rejection identifies the unchanged command instead of masquerading as an outage", async () => {
   const numbered = { ...payload, localBillNo: "2610310001-D01", billNumbering: { version: 1, issuerId: branch, date: "2026-10-31", sequence: 1 } };
   const response = await route(null, { message: "INVALID_BILL_NUMBER" }).POST(post(numbered));
@@ -73,6 +83,25 @@ test("GET accepts UUID case variations without losing a valid admitted receipt",
   expect(handlers.calls()).toBe(1);
 });
 
+test("admission and queue reads accept PostgreSQL's character-limited Unicode references", async () => {
+  const reference = "📋".repeat(128);
+  const row = { ...accepted, reference };
+  expect((await route(row).POST(post({ ...payload, localBillNo: reference }))).status).toBe(202);
+  const url = `https://example.test?locationId=${branch}`;
+  expect((await route(row).GET(new Request(`${url}&commandId=${commandId}`))).status).toBe(200);
+  const feed = { rows: [row], counts: { pending: 1, attention: 0 } };
+  expect((await route(feed).GET(new Request(url))).status).toBe(200);
+  expect((await route({ ...feed, rows: [{ ...row, reference: `${reference}ก` }] }).GET(new Request(url))).status).toBe(503);
+});
+
+test("queue submission and receipts use the database's client ID character limit", async () => {
+  const clientTempId = "📋".repeat(512);
+  const handlers = route({ ...accepted, clientTempId });
+  expect((await handlers.POST(post({ ...payload, clientTempId }))).status).toBe(202);
+  expect((await handlers.POST(post({ ...payload, clientTempId: `${clientTempId}ก` }))).status).toBe(400);
+  expect(handlers.calls()).toBe(1);
+});
+
 test("POST accepts equivalent UUID casing without reporting an already committed admission as unavailable", async () => {
   for (const changed of [{ commandId: commandId.toUpperCase(), idempotencyKey: commandId.toUpperCase() },
     { actorUserId: owner.toUpperCase(), locationId: branch.toUpperCase() }]) {
@@ -81,6 +110,7 @@ test("POST accepts equivalent UUID casing without reporting an already committed
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual(accepted);
     expect(handlers.calls()).toBe(1);
+    expect(handlers.args[0]).toEqual({ payload: expect.objectContaining({ commandId, idempotencyKey: commandId }) });
   }
 });
 

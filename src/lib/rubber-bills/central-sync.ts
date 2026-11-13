@@ -11,7 +11,7 @@ import { RubberPreparationError, isUnsubmittedRubberPreparationFailure } from "@
 import { notifyRubberBackgroundFailure, notifyRubberManagerOutcome } from "./background-notifications";
 import { invalidateMoneyFlowLocation } from "@/lib/money-flow/invalidation";
 import { preserveRubberApprovalInCache, removeConfirmedRubberBillLocally, removeRubberBillFromOperationalFeedCacheByBillId, removeRubberBillApprovalRequestFromPendingFeedCache } from "./feed-cache";
-import { isJsonObject } from "@/lib/validation/primitives";
+import { isJsonObject, sameUuid } from "@/lib/validation/primitives";
 
 export const RUBBER_QUEUE_ENDPOINT = "/api/lanflow/rubber-bills/queue";
 const flight = createScopedSingleFlight();
@@ -57,9 +57,10 @@ export async function rubberOwnerWork(ownerUserId: string): Promise<CentralEvent
   });
 }
 
-export function matchesRubberQueueEvent(row: unknown, event: SyncEvent): row is RubberQueueRow {
-  return isRubberQueueRow(row) && row.commandId === event.payload.commandId && row.actorUserId === event.ownerUserId
-    && row.locationId === event.locationId && row.clientTempId === event.id
+function matchesRubberQueueEvent(row: unknown, event: SyncEvent): row is RubberQueueRow {
+  return isRubberQueueRow(row) && sameUuid(row.commandId, event.payload.commandId) && sameUuid(row.actorUserId, event.ownerUserId)
+    && sameUuid(row.locationId, event.locationId) && (event.payload.queueAction
+      ? row.clientTempId === event.id.toLowerCase() : row.clientTempId === event.id)
     && row.action === (event.payload.queueAction ?? event.operation);
 }
 
@@ -184,8 +185,8 @@ async function runRubberCentralQueueRound(queryClient: QueryClient, ownerUserId:
             const manager = event.payload.queueAction;
             const confirmed = manager ? isConfirmedRubberManagerResult(row.result, manager, event.payload.targetRequestId)
               : isConfirmedRubberSyncResult(row.result, event);
-            const managerRetired = manager && row.result.status === "discarded" && row.result.commandId === event.payload.commandId
-              && row.result.operation === manager && row.result.clientTempId === event.id;
+            // The validated terminal row already binds its result to this command.
+            const managerRetired = manager && row.result.status === "discarded";
             if (confirmed || managerRetired) {
               // Persist admission before acknowledging locally. If that
               // transaction fails, recovery reads the same server receipt.

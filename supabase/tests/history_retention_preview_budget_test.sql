@@ -28,10 +28,14 @@ select extensions.is(
 
 -- Reproduce a scheduler history count that cannot finish within a web request.
 -- Only that group's count is unavailable; the policy and other groups remain usable.
+create temporary sequence retention_preview_calls;
 create or replace function private.history_scheduler_preview(p_cutoff_at timestamptz)
 returns table(eligible_count bigint, oldest_date date)
-language sql stable security definer set search_path = '' as $$
-  select null::bigint, null::date
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  perform nextval('pg_temp.retention_preview_calls'::regclass);
+  return query select null::bigint, null::date;
+end
 $$;
 
 insert into public.profiles(id,phone,name,role,is_active,can_access_super_admin_features)
@@ -46,10 +50,15 @@ select extensions.is(public.get_history_retention_overview()->'totalEligible', '
   'an incomplete preview must not advertise a complete total');
 select extensions.is(jsonb_array_length(public.get_history_retention_overview()->'groups'),12,
   'all temporary history groups stay visible when one count is unavailable');
+reset role;
+select setval('pg_temp.retention_preview_calls'::regclass, 1, false);
+set local role authenticated;
 select extensions.lives_ok($q$select public.save_history_retention_settings(30,
   (select updated_at from public.history_retention_settings where singleton))$q$,
   'saving the policy does not depend on an unbounded scheduler count');
 reset role;
+select extensions.is((select last_value from pg_temp.retention_preview_calls), 1::bigint,
+  'policy save shares a single preview between its audit and response');
 select extensions.is((select eligible_counts->'scheduler_run_history' from public.history_retention_change_audits
   where actor_user_id='65000000-0000-4000-8000-000000000001' order by changed_at desc limit 1), 'null'::jsonb,
   'the permanent policy audit records an unknown count honestly');

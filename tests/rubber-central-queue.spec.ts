@@ -201,6 +201,17 @@ function runner(fetch: (url: string, init?: RequestInit) => Promise<Response>, s
 }
 const client = { invalidateQueries: async () => {} } as never;
 
+test("a canonical terminal receipt completes an uppercase command saved in the local queue", async () => {
+  const event = await fixture();
+  const commandId = "ad000000-0000-4000-8000-000000000099";
+  const uppercase = commandId.toUpperCase();
+  await queue.updateSyncEvent({ ...event, payload: { ...event.payload, commandId: uppercase, idempotencyKey: uppercase } });
+  const receipt = row({ ...event, payload: { ...event.payload, commandId } }, true);
+  const sync = runner(async () => Response.json(receipt));
+  await sync.runRubberCentralQueue(client, owner);
+  expect(await sync.rubberOwnerWork(owner)).toHaveLength(0);
+});
+
 test("a stale admission failure cannot erase another window's confirmed admission", async () => {
   const event = await fixture();
   await queue.updateSyncEvent({ ...event, serverSubmissionAttempted: true });
@@ -764,16 +775,21 @@ test("PDF handoff awaits an asynchronous account check before delivery", async (
 
 test("manager-approved deletion atomically acknowledges its request command and tombstones the actual bill", async () => {
   const source = await fixture(); await queue.removeSyncEvent(source.queueId!);
-  const request = crypto.randomUUID();
+  const request = "ad000000-0000-4000-8000-000000000098";
+  const commandId = "ad000000-0000-4000-8000-000000000099";
+  const storedRequest = request.toUpperCase();
   const { queueId: _previousId, ...base } = source;
-  const event: queue.SyncEvent = { ...base, id: `request:${request}`, operation: "update", payload: {
-    ...source.payload, operation: "update", clientTempId: `request:${request}`, queueAction: "approve", targetRequestId: request } };
+  const event: queue.SyncEvent = { ...base, id: `request:${storedRequest}`, operation: "update", payload: {
+    ...source.payload, operation: "update", commandId: commandId.toUpperCase(), idempotencyKey: commandId.toUpperCase(),
+    clientTempId: `request:${storedRequest}`, queueAction: "approve", targetRequestId: storedRequest } };
   event.queueId = await queue.enqueueSyncEvent(event);
   const bill = rubberBillFromSyncEvent(source, owner)!;
   const snapshot = { billId: server, locationId: branch, serverBillNo: "R", serverReceivedAt: "2026-10-28T00:00:00Z", revisionNo: 1, bill, receipt: {} as never };
   await queue.putRubberBillReceiptSnapshots([snapshot]);
-  expect(await completion.acknowledgeRubberCommand(event, { status: "approved", commandId: event.payload.commandId,
-    operation: "delete", requestId: request, billId: server })).toBe(true);
+  const terminal = row(event, true);
+  const sync = runner(async () => Response.json({ ...terminal, commandId, action: "approve", clientTempId: `request:${request}`,
+    result: { status: "approved", commandId, operation: "delete", requestId: request, billId: server, syncResult: terminal.result } }));
+  await sync.runRubberCentralQueue(client, owner);
   await queue.putRubberBillReceiptSnapshots([snapshot]);
   expect(await queue.getRubberBillReceiptSnapshots(branch)).toHaveLength(0);
   expect(await queue.getPendingEvents(event)).toHaveLength(0);
