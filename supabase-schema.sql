@@ -2837,12 +2837,13 @@ begin
     values (v_days, v_cutoff, 'running') returning * into v_run;
   end if;
   begin
-    -- Full counts only once per job, or when the saved policy/calendar cutoff changes.
+    -- Keep existing snapshots only while their policy/calendar still matches.
     if v_run.settings_updated_at is distinct from v_settings.updated_at
       or v_run.cutoff_date <> v_cutoff then
-      select jsonb_object_agg(group_key, eligible_count) into v_run.remaining_counts
-        from private.history_retention_preview_rows(v_days);
-      v_run.counts_as_of := clock_timestamp();
+      -- Counts are presentation metadata, never a prerequisite for deletion.
+      -- A changed policy invalidates the old snapshot without scanning all history.
+      v_run.remaining_counts := '{}'::jsonb;
+      v_run.counts_as_of := null;
     end if;
 
     update public.admin_account_audit_logs
@@ -26610,8 +26611,6 @@ CREATE OR REPLACE FUNCTION "public"."request_history_retention_cleanup"("p_reque
 declare
   v_settings public.history_retention_settings%rowtype;
   v_run public.history_cleanup_runs%rowtype;
-  v_counts jsonb;
-  v_has_work boolean;
 begin
   if auth.uid() is null or not private.is_active_user() or not private.can_access_super_admin_features() then
     raise exception 'FORBIDDEN: ไม่มีสิทธิ์สั่งล้างประวัติ';
@@ -26627,18 +26626,14 @@ begin
   end if;
   select * into v_run from public.history_cleanup_runs where status = 'running';
   if found then return jsonb_build_object('status', v_run.status, 'runId', v_run.id); end if;
-  select jsonb_object_agg(group_key, eligible_count) into v_counts
-    from private.history_retention_preview_rows(v_settings.retention_days);
-  v_has_work := private.history_retention_has_work(v_settings.retention_days);
+  -- The worker decides whether work exists. Accept without rescanning the preview.
   insert into public.history_cleanup_runs(
     request_id, requested_by_user_id, source, retention_days, cutoff_date,
     status, settings_updated_at, remaining_counts, counts_as_of, has_more, completed_at
   ) values (
     p_request_id, auth.uid(), 'manual', v_settings.retention_days,
     private.history_retention_cutoff_date(v_settings.retention_days),
-    case when v_has_work then 'running' else 'succeeded' end,
-    v_settings.updated_at, v_counts, clock_timestamp(), v_has_work,
-    case when v_has_work then null else clock_timestamp() end
+    'running', v_settings.updated_at, '{}'::jsonb, null, true, null
   ) returning * into v_run;
   return jsonb_build_object('status', v_run.status, 'runId', v_run.id);
 end

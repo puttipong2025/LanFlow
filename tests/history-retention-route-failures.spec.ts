@@ -48,3 +48,26 @@ test("authentication transport exceptions stay private for both methods", async 
     expect(await response.text()).not.toContain("auth secret");
   }
 });
+
+for (const failure of ["timeout", "lock timeout", "empty payload", "array payload"]) {
+  test(`retention ${failure} returns a retryable response instead of success or internal error`, async () => {
+    const route = loadSourceModule<typeof import("../src/app/api/lanflow/admin/history-retention/route")>(
+      "src/app/api/lanflow/admin/history-retention/route.ts", {
+        "@/lib/server/auth": { requireSystemManager: async () => ({ ok: true,
+          supabase: { rpc: async () => failure === "timeout" || failure === "lock timeout"
+            ? { data: null, error: { code: failure === "timeout" ? "57014" : "55P03", message: "private query text" } }
+            : { data: failure === "array payload" ? [] : null, error: null } } }) },
+      });
+    for (const action of ["get", "status", "preview", "save", "cleanup"]) {
+      const read = action === "get" || action === "status";
+      const request = new NextRequest(`http://localhost/api/lanflow/admin/history-retention${action === "status" ? "?view=status" : ""}`,
+        read ? undefined : { method: "POST", body: JSON.stringify({ action, retentionDays: 15,
+          expectedUpdatedAt: "2026-10-29T01:00:00Z", cutoffDate: "2026-10-15",
+          requestId: "64000000-0000-4000-8000-000000000001" }) });
+      const response = await (read ? route.GET(request) : route.POST(request));
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Cache-Control")).toContain("private, no-store");
+      expect(await response.text()).not.toContain("private query text");
+    }
+  });
+}

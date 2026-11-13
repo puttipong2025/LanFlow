@@ -22,7 +22,10 @@ function errorResponse(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status, headers: NO_STORE_HEADERS });
 }
 
-function retentionError(message: string) {
+function retentionError(message: string, code?: string) {
+  if (code === "57014" || code === "55P03") {
+    return errorResponse("ระบบเก็บประวัติไม่พร้อมชั่วคราว กรุณาลองใหม่", 503);
+  }
   if (message.includes("HISTORY_RETENTION_CONFLICT")) {
     return errorResponse("การตั้งค่าถูกเปลี่ยนแล้ว กรุณาโหลดข้อมูลล่าสุด", 409);
   }
@@ -34,6 +37,13 @@ function retentionError(message: string) {
   return errorResponse("จัดการระยะเก็บประวัติไม่สำเร็จ", 500);
 }
 
+function retentionResponse(data: unknown, status = 200) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return errorResponse("อ่านผลจากระบบเก็บประวัติไม่สำเร็จ กรุณาลองใหม่", 503);
+  }
+  return NextResponse.json(data, { status, headers: NO_STORE_HEADERS });
+}
+
 async function getHistoryRetention(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
@@ -41,8 +51,8 @@ async function getHistoryRetention(request: NextRequest) {
     request.nextUrl.searchParams.get("view") === "status"
       ? "get_history_cleanup_status" : "get_history_retention_overview",
   );
-  if (error) return retentionError(error.message);
-  return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+  if (error) return retentionError(error.message, error.code);
+  return retentionResponse(data);
 }
 
 async function updateHistoryRetention(request: NextRequest) {
@@ -66,8 +76,8 @@ async function updateHistoryRetention(request: NextRequest) {
       p_expected_updated_at: body.expectedUpdatedAt,
       p_expected_cutoff_date: body.cutoffDate,
     });
-    if (error) return retentionError(error.message);
-    return NextResponse.json(data, { status: 202, headers: NO_STORE_HEADERS });
+    if (error) return retentionError(error.message, error.code);
+    return retentionResponse(data, 202);
   }
   const retentionDays = body?.retentionDays;
   if (typeof retentionDays !== "number" || !Number.isInteger(retentionDays)
@@ -78,8 +88,8 @@ async function updateHistoryRetention(request: NextRequest) {
     const { data, error } = await result.supabase.rpc("get_history_retention_overview", {
       p_retention_days: retentionDays,
     });
-    if (error) return retentionError(error.message);
-    return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+    if (error) return retentionError(error.message, error.code);
+    return retentionResponse(data);
   }
   if (body?.action !== "save" || !validTimestamp(body.expectedUpdatedAt)) {
     return errorResponse("คำขอไม่ถูกต้อง");
@@ -88,8 +98,8 @@ async function updateHistoryRetention(request: NextRequest) {
     p_retention_days: retentionDays,
     p_expected_updated_at: body.expectedUpdatedAt,
   });
-  if (error) return retentionError(error.message);
-  return NextResponse.json(data, { headers: NO_STORE_HEADERS });
+  if (error) return retentionError(error.message, error.code);
+  return retentionResponse(data);
 }
 
 export async function GET(request: NextRequest) {
