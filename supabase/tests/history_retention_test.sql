@@ -114,8 +114,8 @@ select extensions.is(
   'a System Manager can preview a one-day retention value'
 );
 select extensions.ok(
-  (public.get_history_retention_overview(1) ->> 'totalEligible')::bigint >= 3,
-  'preview counts old temporary history before deletion'
+  (select sum((g->>'eligibleCount')::bigint) from jsonb_array_elements(public.get_history_retention_overview(1)->'groups') g) >= 3,
+  'preview counts available old temporary history before deletion'
 );
 select public.save_history_retention_settings(
   1,
@@ -132,7 +132,9 @@ do $cleanup$
 declare
   v_result jsonb;
   v_max_batches integer := greatest(20,
-    ceil((public.get_history_retention_overview(1)->>'totalEligible')::numeric / 1000)::integer + 2);
+    ceil(((select coalesce(sum(eligible_count),0) from private.history_retention_preview_rows(1))
+      + (select count(*) from cron.job_run_details where status in ('succeeded','failed')
+        and start_time < (select private.history_retention_cutoff_date(1)::timestamp at time zone 'Asia/Bangkok')))::numeric / 1000)::integer + 2);
 begin
   -- A long-lived Local database can contain more than 20,000 cron rows. Bound
   -- the test by its actual fixture/history size instead of assuming a fresh DB.

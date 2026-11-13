@@ -22,6 +22,22 @@ async function openSettings(page: Page) {
 test.describe("background history retention UI", () => {
   test.use({ storageState: "playwright/.auth/super_admin.json" });
 
+  test("unknown scheduler counts keep settings and cleanup confirmation usable", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", error => pageErrors.push(error.message));
+    const state = { ...initial(), totalEligible: null,
+      groups: initial().groups.map(group => group.key === "scheduler_run_history"
+        ? { ...group, eligibleCount: null, oldestDate: null } : group) };
+    await page.route(/\/api\/lanflow\/admin\/history-retention(?:\?.*)?$/, route => route.fulfill({ json: state }));
+    await openSettings(page);
+    await expect(page.getByText("จำนวนบางกลุ่มยังไม่พร้อม ระบบยังล้างตามจำนวนวันที่เก็บได้", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "ล้างประวัติที่หมดอายุตอนนี้", exact: true }).click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toContainText("จำนวนบางกลุ่มยังไม่พร้อม ระบบจะตรวจเกณฑ์ก่อนล้างแต่ละรอบ");
+    await expect(dialog.getByRole("button", { name: "ยืนยันเริ่มล้าง", exact: true })).toBeEnabled();
+    expect(pageErrors).toEqual([]);
+  });
+
   test("confirms impact, deduplicates, reopens progress and polls metadata only", async ({ page }) => {
     let state = initial();
     let commands = 0;

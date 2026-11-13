@@ -1,22 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireSystemManager } from "@/lib/server/auth";
+import { validRetentionDate, validRetentionOverview, validRetentionReceipt,
+  validRetentionStatus, validRetentionTimestamp } from "@/lib/server/history-retention-response";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE_HEADERS = { "Cache-Control": "private, no-store, max-age=0" };
-
-function validDate(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
-    && !value.startsWith("0000") && Number.isFinite(Date.parse(value))
-    && new Date(value).toISOString().slice(0, 10) === value;
-}
-
-function validTimestamp(value: unknown): value is string {
-  return typeof value === "string" && validDate(value.slice(0, 10))
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)$/.test(value)
-    && Number.isFinite(Date.parse(value));
-}
+const RELOAD_MESSAGE = "ระบบเก็บประวัติมีการอัปเดต กรุณาโหลดหน้าเว็บใหม่";
 
 function errorResponse(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status, headers: NO_STORE_HEADERS });
@@ -37,22 +28,26 @@ function retentionError(message: string, code?: string) {
   return errorResponse("จัดการระยะเก็บประวัติไม่สำเร็จ", 500);
 }
 
-function retentionResponse(data: unknown, status = 200) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+function retentionResponse(data: unknown, valid: (value: unknown) => boolean, status = 200, nullableCounts = true) {
+  if (!valid(data)) {
     return errorResponse("อ่านผลจากระบบเก็บประวัติไม่สำเร็จ กรุณาลองใหม่", 503);
   }
+  if (!nullableCounts && data !== null && typeof data === "object"
+    && "totalEligible" in data && data.totalEligible === null) return errorResponse(RELOAD_MESSAGE, 503);
   return NextResponse.json(data, { status, headers: NO_STORE_HEADERS });
 }
 
 async function getHistoryRetention(request: NextRequest) {
   const result = await requireSystemManager(request);
   if (!result.ok) return result.response;
+  const statusOnly = request.nextUrl.searchParams.get("view") === "status";
   const { data, error } = await result.supabase.rpc(
-    request.nextUrl.searchParams.get("view") === "status"
+    statusOnly
       ? "get_history_cleanup_status" : "get_history_retention_overview",
   );
   if (error) return retentionError(error.message, error.code);
-  return retentionResponse(data);
+  return retentionResponse(data, statusOnly ? validRetentionStatus : validRetentionOverview, 200,
+    request.nextUrl.searchParams.get("counts") === "nullable");
 }
 
 async function updateHistoryRetention(request: NextRequest) {
@@ -68,7 +63,7 @@ async function updateHistoryRetention(request: NextRequest) {
   if (body?.action === "cleanup") {
     if (typeof body.requestId !== "string"
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)
-      || !validTimestamp(body.expectedUpdatedAt) || !validDate(body.cutoffDate)) {
+      || !validRetentionTimestamp(body.expectedUpdatedAt) || !validRetentionDate(body.cutoffDate)) {
       return errorResponse("คำขอล้างประวัติไม่ถูกต้อง");
     }
     const { data, error } = await result.supabase.rpc("request_history_retention_cleanup", {
@@ -77,7 +72,7 @@ async function updateHistoryRetention(request: NextRequest) {
       p_expected_cutoff_date: body.cutoffDate,
     });
     if (error) return retentionError(error.message, error.code);
-    return retentionResponse(data, 202);
+    return retentionResponse(data, validRetentionReceipt, 202);
   }
   const retentionDays = body?.retentionDays;
   if (typeof retentionDays !== "number" || !Number.isInteger(retentionDays)
@@ -89,17 +84,19 @@ async function updateHistoryRetention(request: NextRequest) {
       p_retention_days: retentionDays,
     });
     if (error) return retentionError(error.message, error.code);
-    return retentionResponse(data);
+    return retentionResponse(data, validRetentionOverview, 200, request.nextUrl.searchParams.get("counts") === "nullable");
   }
-  if (body?.action !== "save" || !validTimestamp(body.expectedUpdatedAt)) {
+  if (body?.action !== "save" || !validRetentionTimestamp(body.expectedUpdatedAt)) {
     return errorResponse("คำขอไม่ถูกต้อง");
   }
+  // A previously opened dialog must not commit a change its old UI cannot read.
+  if (request.nextUrl.searchParams.get("counts") !== "nullable") return errorResponse(RELOAD_MESSAGE, 503);
   const { data, error } = await result.supabase.rpc("save_history_retention_settings", {
     p_retention_days: retentionDays,
     p_expected_updated_at: body.expectedUpdatedAt,
   });
   if (error) return retentionError(error.message, error.code);
-  return retentionResponse(data);
+  return retentionResponse(data, validRetentionOverview);
 }
 
 export async function GET(request: NextRequest) {

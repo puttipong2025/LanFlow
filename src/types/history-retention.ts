@@ -1,6 +1,6 @@
 export type HistoryRetentionGroup = {
   key: string;
-  eligibleCount: number;
+  eligibleCount: number | null;
   oldestDate: string | null;
 };
 
@@ -26,7 +26,7 @@ export type HistoryRetentionOverview = {
   cutoffDate: string;
   updatedAt: string;
   updatedByName: string | null;
-  totalEligible: number;
+  totalEligible: number | null;
   groups: HistoryRetentionGroup[];
   lastCleanup: HistoryCleanupSummary | null;
 };

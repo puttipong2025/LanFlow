@@ -8,6 +8,8 @@ import { ApiResponseError, assertApiResponse, authFetch } from "@/lib/auth-fetch
 import { AlertDialog } from "@/components/shared/AlertDialog";
 import type { HistoryCleanupStatus, HistoryRetentionOverview } from "@/types/history-retention";
 
+const RETENTION_URL = "/api/lanflow/admin/history-retention?counts=nullable";
+
 const GROUP_LABELS: Record<string, { label: string; detail: string }> = {
   sync_queue_history: { label: "ประวัติคิวซิงก์", detail: "ล้างรายละเอียดเฉพาะงานที่จบแล้ว เก็บผลยืนยันเพื่อป้องกันคำสั่งซ้ำ ไม่ลบงานค้างหรือคำขอรออนุมัติ" },
   dashboard_money_events: { label: "ประวัติรายการเงินล่าสุด", detail: "เหตุการณ์เพิ่ม แก้ไข และลบบน Dashboard" },
@@ -27,6 +29,10 @@ function formatDate(value: string | null) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeZone: "Asia/Bangkok" })
     .format(new Date(`${value}T00:00:00+07:00`));
+}
+
+function formatCount(value: number | null) {
+  return value === null ? "—" : value.toLocaleString("th-TH");
 }
 
 async function readResponse<T = HistoryRetentionOverview>(response: Response) {
@@ -75,7 +81,7 @@ export function HistoryRetentionSettings() {
     const ticket = ++version.current;
     if (!quiet) { setLoading(true); setError(null); }
     try {
-      const data = await readResponse(await authFetch("/api/lanflow/admin/history-retention", { cache: "no-store" }));
+      const data = await readResponse(await authFetch(RETENTION_URL, { cache: "no-store" }));
       if (!mounted.current || ticket !== version.current) return;
       applyOverview(data, resetDraft);
       setPollError(null);
@@ -111,7 +117,7 @@ export function HistoryRetentionSettings() {
       }
       const ticket = version.current;
       try {
-        const response = await authFetch("/api/lanflow/admin/history-retention?view=status", { cache: "no-store", signal: controller.signal });
+        const response = await authFetch(`${RETENTION_URL}&view=status`, { cache: "no-store", signal: controller.signal });
         const data = await readResponse<HistoryCleanupStatus>(response);
         if (controller.signal.aborted || ticket !== version.current || !mounted.current) return;
         setPollError(null);
@@ -143,7 +149,7 @@ export function HistoryRetentionSettings() {
     setWorking(true);
     setError(null);
     try {
-      const data = await readResponse(await authFetch("/api/lanflow/admin/history-retention", {
+      const data = await readResponse(await authFetch(RETENTION_URL, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "preview", retentionDays: days }),
       }));
@@ -162,7 +168,7 @@ export function HistoryRetentionSettings() {
     setWorking(true);
     setError(null);
     try {
-      const data = await readResponse(await authFetch("/api/lanflow/admin/history-retention", { cache: "no-store" }));
+      const data = await readResponse(await authFetch(RETENTION_URL, { cache: "no-store" }));
       if (!mounted.current || ticket !== version.current) return;
       applyOverview(data, false);
       if (data.lastCleanup?.status === "running") { toast.info("มีงานล้างกำลังดำเนินการอยู่แล้ว"); return; }
@@ -181,7 +187,7 @@ export function HistoryRetentionSettings() {
     setWorking(true);
     setError(null);
     try {
-      const response = await authFetch("/api/lanflow/admin/history-retention", {
+      const response = await authFetch(RETENTION_URL, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(dialog.kind === "cleanup" ? {
           action: "cleanup", requestId: dialog.requestId,
@@ -238,8 +244,9 @@ export function HistoryRetentionSettings() {
     </section>
 
     <section className="rounded-md border border-black/10 bg-white p-4 shadow-panel">
-      <div className="flex flex-wrap items-end justify-between gap-2"><div><h3 className="text-balance font-bold text-ink">ข้อมูลที่ได้รับผลกระทบ</h3><p className="text-pretty text-sm tabular-nums text-ink/60">เก็บตั้งแต่วันที่ {formatDate(shown.cutoffDate)} · เข้าเกณฑ์ลบ {shown.totalEligible.toLocaleString("th-TH")} รายการ</p></div>{preview && <span className="rounded bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">ตัวอย่างก่อนบันทึก</span>}</div>
-      <div className="mt-3 overflow-x-auto" role="region" aria-label="ผลกระทบและความคืบหน้าแยกกลุ่ม" tabIndex={0}><table className="w-full min-w-[42rem] text-left text-sm"><thead><tr className="border-b border-black/10 text-ink/60"><th className="p-3">กลุ่มข้อมูล</th><th className="p-3 text-right">เข้าเกณฑ์ลบ</th><th className="p-3">วันที่เก่าสุด</th>{!preview && overview.lastCleanup && <><th className="p-3 text-right">ลบแล้วในงานล่าสุด</th><th className="p-3 text-right">ค้างในงานล่าสุด ≈</th></>}</tr></thead><tbody className="divide-y divide-black/5">{shown.groups.map((group) => { const copy = GROUP_LABELS[group.key] ?? { label: group.key, detail: "ประวัติชั่วคราว" }; return <tr key={group.key}><td className="p-3"><p className="font-semibold text-ink">{copy.label}</p><p className="text-pretty text-xs text-ink/55">{copy.detail}</p></td><td className="p-3 text-right font-semibold tabular-nums">{group.eligibleCount.toLocaleString("th-TH")}</td><td className="p-3 tabular-nums">{formatDate(group.oldestDate)}</td>{!preview && overview.lastCleanup && <><td className="p-3 text-right tabular-nums">{(overview.lastCleanup.deletedCounts[group.key] ?? 0).toLocaleString("th-TH")}</td><td className="p-3 text-right tabular-nums">{!overview.lastCleanup.countsAsOf && overview.lastCleanup.hasMore ? "—" : (overview.lastCleanup.remainingCounts[group.key] ?? 0).toLocaleString("th-TH")}</td></>}</tr>; })}</tbody></table></div>
+      <div className="flex flex-wrap items-end justify-between gap-2"><div><h3 className="text-balance font-bold text-ink">ข้อมูลที่ได้รับผลกระทบ</h3><p className="text-pretty text-sm tabular-nums text-ink/60">เก็บตั้งแต่วันที่ {formatDate(shown.cutoffDate)} · เข้าเกณฑ์ลบ {formatCount(shown.totalEligible)} รายการ</p></div>{preview && <span className="rounded bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">ตัวอย่างก่อนบันทึก</span>}</div>
+      {shown.totalEligible === null && <p role="status" className="mt-2 text-pretty text-sm text-ink/60">จำนวนบางกลุ่มยังไม่พร้อม ระบบยังล้างตามจำนวนวันที่เก็บได้</p>}
+      <div className="mt-3 overflow-x-auto" role="region" aria-label="ผลกระทบและความคืบหน้าแยกกลุ่ม" tabIndex={0}><table className="w-full min-w-[42rem] text-left text-sm"><thead><tr className="border-b border-black/10 text-ink/60"><th className="p-3">กลุ่มข้อมูล</th><th className="p-3 text-right">เข้าเกณฑ์ลบ</th><th className="p-3">วันที่เก่าสุด</th>{!preview && overview.lastCleanup && <><th className="p-3 text-right">ลบแล้วในงานล่าสุด</th><th className="p-3 text-right">ค้างในงานล่าสุด ≈</th></>}</tr></thead><tbody className="divide-y divide-black/5">{shown.groups.map((group) => { const copy = GROUP_LABELS[group.key] ?? { label: group.key, detail: "ประวัติชั่วคราว" }; return <tr key={group.key}><td className="p-3"><p className="font-semibold text-ink">{copy.label}</p><p className="text-pretty text-xs text-ink/55">{copy.detail}</p></td><td className="p-3 text-right font-semibold tabular-nums">{formatCount(group.eligibleCount)}</td><td className="p-3 tabular-nums">{formatDate(group.oldestDate)}</td>{!preview && overview.lastCleanup && <><td className="p-3 text-right tabular-nums">{(overview.lastCleanup.deletedCounts[group.key] ?? 0).toLocaleString("th-TH")}</td><td className="p-3 text-right tabular-nums">{!overview.lastCleanup.countsAsOf && overview.lastCleanup.hasMore ? "—" : (overview.lastCleanup.remainingCounts[group.key] ?? 0).toLocaleString("th-TH")}</td></>}</tr>; })}</tbody></table></div>
     </section>
 
     <section className="grid gap-4 lg:grid-cols-2">
@@ -271,9 +278,10 @@ export function HistoryRetentionSettings() {
       confirmLabel={dialog?.kind === "cleanup" ? "ยืนยันเริ่มล้าง" : "ยืนยันเปลี่ยนค่า"} busy={working}
       onCancel={() => { setDialog(null); setError(null); }} onConfirm={() => void confirmAction()}>
       {dialog && <div className="mt-3 max-h-56 overflow-y-auto text-sm">
-        <p className="font-semibold tabular-nums">เข้าเกณฑ์ลบ {dialog.data.totalEligible.toLocaleString("th-TH")} รายการ</p>
+        <p className="font-semibold tabular-nums">เข้าเกณฑ์ลบ {formatCount(dialog.data.totalEligible)} รายการ</p>
+        {dialog.data.totalEligible === null && <p className="mt-1 text-pretty text-ink/60">จำนวนบางกลุ่มยังไม่พร้อม ระบบจะตรวจเกณฑ์ก่อนล้างแต่ละรอบ</p>}
         <ul className="mt-2 space-y-1">{dialog.data.groups.map((group) => <li key={group.key} className="flex justify-between gap-3">
-          <span>{GROUP_LABELS[group.key]?.label ?? group.key}</span><span className="shrink-0 tabular-nums">{group.eligibleCount.toLocaleString("th-TH")}</span>
+          <span>{GROUP_LABELS[group.key]?.label ?? group.key}</span><span className="shrink-0 tabular-nums">{formatCount(group.eligibleCount)}</span>
         </li>)}</ul>
       </div>}
       {error && <p role="alert" className="mt-3 text-pretty text-sm text-rose-700">{error}</p>}

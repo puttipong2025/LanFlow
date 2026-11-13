@@ -6124,10 +6124,12 @@ $$;
 ALTER FUNCTION "private"."history_retention_days"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."history_retention_has_work"("p_days" integer) RETURNS boolean
-    LANGUAGE "sql" STABLE SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
+CREATE OR REPLACE FUNCTION private.history_retention_has_work(p_days integer)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
   with bounds as (
     select private.history_retention_cutoff_date(p_days) as cutoff,
       private.history_retention_cutoff_date(p_days)::timestamp at time zone 'Asia/Bangkok' as cutoff_at
@@ -6151,7 +6153,9 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_has_work"("p_days" integ
     or
     exists (select 1 from public.stock_product_approval_requests, bounds where request_status <> 'pending' and coalesce(decided_at, updated_at) < cutoff_at)
     or
-    exists (select 1 from cron.job_run_details, bounds where status in ('succeeded', 'failed') and start_time < cutoff_at)
+    (select d.runid from cron.job_run_details d, bounds b
+      where d.status in ('succeeded', 'failed') and d.start_time < b.cutoff_at
+      order by d.runid limit 1) is not null
     or
     exists (select 1 from public.history_cleanup_runs, bounds where status <> 'running' and coalesce(completed_at, started_at) < cutoff_at)
 
@@ -6159,19 +6163,44 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_has_work"("p_days" integ
       where j.state='done' and j.history_purged_at is null and j.completed_at < cutoff_at
         and private.rubber_queue_history_finished_at(j) < cutoff_at)
     or exists (select 1 from public.admin_account_audit_logs where status = 'pending' and created_at < now() - interval '24 hours')
-$$;
+$function$;
 
 
 ALTER FUNCTION "private"."history_retention_has_work"("p_days" integer) OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" integer) RETURNS TABLE("group_key" "text", "eligible_count" bigint, "oldest_date" "date")
-    LANGUAGE "sql" STABLE SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
+CREATE OR REPLACE FUNCTION private.history_scheduler_preview(p_cutoff_at timestamp with time zone)
+ RETURNS TABLE(eligible_count bigint, oldest_date date)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+BEGIN
+  IF pg_relation_size('cron.job_run_details'::regclass) > 64::bigint * 1024 * 1024 THEN
+    RETURN QUERY SELECT null::bigint, null::date;
+    RETURN;
+  END IF;
+  RETURN QUERY
+    SELECT count(*), (min(d.start_time) AT TIME ZONE 'Asia/Bangkok')::date
+    FROM cron.job_run_details d
+    WHERE d.status IN ('succeeded', 'failed') AND d.start_time < p_cutoff_at;
+END
+$function$;
+
+ALTER FUNCTION private.history_scheduler_preview(timestamptz) OWNER TO postgres;
+REVOKE ALL ON FUNCTION private.history_scheduler_preview(timestamptz) FROM PUBLIC, anon, authenticated;
+
+CREATE OR REPLACE FUNCTION private.history_retention_preview_rows(p_days integer)
+ RETURNS TABLE(group_key text, eligible_count bigint, oldest_date date)
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
   with bounds as (
     select private.history_retention_cutoff_date(p_days) as cutoff,
       private.history_retention_cutoff_date(p_days)::timestamp at time zone 'Asia/Bangkok' as cutoff_at
+  ), scheduler as materialized (
+    select p.* from bounds b cross join lateral private.history_scheduler_preview(b.cutoff_at) p
   ), groups as (
     select 'dashboard_money_events'::text group_key, event_date item_date
     from public.dashboard_money_events, bounds where event_date < cutoff
@@ -6215,10 +6244,6 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" i
     where request_status <> 'pending'
       and coalesce(decided_at, updated_at) < cutoff_at
     union all
-    select 'scheduler_run_history', (start_time at time zone 'Asia/Bangkok')::date
-    from cron.job_run_details, bounds
-    where status in ('succeeded', 'failed') and start_time < cutoff_at
-    union all
     select 'cleanup_run_history', (coalesce(completed_at, started_at) at time zone 'Asia/Bangkok')::date
     from public.history_cleanup_runs, bounds
     where status <> 'running'
@@ -6236,11 +6261,15 @@ CREATE OR REPLACE FUNCTION "private"."history_retention_preview_rows"("p_days" i
     ('stock_entry_approval_requests'), ('stock_product_approval_requests'),
     ('scheduler_run_history'), ('cleanup_run_history'), ('sync_queue_history')
   )
-  select keys.group_key, count(groups.item_date), min(groups.item_date)
+  select keys.group_key,
+    case when keys.group_key = 'scheduler_run_history' then (select eligible_count from scheduler)
+      else count(groups.item_date) end,
+    case when keys.group_key = 'scheduler_run_history' then (select oldest_date from scheduler)
+      else min(groups.item_date) end
   from keys left join groups using (group_key)
   group by keys.group_key
   order by keys.group_key
-$$;
+$function$;
 
 
 ALTER FUNCTION "private"."history_retention_preview_rows"("p_days" integer) OWNER TO "postgres";
@@ -20243,10 +20272,12 @@ $$;
 ALTER FUNCTION "public"."get_history_cleanup_status"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer DEFAULT NULL::integer) RETURNS "jsonb"
-    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
-    SET "search_path" TO ''
-    AS $$
+CREATE OR REPLACE FUNCTION public.get_history_retention_overview(p_retention_days integer DEFAULT NULL::integer)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
 declare
   v_settings public.history_retention_settings%rowtype;
   v_requested integer;
@@ -20267,7 +20298,7 @@ begin
       'key', p.group_key,
       'eligibleCount', p.eligible_count,
       'oldestDate', p.oldest_date
-    ) order by p.group_key), '[]'::jsonb), coalesce(sum(p.eligible_count), 0)
+    ) order by p.group_key), '[]'::jsonb), case when bool_or(p.eligible_count is null) then null else coalesce(sum(p.eligible_count), 0) end
   into v_groups, v_total
   from private.history_retention_preview_rows(v_requested) p;
   v_last_cleanup := private.history_cleanup_summary();
@@ -20282,7 +20313,7 @@ begin
     'lastCleanup', v_last_cleanup
   );
 end
-$$;
+$function$;
 
 
 ALTER FUNCTION "public"."get_history_retention_overview"("p_retention_days" integer) OWNER TO "postgres";
